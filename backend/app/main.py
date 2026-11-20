@@ -1,9 +1,22 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
+from app.config import settings
 from app.db import engine
+from app.routers import reference, transporters, trucks
 
 app = FastAPI(title="Aphelion GB Monitoring API", version="0.1.0")
+
+app.include_router(reference.router)
+app.include_router(transporters.router)
+app.include_router(trucks.router)
+
+# Uploaded files (optional truck photos), from the persistent uploads volume
+Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+app.mount("/api/files", StaticFiles(directory=settings.upload_dir), name="files")
 
 
 @app.get("/api/health")

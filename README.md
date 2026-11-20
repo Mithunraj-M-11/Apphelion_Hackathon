@@ -43,6 +43,30 @@ Stop with `Ctrl+C`, or `docker compose down`. To wipe the database too: `docker 
 Code changes reload automatically: `backend/app` and `frontend/` are mounted into the containers.
 If you change `requirements.txt` or `package.json`, rebuild with `docker compose up --build`.
 
+### Database, test data and tests
+
+On start the backend **applies migrations** (`alembic upgrade head`) and **loads test data** (`app/seed.py`: 4 GB
+officers, 1 contract, 3 transporters, 20 trucks). The seed only runs on an empty database. All data is made up.
+
+```bash
+docker compose down -v && docker compose up --build    # reset to a fresh database + seed
+docker compose exec backend pytest -q                    # run backend tests
+
+# after changing models in backend/app/models/, create a migration (it appears in backend/migrations/versions/):
+docker compose exec backend alembic revision --autogenerate -m "describe the change"
+docker compose exec backend alembic upgrade head
+```
+
+Data persists across restarts in Docker volumes (`pgdata` for Postgres, `uploads` for optional photos).
+
+### Dashboard
+
+- **Truck registry** (`/registry`): search and filter trucks, see who is authorised today, open any truck for its
+  full detail (identity, FASTag, measurements, documents, ownership, enrollment, photos, change history).
+- **Transporters** (`/transporters`): companies and their drivers.
+- **Acting as** (top right): the GB officer making changes. There's no login in the PoC; every change is recorded
+  against the selected officer.
+
 ## Project layout
 
 ```

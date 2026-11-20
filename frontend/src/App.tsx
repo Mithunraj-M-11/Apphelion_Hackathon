@@ -1,23 +1,116 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import type { IconType } from "react-icons";
+import { LuBuilding2, LuLayoutDashboard, LuMenu, LuRadar, LuTruck } from "react-icons/lu";
+import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
+import { OfficerProvider, useOfficer } from "./officer";
+import RegistryList from "./pages/RegistryList";
+import TruckDetail from "./pages/TruckDetail";
+import TruckForm from "./pages/TruckForm";
+import Transporters from "./pages/Transporters";
 
-type Health = { status: string; database: string };
+const COLLAPSE_KEY = "sitewatch.navCollapsed";
 
-export default function App() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [error, setError] = useState<string | null>(null);
+const NAV: { to: string; label: string; Icon: IconType }[] = [
+  { to: "/registry", label: "Truck registry", Icon: LuTruck },
+  { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
+];
 
-  useEffect(() => {
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then(setHealth)
-      .catch((e: Error) => setError(e.message));
-  }, []);
+function readCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(COLLAPSE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function ActingAs() {
+  const { officers, acting, setActing } = useOfficer();
+  return (
+    <label className="acting-as">
+      Acting as
+      <select value={acting?.id ?? ""} onChange={(e) => setActing(Number(e.target.value))}>
+        {officers.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name} ({o.role})
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function Home() {
+  return (
+    <div className="empty-state">
+      <LuLayoutDashboard className="empty-icon" />
+      <h2>SiteWatch</h2>
+      <p className="muted">Choose a section from the sidebar to get started.</p>
+    </div>
+  );
+}
+
+function Layout() {
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const toggle = () =>
+    setCollapsed((c) => {
+      try {
+        window.localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1");
+      } catch {
+        /* not remembered; fine */
+      }
+      return !c;
+    });
 
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: 24 }}>
-      <h1>Aphelion: GB Monitoring Dashboard</h1>
-      <p>Starter page. Backend status:</p>
-      <pre>{error ? `error: ${error}` : health ? JSON.stringify(health, null, 2) : "loading..."}</pre>
-    </main>
+    <div className={`shell${collapsed ? " nav-collapsed" : ""}`}>
+      <header className="topbar">
+        <button className="nav-toggle" onClick={toggle} aria-label={collapsed ? "Expand menu" : "Collapse menu"}
+                title={collapsed ? "Expand menu" : "Collapse menu"}>
+          <LuMenu />
+        </button>
+        <div className="brand">
+          <span className="brand-mark"><LuRadar /></span>
+          <div>
+            <div className="brand-title">SiteWatch</div>
+            <div className="brand-sub">Independent site monitoring · Governing Body</div>
+          </div>
+        </div>
+        <div className="topbar-spacer" />
+        <ActingAs />
+      </header>
+
+      <aside className="sidenav">
+        <nav>
+          {NAV.map(({ to, label, Icon }) => (
+            <NavLink key={to} to={to} title={label}>
+              <Icon className="nav-icon" />
+              <span className="nav-label">{label}</span>
+            </NavLink>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="content">
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/registry" element={<RegistryList />} />
+          <Route path="/registry/new" element={<TruckForm />} />
+          <Route path="/registry/:id" element={<TruckDetail />} />
+          <Route path="/registry/:id/edit" element={<TruckForm />} />
+          <Route path="/transporters" element={<Transporters />} />
+          <Route path="*" element={<p>Page not found.</p>} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <OfficerProvider>
+        <Layout />
+      </OfficerProvider>
+    </BrowserRouter>
   );
 }
