@@ -56,7 +56,25 @@ docker-compose.yml
 
 ## Working together
 
-- Branch from `main`: `feature/<short-name>`; open a pull request to merge.
+**Branches**
+```
+main      stable: only updated from dev when a working version is ready (demo / submission)
+  └── dev     integration: all features merge here first
+        ├── feature/registry
+        ├── feature/plate-reading
+        └── feature/<short-name>
+```
+- **Never commit directly to `main` or `dev`.**
+- Start every piece of work from the latest `dev`:
+  ```bash
+  git switch dev && git pull
+  git switch -c feature/<short-name>
+  ```
+- Push your branch and open a **pull request into `dev`**. Get a teammate to review, then merge.
+- When `dev` is stable and demo-ready, open a pull request **`dev` → `main`**.
+- Keep branches small and short-lived; pull `dev` into your branch often to avoid big conflicts.
+
+**General**
 - Never commit `.env` or secrets; add new settings to `.env.example` with a comment.
 - Keep design decisions in `docs/` so the deck and code stay in sync.
 
