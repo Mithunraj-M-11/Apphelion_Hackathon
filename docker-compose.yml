@@ -45,6 +45,18 @@ services:
     depends_on:
       - backend
 
+  # Scenario simulator (fake gate pole). Not started by `up`; run on demand:
+  #   docker compose run --rm simulator identify_basic
+  simulator:
+    build: ./simulator
+    profiles: ["tools"]
+    environment:
+      BACKEND_URL: http://backend:8000
+    volumes:
+      - ./simulator:/sim     # edit scenarios without rebuilding
+    depends_on:
+      - backend
+
 volumes:
   pgdata:
   uploads:

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { Authorisation } from "./api";
-import { daysUntil, formatDate, STATUS_LABEL } from "./format";
+import type { Authorisation, Check } from "./api";
+import { CHECK_LABEL, daysUntil, formatDate, RESULT_LABEL, STATUS_LABEL } from "./format";
 
 export function StatusBadge({ status }: { status: string }) {
   return <span className={`badge status-${status}`}>{STATUS_LABEL[status] ?? status}</span>;
@@ -51,4 +51,25 @@ export function Card({ title, children, actions }: { title: string; children: Re
 
 export function ErrorNote({ error }: { error: string | null }) {
   return error ? <div className="error-note">{error}</div> : null;
+}
+
+export function ResultBadge({ result }: { result: string }) {
+  const cls =
+    result === "AUTHORISED" ? "ok" : result === "NOT_AUTHORISED" || result === "UNIDENTIFIED" ? "warn" : "bad";
+  return <span className={`badge ${cls}`}>{RESULT_LABEL[result] ?? result}</span>;
+}
+
+/** Every Identify check with its status and reason. */
+export function CheckList({ checks }: { checks: Check[] }) {
+  return (
+    <ul className="checks">
+      {checks.map((c) => (
+        <li key={c.name} className={`check check-${c.status}`}>
+          <span className="check-name">{CHECK_LABEL[c.name] ?? c.name}</span>
+          <span className="check-status">{c.status.replace("_", " ")}</span>
+          <span className="check-detail">{c.detail}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }

@@ -144,3 +144,61 @@ export const api = {
     return request<Truck>(`/trucks/${id}/photos`, { method: "POST", body: form });
   },
 };
+
+// ---------- Gate events & simulator runs ----------
+export type Check = { name: string; status: "passed" | "failed" | "not_applicable"; detail: string };
+export type Movement = {
+  id: number;
+  gate: string;
+  direction: string;
+  observed_at: string;
+  received_at: string;
+  plate_read: string | null;
+  plate_normalised: string | null;
+  fastag_read: string | null;
+  radar_length_m: number | null;
+  result: string;
+  identify_mode: string;
+  truck: { id: number; plate: string; plate_type: string } | null;
+  checks: Check[];
+  caught_by: string[];
+  reasons: string[];
+  flags: string[];
+  source: string | null;
+};
+export type ScenarioResult = {
+  id: string;
+  name: string;
+  kind: "honest" | "tamper";
+  why: string | null;
+  real_case: string | null;
+  readings: { plate_read: string | null; fastag_read: string | null; radar_length_m: number | null };
+  expected: { result: string; caught_by?: string[]; not_caught_by?: string[] };
+  actual: { result: string; caught_by: string[]; flags: string[]; reasons: string[] };
+  movement_id: number;
+  pass: boolean;
+  problems: string[];
+};
+export type SimRun = {
+  id: number;
+  suite: string;
+  identify_mode: string | null;
+  started_at: string;
+  finished_at: string | null;
+  total: number;
+  passed: number;
+  tamper_total: number;
+  tamper_caught: number;
+  honest_total: number;
+  false_alarms: number;
+  results: ScenarioResult[];
+};
+
+export const gateApi = {
+  movements: (params: { result?: string; source_prefix?: string; origin?: string } = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<Movement[]>(`/movements${qs.toString() ? `?${qs}` : ""}`);
+  },
+  simRuns: () => request<SimRun[]>("/sim-runs"),
+  simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
+};

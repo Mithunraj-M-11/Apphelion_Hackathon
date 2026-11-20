@@ -1,3 +1,4 @@
+from app.models.gate import Movement, SimRun
 from app.models.registry import (
     Contract,
     Driver,
@@ -11,8 +12,10 @@ from app.models.registry import (
 __all__ = [
     "Contract",
     "Driver",
+    "Movement",
     "Officer",
     "RegistryHistory",
+    "SimRun",
     "Transporter",
     "Truck",
     "TruckPhoto",

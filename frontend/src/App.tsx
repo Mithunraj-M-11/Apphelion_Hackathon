@@ -1,9 +1,11 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
-import { LuBuilding2, LuLayoutDashboard, LuMenu, LuRadar, LuTruck } from "react-icons/lu";
+import { LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuRadar, LuScanLine, LuTruck } from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
+import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
+import SimRuns from "./pages/SimRuns";
 import TruckDetail from "./pages/TruckDetail";
 import TruckForm from "./pages/TruckForm";
 import Transporters from "./pages/Transporters";
@@ -13,6 +15,8 @@ const COLLAPSE_KEY = "sitewatch.navCollapsed";
 const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/registry", label: "Truck registry", Icon: LuTruck },
   { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
+  { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
+  { to: "/scenario-runs", label: "Scenario runs", Icon: LuFlaskConical },
 ];
 
 function readCollapsed(): boolean {
@@ -98,6 +102,9 @@ function Layout() {
           <Route path="/registry/:id" element={<TruckDetail />} />
           <Route path="/registry/:id/edit" element={<TruckForm />} />
           <Route path="/transporters" element={<Transporters />} />
+          <Route path="/gate-events" element={<GateEvents />} />
+          <Route path="/scenario-runs" element={<SimRuns />} />
+          <Route path="/scenario-runs/:id" element={<SimRuns />} />
           <Route path="*" element={<p>Page not found.</p>} />
         </Routes>
       </main>

@@ -16,7 +16,7 @@ physically happened against the permit, without relying on the Vendor's power, n
 | Database | PostgreSQL 16 | (container `db`) |
 | Backend API (GB server) | Python 3.11, FastAPI, SQLAlchemy | `backend/` |
 | Dashboard | React 18 + TypeScript, Vite | `frontend/` |
-| Simulator (fake gate poles) | Python | `simulator/` *(coming)* |
+| Simulator (fake gate poles) | Python | `simulator/` |
 
 Everything runs with **Docker Compose**, so teammates only need Docker.
 
@@ -59,11 +59,27 @@ docker compose exec backend alembic upgrade head
 
 Data persists across restarts in Docker volumes (`pgdata` for Postgres, `uploads` for optional photos).
 
+### Tampering scenarios (simulator)
+
+The simulator plays a gate pole. Each scenario in `simulator/scenarios/<suite>.yaml` describes what **physically**
+happens (fake plate, stolen FASTag, removed identifiers…); the simulator reports faithful sensor readings to the
+backend like a real pole, and checks whether the system caught the tampering.
+
+```bash
+docker compose run --rm simulator identify_basic
+```
+Prints a scorecard (scenarios passed, tampering caught, false alarms on honest trips) and saves the run, which the
+dashboard shows under **Scenario runs**. Every reading appears under **Gate events**. Scenario files are mounted, so
+edit them and re-run without rebuilding.
+
 ### Dashboard
 
 - **Truck registry** (`/registry`): search and filter trucks, see who is authorised today, open any truck for its
   full detail (identity, FASTag, measurements, documents, ownership, enrollment, photos, change history).
 - **Transporters** (`/transporters`): companies and their drivers.
+- **Gate events** (`/gate-events`): every vehicle the poles observed, the raw readings, the Identify result and
+  each check (passed / failed / not applicable) with its reason.
+- **Scenario runs** (`/scenario-runs`): simulator scorecards and per-scenario expected vs actual.
 - **Acting as** (top right): the GB officer making changes. There's no login in the PoC; every change is recorded
   against the selected officer.
 
@@ -72,7 +88,7 @@ Data persists across restarts in Docker volumes (`pgdata` for Postgres, `uploads
 ```
 backend/        FastAPI app (GB server: registry, passes, compare, alerts, records)
 frontend/       React + TypeScript dashboard
-simulator/      Simulated gate poles and demo scenarios (coming)
+simulator/      Simulated gate poles and tampering scenario suites
 docs/           Problem statement, design docs, research
 docker-compose.yml
 .env.example

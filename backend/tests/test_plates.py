@@ -16,7 +16,7 @@ def test_normalise(raw, expected):
     [
         ("OD09AB1234", "standard"),
         ("DL1CAB1234", "standard"),
-        ("KA05M9", "standard"),       # short series / number still valid
+        ("KA05M0009", "standard"),    # short series, zero-padded number
         ("JH05CK2290", "standard"),
         ("22BH4581AB", "bh"),
         ("21BH0001A", "bh"),
@@ -36,6 +36,8 @@ def test_valid_formats(plate, kind):
         "OD09AB12345",   # 5-digit number
         "",
         "22BH458AB",     # BH needs 4 digits
+        "OD09AB12",      # partial read (only 2 digits)
+        "KA05M9",        # number must be 4 digits
     ],
 )
 def test_invalid_formats(plate):

@@ -41,3 +41,46 @@ export const STATUS_LABEL: Record<string, string> = {
   on_hold: "On hold",
   retired: "Retired",
 };
+
+export const RESULT_LABEL: Record<string, string> = {
+  AUTHORISED: "Authorised",
+  NOT_AUTHORISED: "Not authorised",
+  UNREGISTERED: "Unregistered",
+  UNIDENTIFIED: "Unidentified",
+  MISMATCH: "Mismatch",
+};
+
+export const CHECK_LABEL: Record<string, string> = {
+  plate_present: "Plate present",
+  plate_format: "Plate format",
+  registry: "Plate in registry",
+  fastag_present: "FASTag present",
+  fastag_registry: "FASTag in registry",
+  plate_fastag: "Plate vs FASTag",
+  length: "Radar length",
+  authorisation: "Authorisation",
+  default_deny: "Default deny",
+};
+
+/** 'sim:12:S3' -> { runId: 12, scenario: 'S3' }; null for real pole events. */
+export function parseSimSource(source: string | null): { runId: number; scenario: string } | null {
+  const m = source?.match(/^sim:(\d+):(.+)$/);
+  return m ? { runId: Number(m[1]), scenario: m[2] } : null;
+}
+
+/** The check that decided the result (the rest are supporting evidence). */
+export function decisiveCheck(result: string, caughtBy: string[]): string | null {
+  const has = (c: string) => caughtBy.includes(c);
+  switch (result) {
+    case "MISMATCH":
+      return has("plate_fastag") ? "plate_fastag" : has("length") ? "length" : caughtBy[0] ?? null;
+    case "UNREGISTERED":
+      return has("registry") ? "registry" : has("fastag_registry") ? "fastag_registry" : caughtBy[0] ?? null;
+    case "UNIDENTIFIED":
+      return "default_deny";
+    case "NOT_AUTHORISED":
+      return "authorisation";
+    default:
+      return null;
+  }
+}

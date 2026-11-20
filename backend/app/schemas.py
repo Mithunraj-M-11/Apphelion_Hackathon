@@ -223,3 +223,79 @@ class LookupOut(BaseModel):
     by_plate: TruckListItem | None
     by_fastag: TruckListItem | None
     same_truck: bool | None  # None when only one identifier was given / matched
+
+
+# ---------- Gate events (Identify) ----------
+class GateEventIn(BaseModel):
+    """What a gate pole reports. Sensors report what is physically there; null = nothing read."""
+
+    direction: Literal["IN", "OUT"]
+    observed_at: datetime | None = None  # defaults to server time
+    plate_read: str | None = None
+    fastag_read: str | None = None
+    radar_length_m: float | None = Field(default=None, gt=0, lt=40)
+    source: str | None = Field(default=None, max_length=100)
+
+
+class CheckOut(BaseModel):
+    name: str
+    status: str
+    detail: str
+
+
+class TruckSummary(ORM):
+    id: int
+    plate: str
+    plate_type: str
+
+
+class MovementOut(ORM):
+    id: int
+    gate: str
+    direction: str
+    observed_at: datetime
+    received_at: datetime
+    plate_read: str | None
+    plate_normalised: str | None
+    fastag_read: str | None
+    radar_length_m: float | None
+    result: str
+    identify_mode: str
+    truck: TruckSummary | None = None  # the truck the readings claim to be (if any)
+    checks: list[CheckOut]
+    caught_by: list[str]
+    reasons: list[str]
+    flags: list[str]
+    source: str | None
+
+
+
+# ---------- Simulator runs ----------
+class SimRunCreate(BaseModel):
+    suite: str = Field(min_length=1, max_length=100)
+    identify_mode: str | None = None
+
+
+class SimRunFinish(BaseModel):
+    total: int
+    passed: int
+    tamper_total: int
+    tamper_caught: int
+    honest_total: int
+    false_alarms: int
+    results: list[dict]
+
+
+class SimRunOut(ORM):
+    id: int
+    suite: str
+    identify_mode: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    total: int
+    passed: int
+    tamper_total: int
+    tamper_caught: int
+    honest_total: int
+    false_alarms: int
+    results: list[dict]
