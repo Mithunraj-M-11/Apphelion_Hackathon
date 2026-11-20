@@ -175,3 +175,44 @@ def identify(db: Session, reading: Reading, mode: str = "strict") -> Decision:
         db.scalar(select(Truck).where(or_(Truck.fastag_tag_id == tag, Truck.fastag_chip_id == tag))) if tag else None
     )
     return evaluate(reading, plate_truck, tag_truck, mode=mode)
+
+
+# ---------------------------------------------------------------- human-readable log lines
+CHECK_LABEL = {
+    "plate_present": "Plate present",
+    "plate_format": "Plate format",
+    "registry": "Plate in registry",
+    "fastag_present": "FASTag present",
+    "fastag_registry": "FASTag in registry",
+    "plate_fastag": "Plate vs FASTag",
+    "length": "Radar length",
+    "authorisation": "Authorisation",
+}
+
+RESULT_LEVEL = {
+    "AUTHORISED": "INFO",
+    "NOT_AUTHORISED": "WARN",
+    "UNREGISTERED": "ALERT",
+    "UNIDENTIFIED": "ALERT",
+    "MISMATCH": "ALERT",
+}
+
+
+def describe(decision: Decision) -> list["LogLine"]:
+    """Log lines for an Identify decision: one per evaluated check, then the result. Pure (no I/O)."""
+    from app.services.logbus import LogLine  # local import keeps evaluate() free of logging concerns
+
+    lines = []
+    for c in decision.checks:
+        if c.status == NA:
+            continue
+        level = "INFO" if c.status == PASS else "WARN"
+        lines.append(LogLine("IDENTIFY", level, f"{CHECK_LABEL.get(c.name, c.name)}: {c.status}. {c.detail}",
+                             {"check": c.name, "status": c.status}))
+    who = f" (claims truck #{decision.truck.id} {decision.truck.plate})" if decision.truck else ""
+    caught = f"; caught by {', '.join(decision.caught_by)}" if decision.caught_by else ""
+    flags = f"; flags {', '.join(decision.flags)}" if decision.flags else ""
+    lines.append(LogLine("IDENTIFY", RESULT_LEVEL.get(decision.result, "INFO"),
+                         f"Result {decision.result}{who}{caught}{flags}",
+                         {"result": decision.result, "caught_by": decision.caught_by, "flags": decision.flags}))
+    return lines

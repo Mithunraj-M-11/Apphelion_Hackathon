@@ -1,4 +1,5 @@
 from app.models.gate import Movement, SimRun
+from app.models.logs import EventLog
 from app.models.registry import (
     Contract,
     Driver,
@@ -12,6 +13,7 @@ from app.models.registry import (
 __all__ = [
     "Contract",
     "Driver",
+    "EventLog",
     "Movement",
     "Officer",
     "RegistryHistory",

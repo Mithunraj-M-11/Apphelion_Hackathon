@@ -104,9 +104,9 @@ function errorMessage(body: unknown, status: number): string {
   return `Request failed (${status})`;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, asOfficer = true): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.method && init.method !== "GET") {
+  if (asOfficer && init.method && init.method !== "GET") {
     if (actingOfficerId == null) throw new ApiError(0, "Choose an officer in 'Acting as' first");
     headers.set("X-Officer-Id", String(actingOfficerId));
   }
@@ -201,4 +201,28 @@ export const gateApi = {
   },
   simRuns: () => request<SimRun[]>("/sim-runs"),
   simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
+  /** What a gate pole sends (no officer: poles are machines). */
+  postEvent: (gate: string, body: GateEventIn) =>
+    request<Movement>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+  logs: (source: string, limit = 300) =>
+    request<LogEntry[]>(`/logs?${new URLSearchParams({ source, limit: String(limit) })}`),
+};
+
+export type GateEventIn = {
+  direction: "IN" | "OUT";
+  plate_read: string | null;
+  fastag_read: string | null;
+  radar_length_m: number | null;
+  source: string;
+};
+
+export type LogEntry = {
+  id: number;
+  at: string;
+  component: string;
+  level: "INFO" | "WARN" | "ALERT";
+  message: string;
+  movement_id: number | null;
+  source: string | null;
+  context: Record<string, unknown> | null;
 };

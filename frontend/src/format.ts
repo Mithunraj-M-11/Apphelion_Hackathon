@@ -84,3 +84,5 @@ export function decisiveCheck(result: string, caughtBy: string[]): string | null
       return null;
   }
 }
+
+export const isWalkthroughSource = (source: string | null) => !!source?.startsWith("walkthrough:");

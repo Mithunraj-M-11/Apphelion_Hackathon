@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
-import { LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
+import { LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuMonitorPlay, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
+import GateConsole from "./pages/GateConsole";
 import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
 import SimRuns from "./pages/SimRuns";
@@ -17,6 +18,7 @@ const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/solution", label: "Solution flow", Icon: LuWorkflow },
   { to: "/registry", label: "Truck registry", Icon: LuTruck },
   { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
+  { to: "/gate-console", label: "Gate console", Icon: LuMonitorPlay },
   { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
   { to: "/scenario-runs", label: "Scenario runs", Icon: LuFlaskConical },
 ];
@@ -105,6 +107,7 @@ function Layout() {
           <Route path="/registry/:id/edit" element={<TruckForm />} />
           <Route path="/transporters" element={<Transporters />} />
           <Route path="/solution" element={<SolutionFlow />} />
+          <Route path="/gate-console" element={<GateConsole />} />
           <Route path="/gate-events" element={<GateEvents />} />
           <Route path="/scenario-runs" element={<SimRuns />} />
           <Route path="/scenario-runs/:id" element={<SimRuns />} />

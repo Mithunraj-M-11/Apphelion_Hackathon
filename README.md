@@ -77,6 +77,10 @@ edit them and re-run without rebuilding.
 - **Truck registry** (`/registry`): search and filter trucks, see who is authorised today, open any truck for its
   full detail (identity, FASTag, measurements, documents, ownership, enrollment, photos, change history).
 - **Transporters** (`/transporters`): companies and their drivers.
+- **Gate console** (`/gate-console`): live walkthrough for demos. Describe what physically arrives at the gate
+  (mocked sensors: registered or outside truck, plate shown, FASTag on the windscreen, or pick a preset), press
+  "Truck arrives at gate", and watch the real GB software decide check by check while the server log streams
+  live (Server-Sent Events from `/api/logs/stream`). Each browser tab sees only its own walkthrough.
 - **Gate events** (`/gate-events`): every vehicle the poles observed, the raw readings, the Identify result and
   each check (passed / failed / not applicable) with its reason.
 - **Scenario runs** (`/scenario-runs`): simulator scorecards and per-scenario expected vs actual.
