@@ -1,11 +1,12 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
-import { LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuRadar, LuScanLine, LuTruck } from "react-icons/lu";
+import { LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
 import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
 import SimRuns from "./pages/SimRuns";
+import SolutionFlow from "./pages/SolutionFlow";
 import TruckDetail from "./pages/TruckDetail";
 import TruckForm from "./pages/TruckForm";
 import Transporters from "./pages/Transporters";
@@ -13,6 +14,7 @@ import Transporters from "./pages/Transporters";
 const COLLAPSE_KEY = "sitewatch.navCollapsed";
 
 const NAV: { to: string; label: string; Icon: IconType }[] = [
+  { to: "/solution", label: "Solution flow", Icon: LuWorkflow },
   { to: "/registry", label: "Truck registry", Icon: LuTruck },
   { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
   { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
@@ -102,6 +104,7 @@ function Layout() {
           <Route path="/registry/:id" element={<TruckDetail />} />
           <Route path="/registry/:id/edit" element={<TruckForm />} />
           <Route path="/transporters" element={<Transporters />} />
+          <Route path="/solution" element={<SolutionFlow />} />
           <Route path="/gate-events" element={<GateEvents />} />
           <Route path="/scenario-runs" element={<SimRuns />} />
           <Route path="/scenario-runs/:id" element={<SimRuns />} />

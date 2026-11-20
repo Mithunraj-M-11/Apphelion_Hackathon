@@ -237,6 +237,63 @@ ul.plain li { padding: 3px 0; }
   .check { grid-template-columns: 1fr; gap: 2px; }
 }
 
+/* ---------- Solution flow ---------- */
+.sf-hero { background: linear-gradient(135deg, var(--topbar), #1f2f55); color: var(--topbar-ink); border-radius: 14px;
+  padding: 28px 28px 24px; margin-bottom: 28px; }
+.sf-hero h1 { font-size: 1.7rem; margin: 6px 0 8px; }
+.sf-hero p { margin: 0; opacity: 0.85; max-width: 760px; line-height: 1.5; }
+.sf-eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem; opacity: 0.7; }
+.sf-section { margin-bottom: 36px; }
+.sf-section h2 { font-size: 1.2rem; margin: 0 0 4px; }
+.sf-sub { margin: 0 0 14px; }
+/* One-trip flow diagram (SVG) */
+.tf-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px; overflow-x: auto; }
+.tf-svg { display: block; width: 100%; max-width: 900px; min-width: 620px; margin: 0 auto; height: auto;
+  font-family: inherit; }
+.tf-node { fill: var(--surface); stroke: var(--border); stroke-width: 1.5; }
+.tf-capsule { fill: var(--neutral-bg); stroke: var(--primary); }
+.tf-badge { fill: var(--neutral-bg); stroke: var(--border); }
+.tf-badge-icon, .tf-decision-icon { color: var(--primary); }
+.tf-decision { fill: var(--neutral-bg); stroke: var(--primary); stroke-width: 1.5; }
+.tf-title { fill: var(--text); font-size: 14px; font-weight: 600; }
+.tf-sub { fill: var(--muted); font-size: 12px; }
+.tf-edge { stroke: var(--muted); stroke-width: 1.6; }
+.tf-edge-bad { stroke: var(--bad); stroke-dasharray: 5 4; }
+.tf-edge-warn { stroke: var(--warn); stroke-dasharray: 5 4; }
+.tf-arrowhead { fill: var(--muted); }
+.tf-arrowhead-bad { fill: var(--bad); }
+.tf-arrowhead-warn { fill: var(--warn); }
+.tf-edge-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
+.tf-branch { stroke-width: 1.5; }
+.tf-branch-bad { fill: var(--bad-bg); stroke: var(--bad); }
+.tf-branch-warn { fill: var(--warn-bg); stroke: var(--warn); }
+.tf-bad-text { fill: var(--bad); color: var(--bad); }
+.tf-warn-text { fill: var(--warn); color: var(--warn); }
+.tf-lane { fill: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+
+.sf-installs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.sf-install { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.sf-install-icon { width: 26px; height: 26px; color: var(--primary); margin-bottom: 8px; }
+.sf-install-name { font-weight: 600; font-size: 0.9rem; margin-bottom: 2px; }
+.sf-indep { display: grid; gap: 8px; }
+.sf-indep-row { display: grid; grid-template-columns: 1fr 20px 1.4fr; align-items: center; gap: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 0.9rem; }
+.sf-indep-vendor { display: flex; align-items: center; gap: 8px; color: var(--bad); }
+.sf-indep-answer { display: flex; align-items: center; gap: 8px; color: var(--ok); font-weight: 500; }
+.sf-matrix-wrap { overflow-x: auto; }
+.sf-matrix th { vertical-align: bottom; }
+.sf-matrix th svg { width: 18px; height: 18px; }
+.sf-matrix td .badge { margin-left: 8px; }
+.sf-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; vertical-align: middle; }
+.sf-dot-catch { background: var(--ok); }
+.sf-dot-support { border: 2px solid var(--ok); }
+.sf-legend { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 10px; align-items: center; }
+.sf-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 800px) {
+  .sf-indep-row { grid-template-columns: 1fr; }
+  .sf-indep-row > svg { display: none; }
+}
+
 @media (max-width: 600px) {
   .field { grid-template-columns: 1fr; gap: 2px; }
   .topbar { padding: 10px 16px; }
