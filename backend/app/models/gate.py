@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,7 +40,23 @@ class Movement(Base):
 
     source: Mapped[str | None] = mapped_column(String(100), index=True)  # e.g. sim:12:S3
 
+    # Trip decision (entry: pass issued or refused; exit: pass closed or refused)
+    permit_id: Mapped[int | None] = mapped_column(ForeignKey("permits.id"), index=True)
+    weight_t: Mapped[float | None] = mapped_column(Float)  # GB weigh pad reading
+    pass_id: Mapped[int | None] = mapped_column(ForeignKey("passes.id", use_alter=True, name="fk_movements_pass_id"))
+    decision: Mapped[str | None] = mapped_column(String(10))  # ALLOWED | REFUSED
+    barrier: Mapped[str | None] = mapped_column(String(5))  # up | down
+    barrier_forced: Mapped[bool] = mapped_column(Boolean, default=False)
+    counted_trip: Mapped[bool] = mapped_column(Boolean, default=False)  # heavy vehicle crossed the exit
+    trip: Mapped[str | None] = mapped_column(String(10))  # LEGAL | ILLEGAL (exits only)
+    steps: Mapped[list | None] = mapped_column(JSONB)  # [{name, status, items: [{label, status, detail}]}]
+
     truck: Mapped[Truck | None] = relationship()
+    pass_: Mapped["Pass | None"] = relationship(foreign_keys=[pass_id])  # noqa: F821
+    alerts: Mapped[list["Alert"]] = relationship(  # noqa: F821
+        primaryjoin="Movement.id == Alert.movement_id", foreign_keys="Alert.movement_id", order_by="Alert.id",
+        viewonly=True,
+    )
 
 
 class SimRun(Base):

@@ -11,12 +11,12 @@ Run manually:  docker compose exec backend python -m app.seed
 """
 
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import func, select
 
 from app.db import SessionLocal
-from app.models import Contract, Driver, Officer, Transporter, Truck
+from app.models import Contract, Driver, Officer, Permit, Transporter, Truck
 from app.services.plates import validate_indian_plate
 from app.services.registry import record_history, snapshot
 
@@ -101,6 +101,20 @@ TRUCKS = [
 ]
 
 TODAY = date(2026, 11, 20)
+
+# The real permit for the test contract (what the GB enters once per contract). Test data.
+PERMIT = {
+    "label": "IOM-KJR-2026-01 extraction permit, Nov 2026 to Mar 2027 (test data)",
+    "valid_from": date(2026, 11, 1),
+    "valid_to": date(2027, 3, 31),
+    "trip_limit": 6000,
+    "tonne_limit": 150000.0,
+    "vehicle_limit": 20,
+    "hours_start": time(6, 0),
+    "hours_end": time(18, 0),
+    "exit_grace_min": 30,
+    "pass_expiry_min": 120,
+}
 
 
 def _hex(n: int) -> str:
@@ -198,5 +212,24 @@ def seed() -> None:
         db.close()
 
 
+def seed_permit() -> None:
+    """Separate and idempotent, so databases seeded before permits existed get one too."""
+    db = SessionLocal()
+    try:
+        if db.scalar(select(func.count()).select_from(Permit).where(Permit.source.is_(None))):
+            print("seed: permit already present, skipping")
+            return
+        contract = db.scalar(select(Contract).where(Contract.code == CONTRACT["code"]))
+        if contract is None:
+            print("seed: no contract, skipping permit")
+            return
+        db.add(Permit(contract_id=contract.id, **PERMIT))
+        db.commit()
+        print("seed: loaded the contract permit")
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     seed()
+    seed_permit()

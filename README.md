@@ -61,12 +61,14 @@ Data persists across restarts in Docker volumes (`pgdata` for Postgres, `uploads
 
 ### Tampering scenarios (simulator)
 
-The simulator plays a gate pole. Each scenario in `simulator/scenarios/<suite>.yaml` describes what **physically**
-happens (fake plate, stolen FASTag, removed identifiers…); the simulator reports faithful sensor readings to the
-backend like a real pole, and checks whether the system caught the tampering.
+The simulator plays the gate poles. Each scenario in `simulator/scenarios/<suite>.yaml` describes what **physically**
+happens (fake plate, stolen FASTag, removed identifiers, an old QR shown again, an overloaded body…); the simulator
+reports faithful sensor readings to the backend like a real pole, and checks whether the system caught the trick.
+Each scenario runs under its own small permit, so scenarios never affect each other or the real permit.
 
 ```bash
-docker compose run --rm simulator identify_basic
+docker compose run --rm simulator trip_basic       # 22 full-trip stories: entry, pass, exit, weight, quota, hours
+docker compose run --rm simulator identify_basic   # 5 Identify-only cases
 ```
 Prints a scorecard (scenarios passed, tampering caught, false alarms on honest trips) and saves the run, which the
 dashboard shows under **Scenario runs**. Every reading appears under **Gate events**. Scenario files are mounted, so
@@ -81,9 +83,10 @@ edit them and re-run without rebuilding.
   (mocked sensors: registered or outside truck, plate shown, FASTag on the windscreen, or pick a preset), press
   "Truck arrives at gate", and watch the real GB software decide check by check while the server log streams
   live (Server-Sent Events from `/api/logs/stream`). Each browser tab sees only its own walkthrough.
-- **Gate events** (`/gate-events`): every vehicle the poles observed, the raw readings, the Identify result and
-  each check (passed / failed / not applicable) with its reason.
-- **Scenario runs** (`/scenario-runs`): simulator scorecards and per-scenario expected vs actual.
+- **Gate events** (`/gate-events`): every vehicle the poles observed: raw readings, Identify result, barrier,
+  pass, alerts, and every step with its reason.
+- **Alerts** (`/alerts`): every alert raised, by severity and source.
+- **Scenario runs** (`/scenario-runs`): simulator scorecards; trip stories show each event expected vs actual.
 - **Acting as** (top right): the GB officer making changes. There's no login in the PoC; every change is recorded
   against the selected officer.
 

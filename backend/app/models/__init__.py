@@ -9,8 +9,14 @@ from app.models.registry import (
     Truck,
     TruckPhoto,
 )
+from app.models.trip import Alert, Pass, Permit, ServerKey, TruckHold
 
 __all__ = [
+    "Alert",
+    "Pass",
+    "Permit",
+    "ServerKey",
+    "TruckHold",
     "Contract",
     "Driver",
     "EventLog",

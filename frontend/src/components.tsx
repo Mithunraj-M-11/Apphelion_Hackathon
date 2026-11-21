@@ -73,3 +73,62 @@ export function CheckList({ checks }: { checks: Check[] }) {
     </ul>
   );
 }
+
+const SEVERITY_CLASS: Record<string, string> = { INFO: "neutral", MEDIUM: "warn", HIGH: "bad", CRITICAL: "crit" };
+
+export function SeverityBadge({ severity }: { severity: string }) {
+  return <span className={`badge ${SEVERITY_CLASS[severity] ?? "neutral"}`}>{severity.toLowerCase()}</span>;
+}
+
+export function BarrierBadge({ barrier, forced }: { barrier: string | null; forced?: boolean }) {
+  if (!barrier) return <span className="muted">—</span>;
+  return (
+    <span className={`badge ${barrier === "up" ? "ok" : "bad"}`}>
+      Barrier {barrier}{forced ? ", forced" : ""}
+    </span>
+  );
+}
+
+export function TripBadge({ trip }: { trip: string | null }) {
+  if (!trip) return null;
+  return <span className={`badge ${trip === "LEGAL" ? "ok" : "crit"}`}>{trip === "LEGAL" ? "Legal trip" : "Illegal trip"}</span>;
+}
+
+/** Alerts raised by a gate event, most severe first. */
+export function AlertList({ alerts }: { alerts: { code: string; severity: string; message: string }[] }) {
+  if (alerts.length === 0) return <span className="muted small">No alerts</span>;
+  const order = ["CRITICAL", "HIGH", "MEDIUM", "INFO"];
+  const sorted = [...alerts].sort((a, b) => order.indexOf(a.severity) - order.indexOf(b.severity));
+  return (
+    <ul className="alert-list">
+      {sorted.map((a, i) => (
+        <li key={`${a.code}-${i}`}>
+          <SeverityBadge severity={a.severity} /> <strong className="mono small">{a.code}</strong>
+          <span className="small muted"> {a.message}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Steps of the trip pipeline (Identify, Eligibility / Pass check, Measure, Pass / Compare, Barrier). */
+export function StepList({ steps }: { steps: { name: string; status: string; items: { label: string; status: string; detail: string }[] }[] }) {
+  return (
+    <div className="step-list">
+      {steps.map((s) => (
+        <div key={s.name} className="step-block">
+          <div className={`step-name step-${s.status}`}>{s.name}</div>
+          <ul className="checks">
+            {s.items.map((c, i) => (
+              <li key={`${c.label}-${i}`} className={`check check-${c.status}`}>
+                <span className="check-name">{c.label}</span>
+                <span className="check-status">{c.status}</span>
+                <span className="check-detail">{c.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}

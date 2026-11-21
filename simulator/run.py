@@ -1,14 +1,22 @@
-"""SiteWatch scenario simulator: plays the role of a gate pole.
+"""SiteWatch scenario simulator: plays the role of the gate poles.
 
-Usage:  python run.py <suite>          (e.g. identify_basic -> scenarios/identify_basic.yaml)
+Usage:  python run.py <suite>        e.g. identify_basic -> scenarios/identify_basic.yaml
+                                          trip_basic     -> scenarios/trip_basic.yaml
 
-For each scenario it builds the sensor readings that a faithful pole would report for the physical situation,
-posts them to the GB backend exactly like a real pole, and compares the decision with the expected one.
-It never writes to the registry: the registry is ground truth.
+Two scenario formats:
+- single (identify_basic): one gate reading per scenario, judged on the Identify result.
+- trip   (trip_basic):     a short story of timed gate events (entry, exit, ...) under a small permit, judged on
+                           every event (barrier, pass, trip, alerts).
+
+Each scenario gets its OWN permit (source-tagged), so passes, quotas and holds never leak between scenarios.
+For each event the simulator builds what a faithful pole would report for the physical situation (plate on the
+truck, tag on the windscreen, real length, real weight, what the driver shows at exit, barrier impact) and posts
+it to the GB backend exactly like a real pole. It never writes to the registry: the registry is ground truth.
 """
 
 import os
 import sys
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -16,6 +24,11 @@ import yaml
 
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
+IST = timezone(timedelta(hours=5, minutes=30))
+SERIOUS = ("HIGH", "CRITICAL")
+
+DEFAULT_PERMIT = {"trip_limit": 50, "tonne_limit": 1500, "vehicle_limit": 20, "hours_start": "06:00",
+                  "hours_end": "18:00", "exit_grace_min": 30, "pass_expiry_min": 120}
 
 
 class ScenarioError(Exception):
@@ -28,39 +41,48 @@ def load_registry(client: httpx.Client) -> dict[str, dict]:
     return {t["plate"]: client.get(f"/api/trucks/{t['id']}").raise_for_status().json() for t in trucks}
 
 
-def sensor_readings(scn: dict, registry: dict[str, dict], rogues: dict[str, dict]) -> dict:
-    """What a faithful pole reports for the physical situation in the scenario."""
-    phys = scn["physical"]
-    vehicle = phys["vehicle"]
-    if "registered" in vehicle:
-        truck = registry.get(vehicle["registered"])
-        if truck is None:
-            raise ScenarioError(f"{scn['id']}: registered truck {vehicle['registered']} not found in the registry")
-        own_plate, own_tag, length = truck["plate"], truck["fastag_tag_id"], truck["length_m"]
-    else:
-        rogue = rogues.get(vehicle["rogue"])
-        if rogue is None:
-            raise ScenarioError(f"{scn['id']}: unknown rogue vehicle {vehicle['rogue']}")
-        own_plate, own_tag, length = rogue.get("own_plate"), rogue.get("fastag"), rogue["length_m"]
+def create_permit(client: httpx.Client, label: str, source: str, overrides: dict | None) -> dict:
+    today = datetime.now(IST).date()
+    body = {**DEFAULT_PERMIT, **(overrides or {}), "label": label, "source": source,
+            "valid_from": (today - timedelta(days=30)).isoformat(), "valid_to": (today + timedelta(days=30)).isoformat()}
+    return client.post("/api/permits", json=body).raise_for_status().json()
 
+
+def vehicle_of(spec, sid: str, registry: dict[str, dict], rogues: dict[str, dict]) -> dict:
+    """The physical vehicle: own plate, own tag, real length, empty weight, rated capacity."""
+    if isinstance(spec, str):
+        spec = {"registered": spec}
+    if "registered" in spec:
+        t = registry.get(spec["registered"])
+        if t is None:
+            raise ScenarioError(f"{sid}: registered truck {spec['registered']} not found in the registry")
+        return {"label": t["plate"], "plate": t["plate"], "tag": t["fastag_tag_id"], "length": t["length_m"],
+                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"]}
+    r = rogues.get(spec["rogue"])
+    if r is None:
+        raise ScenarioError(f"{sid}: unknown rogue vehicle {spec['rogue']}")
+    return {"label": spec["rogue"], "plate": r.get("own_plate"), "tag": r.get("fastag"), "length": r["length_m"],
+            "empty": r.get("empty_weight_t", 12.0), "rated": r.get("rated_capacity_t", 25.0)}
+
+
+def identity_readings(phys: dict, sid: str, vehicle: dict, registry: dict[str, dict]) -> dict:
     plate = phys.get("plate_shown", "own")
-    plate_read = own_plate if plate == "own" else None if plate == "none" else plate
-
+    plate_read = vehicle["plate"] if plate == "own" else None if plate == "none" else plate
     tag = phys.get("fastag", "own")
     if tag == "own":
-        fastag_read = own_tag
+        fastag_read = vehicle["tag"]
     elif tag == "none":
         fastag_read = None
-    else:  # {from: <registered plate>} -> tag physically taken from another registered truck
+    else:  # {from: <registered plate>}: tag physically taken from (or cloned from) another registered truck
         donor = registry.get(tag["from"])
         if donor is None:
-            raise ScenarioError(f"{scn['id']}: tag donor {tag['from']} not found in the registry")
+            raise ScenarioError(f"{sid}: tag donor {tag['from']} not found in the registry")
         fastag_read = donor["fastag_tag_id"]
+    return {"plate_read": plate_read, "fastag_read": fastag_read, "radar_length_m": vehicle["length"]}
 
-    return {"plate_read": plate_read, "fastag_read": fastag_read, "radar_length_m": length}
 
-
-def judge(scn: dict, movement: dict) -> tuple[bool, list[str]]:
+# ================================================================ single-event format (identify_basic)
+def judge_single(scn: dict, movement: dict) -> tuple[bool, list[str]]:
     exp = scn["expected"]
     problems = []
     if movement["result"] != exp["result"]:
@@ -77,61 +99,205 @@ def judge(scn: dict, movement: dict) -> tuple[bool, list[str]]:
     return not problems, problems
 
 
+def run_single(client, spec, run, registry) -> tuple[list[dict], dict]:
+    gate, direction = spec.get("gate", "G1"), spec.get("direction", "IN")
+    rogues = spec.get("rogue_vehicles", {})
+    results = []
+    for scn in spec["scenarios"]:
+        source = f"sim:{run['id']}:{scn['id']}"
+        permit = create_permit(client, f"Sim run {run['id']} {scn['id']}", source, spec.get("permit"))
+        vehicle = vehicle_of(scn["physical"]["vehicle"], scn["id"], registry, rogues)
+        reading = identity_readings(scn["physical"], scn["id"], vehicle, registry)
+        movement = client.post(f"/api/gates/{gate}/events", json={
+            "direction": direction, **reading, "source": source, "permit_id": permit["id"],
+            "weight_t": round(vehicle["empty"], 2),
+        }).raise_for_status().json()
+        ok, problems = judge_single(scn, movement)
+        results.append({
+            "id": scn["id"], "name": scn["name"], "kind": scn["kind"], "why": scn.get("why"),
+            "real_case": scn.get("real_case"), "readings": reading, "expected": scn["expected"],
+            "actual": {"result": movement["result"], "caught_by": movement["caught_by"],
+                       "flags": movement["flags"], "reasons": movement["reasons"]},
+            "movement_id": movement["id"], "permit_id": permit["id"], "pass": ok, "problems": problems,
+        })
+    honest = [r for r in results if r["kind"] == "honest"]
+    tamper = [r for r in results if r["kind"] == "tamper"]
+    summary = {
+        "total": len(results),
+        "passed": sum(r["pass"] for r in results),
+        "tamper_total": len(tamper),
+        "tamper_caught": sum(r["actual"]["result"] != "AUTHORISED" for r in tamper),
+        "honest_total": len(honest),
+        "false_alarms": sum(r["actual"]["result"] != "AUTHORISED" or bool(r["actual"]["flags"]) for r in honest),
+    }
+    return results, summary
+
+
+# ================================================================ trip format (trip_basic)
+def weight_of(load, vehicle: dict) -> float | None:
+    """`load` = what is physically in the body: tonnes, 'NN%' of rated capacity, or 'none' (no pad reading)."""
+    if load == "none":
+        return None
+    if isinstance(load, str) and load.endswith("%"):
+        load_t = vehicle["rated"] * float(load[:-1]) / 100
+    else:
+        load_t = float(load)
+    return round(vehicle["empty"] + load_t, 2)
+
+
+def shown_at_exit(ev: dict, sid: str, vkey: str, own_pass: dict, issued: dict) -> tuple[dict, str]:
+    """What the driver presents at the exit barrier: own QR / SMS code, nothing, or another pass."""
+    shown = ev.get("pass", "qr")
+
+    def from_event(n: int) -> dict:
+        p = issued.get(n)
+        if p is None:
+            raise ScenarioError(f"{sid}: event {n} did not issue a pass")
+        return p
+
+    if shown == "none":
+        return {}, "nothing"
+    if shown in ("qr", "sms"):
+        p = own_pass.get(vkey)
+        if p is None:
+            return {}, "nothing (no pass)"
+        return ({"pass_token": p["token"]}, f"own QR {p['code']}") if shown == "qr" else \
+            ({"pass_code": p["sms_code"]}, f"own SMS code {p['sms_code']}")
+    if "qr_from" in shown:
+        p = from_event(shown["qr_from"])
+        return {"pass_token": p["token"]}, f"QR of {p['code']} (event {shown['qr_from']})"
+    if "sms_from" in shown:
+        p = from_event(shown["sms_from"])
+        return {"pass_code": p["sms_code"]}, f"SMS code of {p['code']} (event {shown['sms_from']})"
+    if "tampered_qr_from" in shown:
+        p = from_event(shown["tampered_qr_from"])
+        body, sig = p["token"].split(".")
+        i = len(body) // 2  # flip one character in the signed payload (e.g. an edited plate or expiry)
+        body = body[:i] + ("A" if body[i] != "A" else "B") + body[i + 1:]
+        return {"pass_token": f"{body}.{sig}"}, f"edited copy of the QR of {p['code']}"
+    raise ScenarioError(f"{sid}: unknown pass option {shown}")
+
+
+def judge_event(exp: dict, mv: dict) -> list[str]:
+    problems = []
+    codes = [a["code"] for a in mv["alerts"]]
+    if "barrier" in exp and mv["barrier"] != exp["barrier"]:
+        problems.append(f"barrier {mv['barrier']} != expected {exp['barrier']}")
+    if "pass_issued" in exp and bool(mv.get("issued_pass")) != exp["pass_issued"]:
+        problems.append(f"pass issued {bool(mv.get('issued_pass'))} != expected {exp['pass_issued']}")
+    if "trip" in exp and mv["trip"] != exp["trip"]:
+        problems.append(f"trip {mv['trip']} != expected {exp['trip']}")
+    if "result" in exp and mv["result"] != exp["result"]:
+        problems.append(f"identify {mv['result']} != expected {exp['result']}")
+    missing = [c for c in exp.get("alerts", []) if c not in codes]
+    if missing:
+        problems.append(f"expected alerts {missing} not raised")
+    extra = [c for c in exp.get("not_alerts", []) if c in codes]
+    if extra:
+        problems.append(f"should NOT raise {extra}")
+    return problems
+
+
+def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
+    gate = spec.get("gate", "G1")
+    rogues = spec.get("rogue_vehicles", {})
+    today = datetime.now(IST).date()
+    results = []
+    for scn in spec["scenarios"]:
+        sid = scn["id"]
+        source = f"sim:{run['id']}:{sid}"
+        permit = create_permit(client, f"Sim run {run['id']} {sid}", source,
+                               {**spec.get("permit", {}), **scn.get("permit", {})})
+        own_pass: dict[str, dict] = {}  # vehicle label -> its latest pass (what is on the driver's phone)
+        issued: dict[int, dict] = {}  # event number -> pass issued at that event
+        events, all_alerts, problems = [], [], []
+        for n, ev in enumerate(scn["events"], start=1):
+            vehicle = vehicle_of(ev["vehicle"], sid, registry, rogues)
+            vkey = vehicle["label"]
+            reading = identity_readings(ev, sid, vehicle, registry)
+            hh, mm = map(int, ev["at"].split(":"))
+            observed = datetime.combine(today, time(hh, mm), tzinfo=IST)
+            load = ev.get("load", 0 if ev["dir"] == "IN" else "90%")
+            body = {"direction": ev["dir"], **reading, "weight_t": weight_of(load, vehicle),
+                    "observed_at": observed.isoformat(), "barrier_forced": bool(ev.get("forces")),
+                    "permit_id": permit["id"], "source": source}
+            shown = None
+            if ev["dir"] == "OUT":
+                extra, shown = shown_at_exit(ev, sid, vkey, own_pass, issued)
+                body.update(extra)
+            mv = client.post(f"/api/gates/{gate}/events", json=body).raise_for_status().json()
+            if mv.get("issued_pass"):
+                own_pass[vkey] = issued[n] = mv["issued_pass"]
+            exp = ev.get("expect", {})
+            ev_problems = judge_event(exp, mv)
+            problems += [f"event {n}: {p}" for p in ev_problems]
+            alerts = [{"code": a["code"], "severity": a["severity"], "message": a["message"]} for a in mv["alerts"]]
+            all_alerts += alerts
+            events.append({
+                "n": n, "at": ev["at"], "dir": ev["dir"], "vehicle": vkey, "note": ev.get("note"),
+                "readings": {**reading, "weight_t": body["weight_t"], "shown": shown,
+                             "forced": bool(ev.get("forces"))},
+                "expected": exp,
+                "actual": {"result": mv["result"], "decision": mv["decision"], "barrier": mv["barrier"],
+                           "trip": mv["trip"], "pass_issued": (mv.get("issued_pass") or {}).get("code"),
+                           "pass": (mv.get("pass") or {}).get("code"), "alerts": alerts},
+                "movement_id": mv["id"], "pass": not ev_problems, "problems": ev_problems,
+            })
+        serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS]
+        if scn["kind"] == "honest" and serious:
+            problems.append(f"false alarm: {serious}")
+        expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])]
+        raised = {a["code"] for a in all_alerts}
+        ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
+        results.append({
+            "id": sid, "name": scn["name"], "kind": scn["kind"], "why": scn.get("why"),
+            "real_case": scn.get("real_case"), "rules": scn.get("rules"), "format": "trip", "permit_id": permit["id"],
+            "events": events,
+            "expected": {"alerts": expected_codes},
+            "actual": {"caught_by": sorted(raised), "serious": sorted(set(serious))},
+            "caught": bool(expected_codes) and all(c in raised for c in expected_codes),
+            "ledger": ledger, "pass": not problems, "problems": problems,
+        })
+    honest = [r for r in results if r["kind"] == "honest"]
+    tamper = [r for r in results if r["kind"] == "tamper"]
+    summary = {
+        "total": len(results),
+        "passed": sum(r["pass"] for r in results),
+        "tamper_total": len(tamper),
+        "tamper_caught": sum(r["caught"] for r in tamper),
+        "honest_total": len(honest),
+        "false_alarms": sum(bool(r["actual"]["serious"]) for r in honest),
+    }
+    return results, summary
+
+
+# ================================================================ main
 def main(suite: str) -> int:
     path = SCENARIO_DIR / f"{suite}.yaml"
     if not path.exists():
         print(f"No scenario file {path}")
         return 2
     spec = yaml.safe_load(path.read_text(encoding="utf-8"))
-    gate, direction = spec.get("gate", "G1"), spec.get("direction", "IN")
-    rogues = spec.get("rogue_vehicles", {})
+    fmt = spec.get("format", "single")
 
     with httpx.Client(base_url=BACKEND, timeout=30) as client:
         registry = load_registry(client)
         run = client.post("/api/sim-runs", json={"suite": suite}).raise_for_status().json()
-        print(f"\nSiteWatch simulator | suite: {suite} | run #{run['id']} | identify mode: {run['identify_mode']}")
+        print(f"\nSiteWatch simulator | suite: {suite} ({fmt}) | run #{run['id']} | "
+              f"identify mode: {run['identify_mode']}")
         print(f"{spec.get('description', '')}\n")
-
-        results = []
-        for scn in spec["scenarios"]:
-            reading = sensor_readings(scn, registry, rogues)
-            movement = client.post(
-                f"/api/gates/{gate}/events",
-                json={"direction": direction, **reading, "source": f"sim:{run['id']}:{scn['id']}"},
-            ).raise_for_status().json()
-            ok, problems = judge(scn, movement)
-            results.append({
-                "id": scn["id"],
-                "name": scn["name"],
-                "kind": scn["kind"],
-                "why": scn.get("why"),
-                "real_case": scn.get("real_case"),
-                "readings": reading,
-                "expected": scn["expected"],
-                "actual": {"result": movement["result"], "caught_by": movement["caught_by"],
-                           "flags": movement["flags"], "reasons": movement["reasons"]},
-                "movement_id": movement["id"],
-                "pass": ok,
-                "problems": problems,
-            })
-
-        honest = [r for r in results if r["kind"] == "honest"]
-        tamper = [r for r in results if r["kind"] == "tamper"]
-        summary = {
-            "total": len(results),
-            "passed": sum(r["pass"] for r in results),
-            "tamper_total": len(tamper),
-            "tamper_caught": sum(r["actual"]["result"] != "AUTHORISED" for r in tamper),
-            "honest_total": len(honest),
-            "false_alarms": sum(r["actual"]["result"] != "AUTHORISED" or bool(r["actual"]["flags"]) for r in honest),
-        }
+        results, summary = (run_trip if fmt == "trip" else run_single)(client, spec, run, registry)
         client.put(f"/api/sim-runs/{run['id']}", json={**summary, "results": results}).raise_for_status()
 
     width = max(len(r["name"]) for r in results)
     for r in results:
         verdict = "PASS" if r["pass"] else "FAIL"
-        caught = ", ".join(r["actual"]["caught_by"]) or "-"
-        print(f" {r['id']}  {r['name']:<{width}}  {r['actual']['result']:<15} {verdict}   caught by: {caught}")
+        if fmt == "trip":
+            caught = ", ".join(r["actual"]["caught_by"]) or "-"
+            print(f" {r['id']:<4} {r['name']:<{width}}  {verdict}   alerts: {caught}")
+        else:
+            caught = ", ".join(r["actual"]["caught_by"]) or "-"
+            print(f" {r['id']:<4} {r['name']:<{width}}  {r['actual']['result']:<15} {verdict}   caught by: {caught}")
         for p in r["problems"]:
             print(f"       ! {p}")
     print("-" * (width + 60))

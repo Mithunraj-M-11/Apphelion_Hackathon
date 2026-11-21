@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
-import { LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuMonitorPlay, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
+import { LuBellRing, LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuMonitorPlay, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
+import Alerts from "./pages/Alerts";
 import GateConsole from "./pages/GateConsole";
 import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
@@ -20,6 +21,7 @@ const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
   { to: "/gate-console", label: "Gate console", Icon: LuMonitorPlay },
   { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
+  { to: "/alerts", label: "Alerts", Icon: LuBellRing },
   { to: "/scenario-runs", label: "Scenario runs", Icon: LuFlaskConical },
 ];
 
@@ -109,6 +111,7 @@ function Layout() {
           <Route path="/solution" element={<SolutionFlow />} />
           <Route path="/gate-console" element={<GateConsole />} />
           <Route path="/gate-events" element={<GateEvents />} />
+          <Route path="/alerts" element={<Alerts />} />
           <Route path="/scenario-runs" element={<SimRuns />} />
           <Route path="/scenario-runs/:id" element={<SimRuns />} />
           <Route path="*" element={<p>Page not found.</p>} />

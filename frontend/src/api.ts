@@ -165,8 +165,94 @@ export type Movement = {
   reasons: string[];
   flags: string[];
   source: string | null;
+  permit_id: number | null;
+  weight_t: number | null;
+  decision: "ALLOWED" | "REFUSED" | null;
+  barrier: "up" | "down" | null;
+  barrier_forced: boolean;
+  counted_trip: boolean;
+  trip: "LEGAL" | "ILLEGAL" | null;
+  steps: Step[] | null;
+  pass: PassSummary | null;
+  alerts: Alert[];
 };
-export type ScenarioResult = {
+export type GateDecision = Movement & { issued_pass: PassFull | null };
+
+export type StepItem = { label: string; status: "passed" | "failed" | "warning" | "info"; detail: string };
+export type Step = { name: string; status: "passed" | "failed" | "warning"; items: StepItem[] };
+export type Severity = "INFO" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type Alert = {
+  id: number;
+  permit_id: number;
+  movement_id: number | null;
+  pass_id: number | null;
+  truck_id: number | null;
+  code: string;
+  severity: Severity;
+  message: string;
+  status: string;
+  source: string | null;
+  created_at: string;
+};
+export type PassSummary = {
+  id: number;
+  code: string;
+  truck_id: number;
+  status: "open" | "closed";
+  issued_at: string;
+  expires_at: string;
+  closed_at: string | null;
+  entry_weight_t: number;
+  exit_weight_t: number | null;
+  net_t: number | null;
+  close_mode: string | null;
+};
+export type PassFull = PassSummary & { token: string; sms_code: string; plate: string };
+export type Permit = {
+  id: number;
+  label: string;
+  valid_from: string;
+  valid_to: string;
+  trip_limit: number;
+  tonne_limit: number;
+  vehicle_limit: number;
+  hours_start: string;
+  hours_end: string;
+  exit_grace_min: number;
+  pass_expiry_min: number;
+  source: string | null;
+};
+export type PermitIn = Omit<Permit, "id">;
+export type Ledger = {
+  permit_id: number;
+  trip_limit: number;
+  tonne_limit: number;
+  vehicle_limit: number;
+  trips_reserved: number;
+  legal_trips: number;
+  open_passes: number;
+  actual_trips: number;
+  illegal_trips: number;
+  tonnes: number;
+  vehicles: number;
+  active_holds: number;
+  alerts: Record<Severity, number>;
+};
+export type Hold = {
+  id: number;
+  permit_id: number;
+  truck_id: number;
+  truck: { id: number; plate: string; plate_type: string };
+  reason_code: string;
+  movement_id: number | null;
+  created_at: string;
+  released_at: string | null;
+  released_by: number | null;
+  release_reason: string | null;
+};
+
+/** Identify-only scenario (identify_basic). */
+export type SingleScenarioResult = {
   id: string;
   name: string;
   kind: "honest" | "tamper";
@@ -176,9 +262,68 @@ export type ScenarioResult = {
   expected: { result: string; caught_by?: string[]; not_caught_by?: string[] };
   actual: { result: string; caught_by: string[]; flags: string[]; reasons: string[] };
   movement_id: number;
+  permit_id?: number;
+  pass: boolean;
+  problems: string[];
+  format?: undefined;
+};
+export type TripEventExpect = {
+  barrier?: "up" | "down";
+  pass_issued?: boolean;
+  trip?: string;
+  result?: string;
+  alerts?: string[];
+  not_alerts?: string[];
+};
+export type TripEventResult = {
+  n: number;
+  at: string;
+  dir: "IN" | "OUT";
+  vehicle: string;
+  note: string | null;
+  readings: {
+    plate_read: string | null;
+    fastag_read: string | null;
+    radar_length_m: number | null;
+    weight_t: number | null;
+    shown: string | null;
+    forced: boolean;
+  };
+  expected: TripEventExpect;
+  actual: {
+    result: string;
+    decision: string | null;
+    barrier: string | null;
+    trip: string | null;
+    pass_issued: string | null;
+    pass: string | null;
+    alerts: { code: string; severity: Severity; message: string }[];
+  };
+  movement_id: number;
   pass: boolean;
   problems: string[];
 };
+/** Full-trip story (trip_basic). */
+export type TripScenarioResult = {
+  id: string;
+  name: string;
+  kind: "honest" | "tamper";
+  why: string | null;
+  real_case: string | null;
+  format: "trip";
+  rules: string | null;
+  permit_id: number;
+  events: TripEventResult[];
+  expected: { alerts: string[] };
+  actual: { caught_by: string[]; serious: string[] };
+  caught: boolean;
+  ledger: Ledger;
+  pass: boolean;
+  problems: string[];
+};
+export type ScenarioResult = SingleScenarioResult | TripScenarioResult;
+export const isTripResult = (r: ScenarioResult): r is TripScenarioResult => r.format === "trip";
+
 export type SimRun = {
   id: number;
   suite: string;
@@ -195,7 +340,7 @@ export type SimRun = {
 };
 
 export const gateApi = {
-  movements: (params: { result?: string; source_prefix?: string; origin?: string } = {}) => {
+  movements: (params: { result?: string; source_prefix?: string; origin?: string; permit_id?: string } = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
     return request<Movement[]>(`/movements${qs.toString() ? `?${qs}` : ""}`);
   },
@@ -203,7 +348,19 @@ export const gateApi = {
   simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
   /** What a gate pole sends (no officer: poles are machines). */
   postEvent: (gate: string, body: GateEventIn) =>
-    request<Movement>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** Source-tagged permits (simulator / Gate console) need no officer; real permits do. */
+  createPermit: (body: PermitIn) =>
+    request<Permit>("/permits", { method: "POST", body: JSON.stringify(body) }, body.source == null),
+  permit: (id: number) => request<Permit>(`/permits/${id}`),
+  ledger: (id: number) => request<Ledger>(`/permits/${id}/ledger`),
+  alerts: (params: { permit_id?: string; severity?: string; origin?: string } = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<Alert[]>(`/alerts${qs.toString() ? `?${qs}` : ""}`);
+  },
+  holds: (permitId?: number) => request<Hold[]>(`/holds${permitId != null ? `?permit_id=${permitId}` : ""}`),
+  releaseHold: (id: number, reason: string) =>
+    request<Hold>(`/holds/${id}/release`, { method: "POST", body: JSON.stringify({ reason }) }),
   logs: (source: string, limit = 300) =>
     request<LogEntry[]>(`/logs?${new URLSearchParams({ source, limit: String(limit) })}`),
 };
@@ -213,6 +370,12 @@ export type GateEventIn = {
   plate_read: string | null;
   fastag_read: string | null;
   radar_length_m: number | null;
+  weight_t?: number | null;
+  pass_token?: string | null;
+  pass_code?: string | null;
+  barrier_forced?: boolean;
+  permit_id?: number;
+  observed_at?: string;
   source: string;
 };
 
@@ -220,7 +383,7 @@ export type LogEntry = {
   id: number;
   at: string;
   component: string;
-  level: "INFO" | "WARN" | "ALERT";
+  level: "INFO" | "WARN" | "ALERT" | "CRITICAL";
   message: string;
   movement_id: number | null;
   source: string | null;

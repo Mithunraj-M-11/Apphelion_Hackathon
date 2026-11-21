@@ -1,6 +1,6 @@
 """API request / response models for the registry."""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -234,6 +234,11 @@ class GateEventIn(BaseModel):
     plate_read: str | None = None
     fastag_read: str | None = None
     radar_length_m: float | None = Field(default=None, gt=0, lt=40)
+    weight_t: float | None = Field(default=None, gt=0, lt=200)  # GB weigh pad
+    pass_token: str | None = Field(default=None, max_length=2000)  # QR content shown at exit
+    pass_code: str | None = Field(default=None, max_length=20)  # SMS code given at exit
+    barrier_forced: bool = False  # barrier impact sensor: vehicle broke through
+    permit_id: int | None = None  # PoC: real poles resolve the permit from gate config
     source: str | None = Field(default=None, max_length=100)
 
 
@@ -247,6 +252,54 @@ class TruckSummary(ORM):
     id: int
     plate: str
     plate_type: str
+
+
+class StepItemOut(BaseModel):
+    label: str
+    status: str
+    detail: str
+
+
+class StepOut(BaseModel):
+    name: str
+    status: str
+    items: list[StepItemOut]
+
+
+class AlertOut(ORM):
+    id: int
+    permit_id: int
+    movement_id: int | None
+    pass_id: int | None
+    truck_id: int | None
+    code: str
+    severity: str
+    message: str
+    status: str
+    source: str | None
+    created_at: datetime
+
+
+class PassSummary(ORM):
+    id: int
+    code: str
+    truck_id: int
+    status: str
+    issued_at: datetime
+    expires_at: datetime
+    closed_at: datetime | None
+    entry_weight_t: float
+    exit_weight_t: float | None
+    net_t: float | None
+    close_mode: str | None
+
+
+class PassFull(PassSummary):
+    """What the driver receives: QR content + SMS code (only returned when the pass is issued)."""
+
+    token: str
+    sms_code: str
+    plate: str
 
 
 class MovementOut(ORM):
@@ -267,6 +320,69 @@ class MovementOut(ORM):
     reasons: list[str]
     flags: list[str]
     source: str | None
+    permit_id: int | None = None
+    weight_t: float | None = None
+    decision: str | None = None
+    barrier: str | None = None
+    barrier_forced: bool = False
+    counted_trip: bool = False
+    trip: str | None = None
+    steps: list[StepOut] | None = None
+    pass_: PassSummary | None = Field(default=None, serialization_alias="pass")
+    alerts: list[AlertOut] = []
+
+
+class GateDecisionOut(MovementOut):
+    issued_pass: PassFull | None = None
+
+
+# ---------- Permits / holds ----------
+class PermitIn(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    valid_from: date
+    valid_to: date
+    trip_limit: int = Field(ge=1)
+    tonne_limit: float = Field(gt=0)
+    vehicle_limit: int = Field(ge=1)
+    hours_start: time
+    hours_end: time
+    exit_grace_min: int = Field(default=30, ge=0, le=240)
+    pass_expiry_min: int = Field(default=120, ge=5, le=24 * 60)
+    source: str | None = Field(default=None, max_length=100)
+
+
+class PermitOut(ORM):
+    id: int
+    contract_id: int
+    label: str
+    valid_from: date
+    valid_to: date
+    trip_limit: int
+    tonne_limit: float
+    vehicle_limit: int
+    hours_start: time
+    hours_end: time
+    exit_grace_min: int
+    pass_expiry_min: int
+    source: str | None
+    created_at: datetime
+
+
+class HoldOut(ORM):
+    id: int
+    permit_id: int
+    truck_id: int
+    truck: TruckSummary
+    reason_code: str
+    movement_id: int | None
+    created_at: datetime
+    released_at: datetime | None
+    released_by: int | None
+    release_reason: str | None
+
+
+class HoldRelease(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
 
 
 

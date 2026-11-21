@@ -525,11 +525,18 @@ and contract consequences are the GB's decision.
 
 No pass = no legal way to move material; anything that moves anyway becomes an illegal trip with evidence.
 
-### 4.1a GB-controlled boom barrier (exit; entry optional)
+### 4.1a GB-controlled boom barriers (entry and exit)
 Turns "prevent" from a paper refusal into a **physical** one. Mines already use RFID boom barriers (Coal India).
 
-**What:** a standard heavy-duty road barrier at each exit lane, wired to **our pole's computer**, powered by **our
-solar + battery**. Only the GB system can open it: not the Vendor's guard, software or office.
+**What:** a standard heavy-duty road barrier on **each entry and each exit lane**, wired to **our pole's computer**,
+powered by **our solar + battery**. Only the GB system can open it: not the Vendor's guard, software or office.
+
+**Entry barrier (decided 2026-11-21):** lifts **only when a pass is issued** (identified, authorised, not on hold, no
+open pass, inside permitted hours, quota left). A refused truck is turned back while it is still **empty**, so nothing
+is at stake: no loaded truck stranded at the exit putting pressure on an officer to "just let it go" (the insider
+collusion point), and a full quota becomes a clean stop at the gate. The cost is small: a second arm on the same GB
+controller. Light vehicles under 6 m (site jeeps, service vans) are let through and logged, not counted as trips; a
+pickup-sized load is a known, accepted gap.
 
 ```
 Truck stops at exit (already stops for the QR scan)
@@ -562,8 +569,9 @@ simply driving out.
 **Practical notes:** a few seconds per truck; very busy sites need more exit lanes. Installing it needs a contract
 clause (GB's decision). Signage and an emergency release are needed for safety.
 
-**PoC:** a simulated barrier on the gate view: lifts for a valid pass, stays down with a reason otherwise; a "forced
-open" event raises a critical alert.
+**PoC (built):** simulated entry and exit barriers in the gate API, exercised by the simulator (`trip_basic`): entry lifts only when a pass
+is issued, exit only on a valid pass close; otherwise the barrier stays down with the reason as an alert. A truck that
+breaks through raises a Critical `BARRIER_FORCED`; at the exit it is also counted as an `ILLEGAL_TRIP`.
 
 ### 4.2 Alert (severity, channel, escalation)
 | Level | Examples | Channel |

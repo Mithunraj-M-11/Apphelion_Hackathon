@@ -1,0 +1,259 @@
+# Trip: full-trip check-level stories (entry -> pass -> exit), one trick per story.
+#
+# Each story is a short sequence of timed gate events under its OWN small permit. Sensors report faithfully what
+# is physically there (see identify_basic.yaml); the question is whether the GB's rules catch the trick.
+#
+# Event fields
+#   at:          "HH:MM" site time (IST) on the run date; becomes the pole's event time
+#   dir:         IN (entry barrier) | OUT (exit barrier)
+#   vehicle:     <registered plate> | {rogue: <name>}   the physical vehicle
+#   plate_shown: own | none | <plate>                    plate physically mounted (default own)
+#   fastag:      own | none | {from: <registered plate>} tag on the windscreen (default own)
+#   load:        tonnes in the body: number | "NN%" of rated capacity | none (weigh pad gave no reading)
+#                defaults: IN 0, OUT "90%"
+#   pass:        OUT only, what the driver presents: qr (default) | sms | none |
+#                {qr_from: N} | {sms_from: N} | {tampered_qr_from: N}   (N = event number that issued the pass)
+#   forces:      true = the vehicle breaks through a closed barrier
+#   expect:      barrier (up|down), pass_issued (bool), trip (LEGAL|ILLEGAL), result (Identify),
+#                alerts (must be raised), not_alerts (must not be raised)
+# A story passes when every event's expectations hold; an honest story also must raise no HIGH/CRITICAL alert.
+# Rules are the IDs in docs/implementation/rules_spec.md.
+
+suite: trip_basic
+format: trip
+description: Full-trip stories. Entry identify + weigh + pass, exit identify + weigh + pass check, barrier, quota.
+gate: G1
+permit: { trip_limit: 50, tonne_limit: 1500, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00",
+          exit_grace_min: 30, pass_expiry_min: 120 }
+
+rogue_vehicles:
+  rogue_local_tipper: { own_plate: OD09ZX7781, length_m: 8.1 }
+  rogue_same_size:    { own_plate: OD02KK7310, length_m: 8.3 }   # same size as OD09AB1234 (8.32 m)
+  site_jeep:          { own_plate: OD09XY4040, length_m: 4.6, empty_weight_t: 1.9, rated_capacity_t: 0.6 }
+
+scenarios:
+  # ------------------------------------------------------------------ normal
+  - id: T1
+    name: Honest trip (control)
+    kind: honest
+    rules: P1, P5, M1
+    why: A genuine truck gets a pass at entry and leaves with it; no alarm. False alarms make officers ignore alerts.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AC5678, expect: { barrier: up, trip: LEGAL } }
+
+  - id: T2
+    name: Honest trip, SMS code at exit
+    kind: honest
+    rules: P3, P5
+    why: Drivers with basic phones use the 8-character SMS code; it must work exactly like the QR.
+    events:
+      - { at: "09:00", dir: IN,  vehicle: OD09AD0090, expect: { barrier: up, pass_issued: true } }
+      - { at: "09:45", dir: OUT, vehicle: OD09AD0090, pass: sms, expect: { barrier: up, trip: LEGAL } }
+
+  - id: T3
+    name: Light vehicle passes (site jeep)
+    kind: honest
+    rules: C2
+    why: Vehicles under 6 m are logged but are not trips, so they don't need a pass and don't use quota.
+    events:
+      - { at: "08:10", dir: IN,  vehicle: { rogue: site_jeep }, fastag: none, expect: { barrier: up, pass_issued: false } }
+      - { at: "08:40", dir: OUT, vehicle: { rogue: site_jeep }, fastag: none, load: 0, pass: none,
+          expect: { barrier: up, not_alerts: [NO_PASS, ILLEGAL_TRIP] } }
+
+  # ------------------------------------------------------------------ entry refusals
+  - id: T4
+    name: Unregistered truck refused at entry
+    kind: tamper
+    rules: G3, P1, A1
+    real_case: B3 unregistered vehicles carrying material
+    why: Refused while still empty, so nothing is at stake and nobody is pressured to let a loaded truck out.
+    events:
+      - { at: "08:00", dir: IN, vehicle: { rogue: rogue_local_tipper }, fastag: none,
+          expect: { barrier: down, pass_issued: false, result: UNREGISTERED, alerts: [UNREGISTERED_VEHICLE] } }
+
+  - id: T5
+    name: Registered truck with expired fitness refused
+    kind: tamper
+    rules: I8, P1
+    why: Authorisation is computed at the gate, so an expired certificate stops the truck automatically.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AN2025,
+          expect: { barrier: down, pass_issued: false, result: NOT_AUTHORISED, alerts: [NOT_AUTHORISED] } }
+
+  - id: T6
+    name: Clone attempt puts both trucks on hold
+    kind: tamper
+    rules: I5, I7, A4
+    real_case: A2 cloned plate + swapped tag
+    why: The plate says one truck and the tag another; both are frozen, so the genuine truck whose tag was stolen is
+      also stopped until an officer reviews it.
+    events:
+      - { at: "08:00", dir: IN, vehicle: { rogue: rogue_same_size }, plate_shown: OD09AB1234, fastag: { from: OD09AE4521 },
+          expect: { barrier: down, result: MISMATCH, alerts: [POSSIBLE_CLONE] } }
+      - { at: "08:20", dir: IN, vehicle: OD09AE4521,
+          expect: { barrier: down, pass_issued: false, alerts: [TRUCK_ON_HOLD] } }
+
+  - id: T7
+    name: Perfect clone enters while the real truck is inside
+    kind: tamper
+    rules: P2, A4
+    real_case: A1 cloned plate (and cloned tag) on a same-size truck
+    why: Plate, tag and length all match, so Identify can't tell them apart; but one truck can hold only one open
+      pass, so the second copy is refused and the identity is frozen.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AB1234, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:15", dir: IN, vehicle: { rogue: rogue_same_size }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          expect: { barrier: down, pass_issued: false, alerts: [CLONE_SUSPECT] } }
+
+  - id: T8
+    name: Trip quota reached, no more passes
+    kind: tamper
+    rules: CP5, P13
+    real_case: Permit 100 trips vs 200 actual (brief)
+    why: Issuing stops at 100%, at the entry barrier, before any extra material is loaded.
+    permit: { trip_limit: 2 }
+    events:
+      - { at: "07:00", dir: IN,  vehicle: OD09AF7733, expect: { barrier: up, pass_issued: true } }
+      - { at: "07:40", dir: OUT, vehicle: OD09AF7733, expect: { barrier: up, trip: LEGAL } }
+      - { at: "08:00", dir: IN,  vehicle: OD09AG1180, expect: { barrier: up, pass_issued: true, alerts: [TRIPS_100PCT] } }
+      - { at: "08:10", dir: IN,  vehicle: OD09AH2468, expect: { barrier: down, pass_issued: false, alerts: [TRIP_LIMIT] } }
+
+  - id: T9
+    name: Entry outside permitted hours
+    kind: tamper
+    rules: P15
+    why: Night trips are a classic way to move unrecorded material; no pass is issued outside hours.
+    events:
+      - { at: "18:10", dir: IN, vehicle: OD09AJ3579,
+          expect: { barrier: down, pass_issued: false, alerts: [OUTSIDE_HOURS] } }
+
+  # ------------------------------------------------------------------ weight
+  - id: T10
+    name: Arrives already loaded
+    kind: tamper
+    rules: M2
+    why: Material brought in from outside (or a different truck) to be dispatched as if mined here.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AK6402, load: 8, expect: { barrier: up, pass_issued: true, alerts: [ARRIVED_LOADED] } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AK6402, load: 24, expect: { barrier: up, trip: LEGAL } }
+
+  - id: T11
+    name: Overloaded truck
+    kind: tamper
+    rules: M3
+    real_case: Overloading to move more tonnes per recorded trip
+    why: The GB pad measures real net tonnes; the quota counts what actually left, and the overload is flagged.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AL9015, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AL9015, load: "125%", expect: { barrier: up, trip: LEGAL, alerts: [OVERLOAD] } }
+
+  - id: T12
+    name: Leaves empty
+    kind: tamper
+    rules: M5, P13
+    why: An empty exit doesn't give the reserved trip back, so passes can't be cycled to game the quota.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD02BQ4410, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:30", dir: OUT, vehicle: OD02BQ4410, load: 0.2, expect: { barrier: up, trip: LEGAL, alerts: [EMPTY_EXIT] } }
+
+  - id: T13
+    name: Weigh pad skipped at exit
+    kind: tamper
+    rules: M4, G5
+    why: Silence is suspicious; a missing weight is an alert, never an assumed normal load.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD02BR7120, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: OD02BR7120, load: none, expect: { barrier: up, alerts: [WEIGH_BYPASS] } }
+
+  # ------------------------------------------------------------------ pass at exit
+  - id: T14
+    name: Old QR reused (screenshot)
+    kind: tamper
+    rules: P6, A4
+    real_case: UP CAG, same pass used for multiple trips
+    why: A pass closes once; showing it again (here after sneaking back in by a side track) is rejected.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD11CE3305, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: OD11CE3305, expect: { barrier: up, trip: LEGAL } }
+      - { at: "10:10", dir: OUT, vehicle: OD11CE3305, pass: { qr_from: 1 }, note: came back in by a side track,
+          expect: { barrier: down, alerts: [PASS_REUSE] } }
+
+  - id: T15
+    name: Pass handed to another truck
+    kind: tamper
+    rules: P7, A4
+    why: The pass is bound to one truck's plate and FASTag; a different truck can't leave on it.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD14DF8821, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:40", dir: OUT, vehicle: JH05CK2290, pass: { qr_from: 1 }, note: entered by a side track,
+          expect: { barrier: down, alerts: [PASS_MISMATCH] } }
+
+  - id: T16
+    name: Forged / edited QR
+    kind: tamper
+    rules: P8, P3
+    why: Every pass is signed by the GB key; changing a single character breaks the signature.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: JH05CL6614, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: JH05CL6614, pass: { tampered_qr_from: 1 }, expect: { barrier: down, alerts: [INVALID_PASS] } }
+
+  - id: T17
+    name: Dead phone twice in a day
+    kind: tamper
+    rules: P9
+    why: One close without QR per day is allowed (plate + FASTag + length); a second needs an officer, so it can't
+      become routine.
+    events:
+      - { at: "07:00", dir: IN,  vehicle: CG04MN5507, expect: { barrier: up, pass_issued: true } }
+      - { at: "07:45", dir: OUT, vehicle: CG04MN5507, pass: none, expect: { barrier: up, trip: LEGAL, alerts: [CLOSED_WITHOUT_QR] } }
+      - { at: "08:00", dir: IN,  vehicle: CG04MN5507, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:45", dir: OUT, vehicle: CG04MN5507, pass: none, expect: { barrier: down, alerts: [NO_QR_LIMIT] } }
+
+  - id: T18
+    name: Pass expired at exit
+    kind: tamper
+    rules: P4, P11
+    why: A 2-hour pass limits side-route trips during an open pass; an expired pass needs an officer to close.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: 22BH4581AB, expect: { barrier: up, pass_issued: true } }
+      - { at: "10:30", dir: OUT, vehicle: 22BH4581AB, expect: { barrier: down, alerts: [PASS_EXPIRED_AT_EXIT] } }
+
+  # ------------------------------------------------------------------ bypass
+  - id: T19
+    name: Side-track entry, then gate exit
+    kind: tamper
+    rules: P12, G5
+    real_case: Untracked route in, legal-looking route out
+    why: A truck that never came through a GB entry gate has no pass, so the exit barrier stays down.
+    events:
+      - { at: "09:00", dir: OUT, vehicle: OD09AC5678, pass: none, note: entered by a side track,
+          expect: { barrier: down, alerts: [NO_PASS], not_alerts: [ILLEGAL_TRIP] } }
+
+  - id: T20
+    name: Barrier forced at exit
+    kind: tamper
+    rules: A2, P12
+    why: Breaking the barrier turns cheating into a recorded act of force, counted as an illegal trip.
+    events:
+      - { at: "09:00", dir: OUT, vehicle: OD09AB1234, pass: none, forces: true, note: entered by a side track,
+          expect: { barrier: down, trip: ILLEGAL, alerts: [NO_PASS, BARRIER_FORCED, ILLEGAL_TRIP] } }
+
+  # ------------------------------------------------------------------ hours
+  - id: T21
+    name: Exit within the 30-minute grace
+    kind: honest
+    rules: P15
+    why: The last trip of the day isn't punished for finishing a few minutes after closing.
+    events:
+      - { at: "17:00", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up, pass_issued: true } }
+      - { at: "18:20", dir: OUT, vehicle: OD09AC5678, expect: { barrier: up, trip: LEGAL, not_alerts: [OUTSIDE_HOURS] } }
+
+  - id: T22
+    name: Exit after the grace period
+    kind: tamper
+    rules: P15
+    why: The truck isn't trapped (valid pass), but a late exit is flagged as a possible night trip.
+    events:
+      - { at: "17:30", dir: IN,  vehicle: OD09AD0090, expect: { barrier: up, pass_issued: true } }
+      - { at: "18:50", dir: OUT, vehicle: OD09AD0090, expect: { barrier: up, trip: LEGAL, alerts: [OUTSIDE_HOURS] } }

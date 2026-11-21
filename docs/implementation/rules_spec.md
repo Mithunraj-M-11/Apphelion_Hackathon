@@ -29,7 +29,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | ID | Rule | Recommended | Why |
 |---|---|---|---|
 | C1 | When is a movement counted | Vehicle crosses **both virtual lines in order** (A→B = OUT, B→A = IN). Stopping or reversing inside the gate isn't counted. | No double counts from queues, creeping or turning back. |
-| C2 | Which vehicles are trips | **Heavy vehicles (length ≥ 6 m)** going **OUT** at an exit. Lighter vehicles logged, not trips. | Trucks only for now. |
+| C2 | Which vehicles are trips | **Heavy vehicles (length ≥ 6 m)** going **OUT** at an exit. Lighter vehicles logged, not trips; both barriers **lift for them without a pass**. | Trucks only for now. Known, accepted gap: a pickup-sized load (decided 2026-11-21). |
 | C3 | Radar vs camera disagree | Radar saw it, camera didn't → **High** `CAMERA_BLIND` (count stands). Camera saw it, radar didn't → **Medium** `RADAR_FAULT`. | Radar is primary; a blinded camera is a tamper sign. |
 | C4 | Duplicate trigger | Same lane, same plate, **within 30 s** → one movement. | Camera double-fires at slow speed. |
 | C5 | Heartbeat | Every **60 s**. **3 missed (3 min)** → **Critical** `POLE_OFFLINE`; that gate's data marked *provisional*. | Silence is suspicious (G5). |
@@ -67,7 +67,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | P9 | No QR / code at exit | Close by **plate + FASTag + length** matching the truck's open pass, flag **Medium** `CLOSED_WITHOUT_QR`. Limit **1 per truck per day**; beyond that, barrier stays down until an officer approves. | Dead phones happen; the limit stops it becoming routine. |
 | P10 | Expired, truck still inside | At expiry → **Medium** `PASS_EXPIRED` (possible side route). The trip **stays counted** against the quota. | Can't free quota by "disappearing". |
 | P11 | Expired pass presented at exit | Barrier stays down; officer can approve a **late close** (flag `LATE_CLOSE`). Trip counted. | Keeps late trips visible without stranding trucks. |
-| P12 | Leaves with no pass | Counted OUT (radar) with no pass to close → **illegal trip**, **Critical** `ILLEGAL_TRIP` with evidence. | The 100-vs-200 case. |
+| P12 | Leaves with no pass | At the exit with no pass to close (e.g. came in by a side track) → barrier stays down, **High** `NO_PASS`. If it **breaks through**, the OUT is counted with no pass closure → **illegal trip**, **Critical** `ILLEGAL_TRIP` + `BARRIER_FORCED`. | The 100-vs-200 case. |
 | P13 | Quota reservation | Issuing **reserves 1 trip**; closing confirms it. Reserved trips are only released by an officer with a reason. | No over-issuing; no silent quota recovery. |
 | P14 | Offline pole | Pole holds **5 pre-allocated passes**; issues / checks locally, syncs later; when used up → refuses. | Works through network outages without over-issuing. |
 | P15 | Hours window and open passes | No pass issued outside permitted hours. A truck with an open pass may exit up to **30 min after** the window ends; later exits flagged `OUTSIDE_HOURS`. | Last trip of the day isn't punished; night trips are. |
@@ -109,7 +109,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 
 | ID | Rule | Recommended | Why |
 |---|---|---|---|
-| A1 | Barrier | Lifts **only** on a valid pass close (or a logged GB officer override). Never opens for the Vendor. | Turns "detect" into "prevent". |
+| A1 | Barriers (entry and exit) | **Entry** barrier lifts **only when a pass is issued**; **exit** barrier lifts **only on a valid pass close** (or a logged GB officer override). Never opens for the Vendor. | Turns "detect" into "prevent". Entry refusal happens while the truck is still empty, so there is no loaded truck at the exit to pressure an officer (decided 2026-11-21). |
 | A2 | Barrier forced | Impact / arm opened without permission → **Critical** `BARRIER_FORCED` + photo/video; trip treated as illegal (P12). | Makes cheating a recorded act of force. |
 | A3 | Barrier / pole down | Gate **fails closed**; GB override only (one-time code to an officer), every use logged and flagged. | No silent fail-open. |
 | A4 | Truck on hold | Set automatically by I6, I7, P2, P6, P7; released only by an officer **with a reason**, and **not by the officer who raised the review** (maker-checker). | Clone pairs frozen until reviewed. |

@@ -23,7 +23,7 @@ from app.models import EventLog
 @dataclass
 class LogLine:
     component: str
-    level: str  # INFO | WARN | ALERT
+    level: str  # INFO | WARN | ALERT | CRITICAL
     message: str
     context: dict | None = None
 
