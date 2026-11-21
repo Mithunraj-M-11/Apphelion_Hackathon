@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db import engine
-from app.routers import gates, logs, reference, sim_runs, transporters, trucks
+from app.routers import edge, gates, logs, reference, rfid, sim_runs, transporters, trips, trucks
 
 app = FastAPI(title="Aphelion GB Monitoring API", version="0.1.0")
 
@@ -16,6 +16,9 @@ app.include_router(trucks.router)
 app.include_router(gates.router)
 app.include_router(sim_runs.router)
 app.include_router(logs.router)
+app.include_router(rfid.router)
+app.include_router(trips.router)
+app.include_router(edge.router)
 
 # Uploaded files (optional truck photos), from the persistent uploads volume
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
