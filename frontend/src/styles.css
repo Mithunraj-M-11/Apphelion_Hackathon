@@ -574,3 +574,13 @@ ul.plain li { padding: 3px 0; }
 .sr-timeline li.officer::before { background: var(--warn); }
 .sr-tl-expect { margin: 0 0 2px 54px; }
 .ss-step-unseen { border-style: dashed; opacity: 0.85; }
+.sr-cat.warn { border-left-color: var(--warn); }
+.sr-cat-open { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 2px; }
+.sr-cov-line { margin: 4px 0 14px; }
+
+/* Shared scorecard (scenario runs, edge, site runs) */
+.sc-judged { margin: 0 0 12px; padding: 8px 12px; border-left: 3px solid var(--primary); background: var(--neutral-bg);
+  border-radius: 0 6px 6px 0; }
+.stats-4 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 10px; }
+.stats-3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.sc-line { margin: -4px 0 14px; }

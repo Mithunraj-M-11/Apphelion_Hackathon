@@ -17,6 +17,7 @@ import {
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
+import { Scorecard, type Status } from "./Scorecard";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -61,18 +62,6 @@ const CHEAT_STORY: Record<string, string> = {
   light_vehicle: "A pickup under 6 m carries about a tonne; light vehicles are logged but not counted.",
   outage_trip: "While the pole is down, an extra truck comes in and leaves loaded with the barrier lifted by hand.",
 };
-
-function Tile({ label, value, sub, tone, onClick }: { label: string; value: string | number; sub?: string;
-                tone?: "ok" | "warn" | "bad"; onClick?: () => void }) {
-  return (
-    <div className={`stat${onClick ? " sr-tile-click" : ""}`} onClick={onClick} role={onClick ? "button" : undefined}
-         title={onClick ? "Show the list behind this number" : undefined}>
-      <div className={`stat-num ${tone ? `${tone}-text` : ""}`}>{value}</div>
-      <div className="stat-label">{label}</div>
-      {sub && <div className="small muted">{sub}</div>}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------- daily chart
 const SERIES: { key: keyof SiteDay; label: string; color: string }[] = [
@@ -283,15 +272,32 @@ function RunList() {
 }
 
 // ---------------------------------------------------------------- drill-down from a tile
-type Group = "all" | "prevented" | "detected" | "missed" | "unseen" | "false";
+type Group = "all" | Status | "unseen" | "false";
 
 const GROUP_TITLE: Record<Group, string> = {
-  all: "Every cheat staged",
-  prevented: "Prevented: stopped before material left",
-  detected: "Detected: material left, alert raised",
-  missed: "Missed",
-  unseen: "Trips never at a GB gate",
+  all: "Every attempt",
+  covered: "Covered: stopped at the gate, or caught after with an alert",
+  partial: "Partial",
+  gap: "Gap: the GB has the refusal on record, but the load still left unseen",
+  silent: "Silent gap: the GB has no trace",
+  unseen: "Trips the GB doesn't have",
   false: "False alarms on honest trucks",
+};
+
+/** One attempt in the shared scorecard's terms. */
+function siteStatus(c: SiteCheat): Status {
+  if (c.outcome === "prevented" || c.outcome === "detected") return "covered";
+  return c.attempt_flagged ? "gap" : "silent";
+}
+
+/** The threat area of each site cheat type (same areas as the scenario runs). */
+const CHEAT_AREA: Record<string, string> = {
+  quota_push: "limits", night_trip: "limits",
+  unregistered: "identity", clone: "identity", transplant: "identity",
+  pass_reuse: "pass", pass_handover: "pass", forged_qr: "pass",
+  side_track_both: "evasion", side_track_out: "evasion", side_track_in_gate_out: "evasion", light_vehicle: "evasion",
+  overload: "measure", arrive_loaded: "measure", weigh_bypass: "measure",
+  officer_cover: "officer", outage_trip: "infrastructure",
 };
 
 /** One attempt: the cheat in one line, then its timeline (legs the GB can't see greyed, gate events opening into
@@ -335,7 +341,7 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
       .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
       .catch(() => {});
   }, [r.permit_id]);
-  const cheats = group === "all" ? r.cheats : r.cheats.filter((c) => c.outcome === group);
+  const cheats = group === "all" ? r.cheats : r.cheats.filter((c) => siteStatus(c) === group);
   const unseen = r.accuracy.never_at_a_gate;
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -574,7 +580,6 @@ function RunDetail({ id }: { id: number }) {
     );
 
   const cs = r.cheats_summary;
-  const acc = r.accuracy;
   const h = r.headline.trips;
   return (
     <>
@@ -604,17 +609,24 @@ function RunDetail({ id }: { id: number }) {
 
       {r.missed_by_cause && Object.keys(r.missed_by_cause).length > 0 && <MissedByCause r={r} />}
 
-      <div className="stats stats-6">
-        <Tile label="Cheats staged" value={cs.injected} onClick={() => setGroup("all")} />
-        <Tile label="Prevented" value={cs.prevented} tone="ok" sub="stopped before material left" onClick={() => setGroup("prevented")} />
-        <Tile label="Detected" value={cs.detected} tone="warn" sub="material left, alert raised" onClick={() => setGroup("detected")} />
-        <Tile label="Missed" value={cs.missed} tone={cs.missed ? "bad" : "ok"} onClick={() => setGroup("missed")}
-              sub={cs.missed_attempt_flagged ? `${cs.missed_attempt_flagged} with the attempt on record` : undefined} />
-        <Tile label="Trips seen by GB gates" value={`${acc.trips_seen_pct}%`} onClick={() => setGroup("unseen")}
-              sub={`${fmt(acc.gb_actual_trips)} of ${fmt(acc.true_trips)}; ${acc.trips_never_at_a_gate} never at a gate`} />
-        <Tile label="False alarms" value={r.false_alarms.count} tone={r.false_alarms.count ? "bad" : "ok"} onClick={() => setGroup("false")}
-              sub={`on ${fmt(r.false_alarms.honest_events)} honest gate events`} />
-      </div>
+      <Scorecard
+        judgedAgainst="A realistic period: every cheat attempt judged on whether the GB stopped it or caught it after (covered), only has the refusal on record (gap), or never knew (silent gap)."
+        unit="attempts"
+        items={r.cheats.map((c, i) => ({
+          id: String(i), name: `${dayLabel(c.day)} ${c.at} ${CHEAT_LABEL[c.type] ?? c.type}`,
+          area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c),
+          how: c.outcome === "prevented" ? "stopped" : c.outcome === "detected" ? "caught after" : undefined,
+        }))}
+        cost={{
+          trips: { missed: Math.max(0, h.ground_truth - h.gb_actual), of: h.ground_truth },
+          tonnes: { missed: Math.max(0, r.headline.tonnes.ground_truth - r.headline.tonnes.gb_actual),
+                    of: r.headline.tonnes.ground_truth },
+          honest: { refused: r.false_alarms.count, of: r.false_alarms.honest_events,
+                    label: "Honest gate events with a false alarm" },
+        }}
+        onStatus={(st) => setGroup(st)}
+        onCost={(k) => setGroup(k === "honest" ? "false" : "unseen")}
+      />
 
       {group && <GroupPopup group={group} r={r} onClose={() => setGroup(null)} />}
 

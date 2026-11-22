@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   LuArrowLeft,
@@ -16,7 +16,6 @@ import {
   isTripResult,
   type EdgeScenarioResult,
   type Movement,
-  type ScenarioResult,
   type SimRun,
   type SimSuite,
   type StoryKind,
@@ -27,75 +26,22 @@ import { ErrorNote } from "../components";
 import { formatDateTime } from "../format";
 import { ScenarioSheetButton } from "./SimScenarioSheet";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-
-/** The threats a story belongs to, in the order the scorecard shows them. */
-const CATEGORIES: { key: string; title: string }[] = [
-  { key: "identity", title: "Vehicle identity" },
-  { key: "sticker", title: "GB RFID sticker" },
-  { key: "pass", title: "Pass misuse" },
-  { key: "measure", title: "Weight and load" },
-  { key: "limits", title: "Contract limits" },
-  { key: "evasion", title: "Bypass and force" },
-  { key: "officer", title: "Officer actions" },
-  { key: "edge", title: "Edge resilience" },
-  { key: "infrastructure", title: "Poles, network, sensors" },
-  { key: "records", title: "Records and reports" },
-  { key: "control", title: "Honest controls" },
-];
+import { Scorecard, StatusBadge, type Cost, type ScoreItem, type Status } from "./Scorecard";
 
 const POLL_MS = 2000;
 
-function CoverageBadge({ c }: { c?: string }) {
-  const [cls, text] =
-    c === "covered" ? ["ok", "Covered"] : c === "partial" ? ["warn", "Partial"] : c === "gap" ? ["bad", "Gap"]
-      : c === "silent" ? ["bad", "Silent gap"] : ["neutral", "—"];
-  return <span className={`badge ${cls}`}>{text}</span>;
-}
+/** What each suite is judged against (the first line of its scorecard). */
+const JUDGED: Record<string, string> = {
+  gate_cheats: "Regression: every rule we built, judged against its own design. Everything should be covered.",
+  threat_coverage: "Threat coverage: every P0 / P1 cheat, judged against what the GB should do, built or not. "
+    + "What isn't covered is the work still to do.",
+  edge_resilience: "Edge resilience: failover, WAN loss, disaster recovery, snapshots and reconciliation, each judged "
+    + "against its specified behaviour.",
+};
 
 function KindBadge({ kind }: { kind: StoryKind }) {
   const [cls, text] = kind === "honest" ? ["neutral", "Honest"] : kind === "officer" ? ["ok", "Officer"] : ["warn", "Cheat"];
   return <span className={`badge ${cls}`}>{text}</span>;
-}
-
-/** One card per threat: cheats caught, honest stories without a false alarm, officer / edge stories passed. */
-function CategoryGrid({ results }: { results: ScenarioResult[] }) {
-  const cards = CATEGORIES.map((c) => {
-    const rs = results.filter((r) => (r.category ?? "") === c.key);
-    if (rs.length === 0) return null;
-    const cheats = rs.filter((r) => r.kind === "tamper");
-    const honest = rs.filter((r) => r.kind === "honest");
-    const caught = cheats.filter((r) => (isTripResult(r) ? r.caught : r.pass)).length;
-    const passed = rs.filter((r) => r.pass).length;
-    const [value, total, what] =
-      cheats.length > 0
-        ? [caught, cheats.length, "cheats caught"]
-        : c.key === "control"
-        ? [honest.filter((r) => r.pass).length, honest.length, "passed with no false alarm"]
-        : [passed, rs.length, "stories pass"];
-    return (
-      <div key={c.key} className={`sr-cat ${value === total ? "ok" : "bad"}`}>
-        <div className="sr-cat-title">{c.title}</div>
-        <div className="sr-cat-num">
-          {value}
-          <span className="muted">/{total}</span>
-        </div>
-        <div className="small muted">{what}</div>
-      </div>
-    );
-  });
-  return <div className="sr-cats">{cards}</div>;
-}
-
-function Tile({ label, value, total, tone }: { label: string; value: number; total?: number; tone?: "ok" | "bad" }) {
-  return (
-    <div className="stat">
-      <div className={`stat-num ${tone === "ok" ? "ok-text" : tone === "bad" ? "bad-text" : ""}`}>
-        {value}
-        {total != null && <span className="muted stat-of">/{total}</span>}
-      </div>
-      <div className="stat-label">{label}</div>
-    </div>
-  );
 }
 
 function PassTag({ pass }: { pass: boolean }) {
@@ -350,15 +296,6 @@ function RunDetail({ id }: { id: number }) {
     return () => clearInterval(t);
   }, [running, id]);
 
-  const breakdown = useMemo(() => {
-    const decisive: Record<string, number> = {};
-    for (const s of run?.results ?? []) {
-      if (s.kind !== "tamper" || !isTripResult(s)) continue;
-      for (const c of s.actual.caught_by) if (s.expected.alerts.includes(c)) decisive[c] = (decisive[c] ?? 0) + 1;
-    }
-    return decisive;
-  }, [run]);
-
   if (error)
     return (
       <>
@@ -370,10 +307,8 @@ function RunDetail({ id }: { id: number }) {
     );
   if (!run) return <p className="muted">Loading…</p>;
 
-  const missed = run.tamper_total - run.tamper_caught;
   const tripResults = run.results.filter(isTripResult);
   const threatRun = tripResults.some((r) => r.coverage && r.threat);
-  const cov = (c: string) => tripResults.filter((r) => r.coverage === c).length;
   const lost = tripResults.reduce(
     (a, r) => ({
       trips: a.trips + Math.max(0, (r.really_moved?.trips ?? 0) - (r.gb_recorded?.trips ?? 0)),
@@ -381,8 +316,27 @@ function RunDetail({ id }: { id: number }) {
     }),
     { trips: 0, tonnes: 0 },
   );
+  const moved = tripResults.reduce(
+    (a, r) => ({ trips: a.trips + (r.really_moved?.trips ?? 0), tonnes: a.tonnes + (r.really_moved?.tonnes ?? 0) }),
+    { trips: 0, tonnes: 0 },
+  );
   const edgeResults = run.results.filter((r): r is EdgeScenarioResult => !isTripResult(r));
-  const officer = run.results.filter((r) => r.kind === "officer");
+  const items: ScoreItem[] = [
+    ...tripResults.map((r) => ({
+      id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "control", priority: r.priority ?? null,
+      status: (r.coverage ?? (r.pass ? "covered" : "gap")) as Status,
+    })),
+    ...edgeResults.map((r) => ({
+      id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "edge", status: (r.pass ? "covered" : "gap") as Status,
+    })),
+  ];
+  const honest = tripResults.filter((r) => r.kind === "honest");
+  const hasTruth = tripResults.some((r) => r.really_moved);
+  const cost: Cost = {
+    ...(hasTruth ? { trips: { missed: lost.trips, of: moved.trips }, tonnes: { missed: lost.tonnes, of: moved.tonnes } } : {}),
+    ...(honest.length ? { honest: { refused: honest.filter((r) => (r.coverage ?? (r.pass ? "covered" : "gap")) !== "covered").length,
+                                    of: honest.length, label: "Honest trucks wrongly refused or flagged" } } : {}),
+  };
 
   return (
     <>
@@ -397,53 +351,8 @@ function RunDetail({ id }: { id: number }) {
         </div>
       </div>
 
-      {threatRun && (
-        <>
-          <p className="muted small">
-            Each story is judged against what the GB <em>should</em> do, built or not. Covered = the ideal response
-            happened; partial = some of it; gap = mostly not; silent = the GB doesn't know (nothing raised, or its records
-            differ from what really moved and nothing says so).
-          </p>
-          <div className="stats stats-6">
-            <Tile label="Covered" value={cov("covered")} total={tripResults.length} tone="ok" />
-            <Tile label="Partial" value={cov("partial")} />
-            <Tile label="Gap" value={cov("gap")} tone={cov("gap") ? "bad" : "ok"} />
-            <Tile label="Silent gap" value={cov("silent")} tone={cov("silent") ? "bad" : "ok"} />
-            <Tile label="Trips the GB missed" value={lost.trips} tone={lost.trips ? "bad" : "ok"} />
-            <Tile label="Tonnes the GB missed" value={Math.round(lost.tonnes)} tone={lost.tonnes >= 1 ? "bad" : "ok"} />
-          </div>
-        </>
-      )}
-      {!threatRun && (
-      <div className="stats stats-6">
-        <Tile label="Stories passed" value={run.passed} total={run.total} tone={run.passed === run.total ? "ok" : "bad"} />
-        <Tile label="Cheat stories" value={run.tamper_total} />
-        <Tile label="Cheats caught" value={run.tamper_caught} total={run.tamper_total} tone={missed === 0 ? "ok" : "bad"} />
-        <Tile label="Honest stories" value={run.honest_total} />
-        <Tile label="False alarms" value={run.false_alarms} total={run.honest_total}
-              tone={run.false_alarms === 0 ? "ok" : "bad"} />
-        <Tile label="Officer stories" value={officer.filter((r) => r.pass).length} total={officer.length}
-              tone={officer.every((r) => r.pass) ? "ok" : "bad"} />
-      </div>
-      )}
-
-      {!threatRun && (
-        <div className="card">
-          <header className="card-head"><h3>By threat</h3></header>
-          <CategoryGrid results={run.results} />
-        </div>
-      )}
-
-      {Object.keys(breakdown).length > 0 && (
-        <div className="card">
-          <header className="card-head"><h3>Which alert exposed each cheat</h3></header>
-          <div className="breakdown">
-            {Object.entries(breakdown).map(([c, n]) => (
-              <span key={c} className="chip chip-main">{c} <strong>{n}</strong></span>
-            ))}
-          </div>
-        </div>
-      )}
+      <Scorecard judgedAgainst={JUDGED[run.suite] ?? "Judged against each story's expected outcome."}
+                 items={items} unit={edgeResults.length && !tripResults.length ? "cases" : "stories"} cost={cost} />
 
       {tripResults.length > 0 && (
         <table className="table">
@@ -451,7 +360,7 @@ function RunDetail({ id }: { id: number }) {
             {threatRun ? (
               <tr><th /><th>Case</th><th>Story</th><th>Priority</th><th>Ideal alerts</th><th>Alerts raised</th><th>Really moved / GB recorded</th><th>Coverage</th></tr>
             ) : (
-              <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Result</th></tr>
+              <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Status</th></tr>
             )}
           </thead>
           <tbody>
@@ -474,7 +383,7 @@ function RunDetail({ id }: { id: number }) {
                         {s.really_moved?.trips ?? 0} / {s.gb_recorded?.trips ?? 0} trips
                         <div className="small muted">{s.really_moved?.tonnes ?? 0} / {s.gb_recorded?.tonnes ?? 0} t</div>
                       </td>
-                      <td><CoverageBadge c={s.coverage} /></td>
+                      <td><StatusBadge s={s.coverage as Status} /></td>
                     </>
                   ) : (
                     <>
@@ -482,7 +391,7 @@ function RunDetail({ id }: { id: number }) {
                       <td>{s.events.length}</td>
                       <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
                       <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
-                      <td><PassTag pass={s.pass} /></td>
+                      <td><StatusBadge s={(s.coverage ?? (s.pass ? "covered" : "gap")) as Status} /></td>
                     </>
                   )}
                 </tr>
