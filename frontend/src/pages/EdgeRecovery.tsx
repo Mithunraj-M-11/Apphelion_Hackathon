@@ -228,7 +228,7 @@ export default function EdgeRecovery() {
             </span>
           </div>
           <div className="stat-num" style={{ fontSize: "1.2rem", marginTop: 4 }}>
-            {state?.active_authority === "PRIMARY" ? "★ ACTIVE AUTHORITY" : "STANDBY / INACTIVE"}
+            {state?.active_authority === "PRIMARY" ? "ACTIVE AUTHORITY" : "STANDBY / INACTIVE"}
           </div>
           <div className="small muted">PostgreSQL authoritative replica · Gate pole sync</div>
         </div>
@@ -242,7 +242,7 @@ export default function EdgeRecovery() {
             </span>
           </div>
           <div className="stat-num" style={{ fontSize: "1.2rem", marginTop: 4 }}>
-            {state?.active_authority === "STANDBY" ? "★ ACTIVE AUTHORITY" : "STANDBY READY"}
+            {state?.active_authority === "STANDBY" ? "ACTIVE AUTHORITY" : "STANDBY READY"}
           </div>
           <div className="small muted">Zero-data-loss standby · Heartbeat synchronized</div>
         </div>
@@ -354,7 +354,7 @@ export default function EdgeRecovery() {
           {generatedSnapshot && (
             <div style={{ marginTop: 12 }}>
               <div className="small ok-text">
-                ✓ Snapshot generated with digest: <span className="mono">{generatedSnapshot.digest.slice(0, 16)}…</span>
+                Snapshot generated with digest: <span className="mono">{generatedSnapshot.digest.slice(0, 16)}…</span>
               </div>
               <div className="small muted">
                 Contains {generatedSnapshot.data.trucks.length} trucks, {generatedSnapshot.data.rfid_stickers.length}{" "}
@@ -528,7 +528,7 @@ export default function EdgeRecovery() {
 
             {restoreResult && (
               <div style={{ background: "var(--ok-bg)", border: "1px solid var(--ok)", padding: 10, borderRadius: 6, marginBottom: 12, fontSize: "0.85rem" }}>
-                <strong>✓ Snapshot Restored Successfully</strong>
+                <strong>Snapshot restored successfully</strong>
                 <div>Age: {String(restoreResult.age_hours)} hours {restoreResult.is_stale ? "(Potentially Stale)" : ""}</div>
               </div>
             )}

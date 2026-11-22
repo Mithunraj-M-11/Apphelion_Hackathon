@@ -29,15 +29,16 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | ID | Rule | Recommended | Why |
 |---|---|---|---|
 | C1 | When is a movement counted | Vehicle crosses **both virtual lines in order** (A→B = OUT, B→A = IN). Stopping or reversing inside the gate isn't counted. | No double counts from queues, creeping or turning back. |
-| C2 | Which vehicles are trips | **Heavy vehicles (length ≥ 6 m)** going **OUT** at an exit. Lighter vehicles logged, not trips. | Trucks only for now. |
+| C2 | Which vehicles are trips | **Heavy vehicles (length ≥ 6 m)** going **OUT** at an exit. Lighter vehicles logged, not trips; both barriers **lift for them without a pass**. | Trucks only for now. Known, accepted gap: a pickup-sized load (decided 2026-11-21). |
 | C3 | Radar vs camera disagree | Radar saw it, camera didn't → **High** `CAMERA_BLIND` (count stands). Camera saw it, radar didn't → **Medium** `RADAR_FAULT`. | Radar is primary; a blinded camera is a tamper sign. |
 | C4 | Duplicate trigger | Same lane, same plate, **within 30 s** → one movement. | Camera double-fires at slow speed. |
 | C5 | Heartbeat | Every **60 s**. **3 missed (3 min)** → **Critical** `POLE_OFFLINE`; that gate's data marked *provisional*. | Silence is suspicious (G5). |
+| C7 | Edge computer and uplink | Primary + standby edge computer with failover; WAN loss → **High** `EDGE_WAN_OFFLINE` (data held locally, totals provisional); primary down → **Critical** `EDGE_PRIMARY_DOWN`; disaster-recovery mode → **Critical** `EDGE_DR_MODE`. Officer-authorised emergency movements → **Medium** `EMERGENCY_MOVEMENT`, provisional until reconciled (CP11). Signed snapshots restore the authorisation state. | Offline operation must never be silent. (Built: teammate's edge recovery + alerts 2026-11-22.) |
 | C6 | Physical tamper flags | Box opened, tilt, solar output drop with sun → **High** `POLE_TAMPER`. | Pole sits on Vendor land. |
 
 ---
 
-## 2. Identify (plate + FASTag + radar length vs GB registry)
+## 2. Identify (plate + FASTag + radar length + GB RFID sticker vs GB registry)
 
 | ID | Rule | Recommended | Why |
 |---|---|---|---|
@@ -49,6 +50,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | I6 | Repeated weak identification | Same truck flagged `TAG_MISSING` / `PLATE_OBSCURED` **more than 2 times in 7 days** → truck **on hold** for re-inspection. | Stops "tag keeps falling off" becoming a habit. |
 | I7 | Mismatch consequence | Truck(s) named by the plate and by the tag → **on hold** until an officer reviews. | Freezes a possible clone pair. |
 | I8 | Authorisation | Active status, within enrollment validity, RC / fitness / insurance / permit not expired, VAHAN verified. Computed at event time. | Expiry applies automatically. (Built.) |
+| I9 | GB RFID sticker | Every truck carries a GB-issued sticker answering a **challenge-response** with a secret key. At entry and exit it must authenticate, belong to the truck identified by plate + FASTag + length, and be ACTIVE. Missing → `RFID_MISSING`, unknown / damaged / expired → `RFID_UNKNOWN`, revoked → `RFID_REVOKED` (all **High**, refused). Cloned → **High** `RFID_CLONED`; genuine sticker on another truck → **High** `RFID_MISMATCH`; both put the trucks **on hold**. At exit the sticker must be the **same one** as at entry. | A copied plate and a cloned FASTag can't answer the challenge, so a perfect clone is refused even when the real truck is away. Strict for now (damaged sticker refused); relaxations later. (Built 2026-11-22, teammate's sticker merged into Identify.) |
 
 ---
 
@@ -64,10 +66,10 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | P6 | Reuse | A closed or used pass presented again → rejected, **High** `PASS_REUSE`, barrier stays down. | Screenshots can't be reused. |
 | P7 | Wrong truck | Pass valid but plate/FASTag at exit ≠ pass → rejected, **High** `PASS_MISMATCH`, both trucks on hold. | Pass can't be handed to another truck. |
 | P8 | Tampered pass | Signature or code invalid → rejected, **High** `INVALID_PASS`. | Forgery attempt. |
-| P9 | No QR / code at exit | Close by **plate + FASTag + length** matching the truck's open pass, flag **Medium** `CLOSED_WITHOUT_QR`. Limit **1 per truck per day**; beyond that, barrier stays down until an officer approves. | Dead phones happen; the limit stops it becoming routine. |
-| P10 | Expired, truck still inside | At expiry → **Medium** `PASS_EXPIRED` (possible side route). The trip **stays counted** against the quota. | Can't free quota by "disappearing". |
-| P11 | Expired pass presented at exit | Barrier stays down; officer can approve a **late close** (flag `LATE_CLOSE`). Trip counted. | Keeps late trips visible without stranding trucks. |
-| P12 | Leaves with no pass | Counted OUT (radar) with no pass to close → **illegal trip**, **Critical** `ILLEGAL_TRIP` with evidence. | The 100-vs-200 case. |
+| P9 | No QR / code at exit | Close by **plate + FASTag + length** matching the truck's open pass, flag **Medium** `CLOSED_WITHOUT_QR`. Limit **1 per truck per day**; beyond that, barrier stays down until an officer approves. **Not allowed for a truck on hold** → **High** `NO_QR_ON_HOLD`. | Dead phones happen; the limit stops it becoming routine. A held identity may be cloned: without the hold rule a clone that forced its way in could close the real truck's pass by claiming a dead phone (found by the site-level simulation, 2026-11-21). |
+| P10 | Expired, truck still inside | At expiry → **Medium** `PASS_EXPIRED` (possible side route); the pass becomes `EXPIRED_UNRESOLVED`. The trip **stays counted** against the quota. The truck gets no new pass until it's resolved → **High** `UNRESOLVED_TRIP`. | Can't free quota by "disappearing". (Built: swept on every gate event at the pole's event time.) |
+| P11 | Expired pass presented at exit | Barrier stays down; officer can approve a **late close** (resolve RESOLVE / FLAG / CANCEL on Trip passes; RESOLVE closes it as `officer`, CANCEL releases the reserved trip). Trip counted. | Keeps late trips visible without stranding trucks. (Built.) |
+| P12 | Leaves with no pass | At the exit with no pass to close (e.g. came in by a side track) → barrier stays down, **High** `NO_PASS`. If it **breaks through**, the OUT is counted with no pass closure → **illegal trip**, **Critical** `ILLEGAL_TRIP` + `BARRIER_FORCED`. | The 100-vs-200 case. |
 | P13 | Quota reservation | Issuing **reserves 1 trip**; closing confirms it. Reserved trips are only released by an officer with a reason. | No over-issuing; no silent quota recovery. |
 | P14 | Offline pole | Pole holds **5 pre-allocated passes**; issues / checks locally, syncs later; when used up → refuses. | Works through network outages without over-issuing. |
 | P15 | Hours window and open passes | No pass issued outside permitted hours. A truck with an open pass may exit up to **30 min after** the window ends; later exits flagged `OUTSIDE_HOURS`. | Last trip of the day isn't punished; night trips are. |
@@ -85,8 +87,9 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | CP5 | Warnings | **80%** → Info, **90%** → Medium, **100%** → **High** and **pass issuing stops** for that limit. | Early warning, then hard stop. |
 | CP6 | Over the limit | Any trip beyond 100% (illegal by definition) → **Critical** `LIMIT_EXCEEDED`. | |
 | CP7 | Vehicles limit | Distinct trucks with ≥ 1 pass in the period; a new truck beyond the limit → no pass, **High** `VEHICLE_LIMIT`. | Stops fleet padding. |
+| CP7a | Per-vehicle allocation | **Only if the contract sets one** (`per_vehicle_trips` on the permit): each truck's trips are reserved at entry; used up → no pass, **Medium** `PER_VEHICLE_LIMIT`; last 10% → **Info** `PER_VEHICLE_LOW`. Officer top-ups are audited. | Quota is a contract setting, not hard-coded. (Built 2026-11-22.) |
 | CP8 | Tonnes | Legal tonnes = sum of **measured net tonnes** on closed passes. | Royalty is per tonne. |
-| CP9 | Vendor report | Compared **daily**. Vendor trips or tonnes **below** GB legal → **Medium** `UNDER_REPORT`; **below GB actual** → **High**. | Under-reporting (E1). Vendor figures never used as the source. |
+| CP9 | Vendor report | Compared **daily**. Vendor trips **below GB actual** → **High** `UNDER_REPORT` (message says if it is even below GB legal). Vendor tonnes below GB weighed tonnes by more than **2% (min 0.5 t)** → **High** `UNDER_REPORT_TONNES`. | Under-reporting (E1). Vendor figures never used as the source. Built 2026-11-21: one High rule instead of the Medium/High split, because "below legal" is always also "below actual". |
 | CP10 | Monthly mass balance | Extracted (GB drone survey) vs dispatched (gate tonnes) + stockpile change. Gap **> 10%** → **Critical** `MASS_BALANCE_GAP`. **(verify survey + density accuracy)** | Catch-all for side routes and broken poles; 10% leaves room for survey/density error. |
 | CP11 | Offline data | Totals from an offline pole shown **provisional** until synced. | Honest numbers. |
 
@@ -109,7 +112,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 
 | ID | Rule | Recommended | Why |
 |---|---|---|---|
-| A1 | Barrier | Lifts **only** on a valid pass close (or a logged GB officer override). Never opens for the Vendor. | Turns "detect" into "prevent". |
+| A1 | Barriers (entry and exit) | **Entry** barrier lifts **only when a pass is issued**; **exit** barrier lifts **only on a valid pass close** (or a logged GB officer override). Never opens for the Vendor. | Turns "detect" into "prevent". Entry refusal happens while the truck is still empty, so there is no loaded truck at the exit to pressure an officer (decided 2026-11-21). |
 | A2 | Barrier forced | Impact / arm opened without permission → **Critical** `BARRIER_FORCED` + photo/video; trip treated as illegal (P12). | Makes cheating a recorded act of force. |
 | A3 | Barrier / pole down | Gate **fails closed**; GB override only (one-time code to an officer), every use logged and flagged. | No silent fail-open. |
 | A4 | Truck on hold | Set automatically by I6, I7, P2, P6, P7; released only by an officer **with a reason**, and **not by the officer who raised the review** (maker-checker). | Clone pairs frozen until reviewed. |

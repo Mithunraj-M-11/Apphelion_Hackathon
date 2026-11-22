@@ -12,7 +12,7 @@ Run manually:  docker compose exec backend python -m app.seed
 
 import hashlib
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import func, select
 
@@ -22,11 +22,11 @@ from app.models import (
     Driver,
     EdgeSystemState,
     Officer,
+    Permit,
     RfidSticker,
     Transporter,
     TripSession,
     Truck,
-    VehicleQuota,
 )
 from app.services.plates import validate_indian_plate
 from app.services.registry import record_history, snapshot
@@ -101,8 +101,8 @@ TRUCKS = [
     ("OD09AL9015", "signa3523", 1, "Yellow", None),
     ("OD02BQ4410", "eicher6028", 1, "White", "revoked_sticker"),
     ("OD02BR7120", "al3520", 1, "Blue", None),
-    ("OD11CE3305", "signa2823", 1, "Yellow", "exhausted_quota"),
-    ("OD14DF8821", "bb2823", 1, "White", "low_quota"),
+    ("OD11CE3305", "signa2823", 1, "Yellow", ""),
+    ("OD14DF8821", "bb2823", 1, "White", ""),
     ("JH05CK2290", "al2820", 2, "Orange", None),
     ("JH05CL6614", "signa3523", 2, "Yellow", None),
     ("CG04MN5507", "eicher6028", 2, "White", "expired_unresolved"),
@@ -112,6 +112,20 @@ TRUCKS = [
 ]
 
 TODAY = date(2026, 11, 20)
+
+# The real permit for the test contract (what the GB enters once per contract). Test data.
+PERMIT = {
+    "label": "IOM-KJR-2026-01 extraction permit, Nov 2026 to Mar 2027 (test data)",
+    "valid_from": date(2026, 11, 1),
+    "valid_to": date(2027, 3, 31),
+    "trip_limit": 6000,
+    "tonne_limit": 150000.0,
+    "vehicle_limit": 20,
+    "hours_start": time(6, 0),
+    "hours_end": time(18, 0),
+    "exit_grace_min": 30,
+    "pass_expiry_min": 120,
+}
 
 
 def _hex(n: int) -> str:
@@ -272,37 +286,8 @@ def seed() -> None:
                 )
                 db.add(sticker)
 
-        # 2. Vehicle Quotas
-        existing_quotas = {q.truck_id: q for q in db.scalars(select(VehicleQuota)).all()}
-        for t in all_trucks:
-            if t.id not in existing_quotas:
-                note = next((item[4] for item in TRUCKS if item[0] == t.plate), None)
-                if note == "exhausted_quota":
-                    max_t = 50
-                    comp_t = 50
-                    rem_t = 0
-                    q_status = "EXHAUSTED"
-                elif note == "low_quota":
-                    max_t = 50
-                    comp_t = 47
-                    rem_t = 3
-                    q_status = "LOW"
-                else:
-                    max_t = 100
-                    comp_t = 35
-                    rem_t = 65
-                    q_status = "AVAILABLE"
-
-                quota = VehicleQuota(
-                    truck_id=t.id,
-                    max_trips=max_t,
-                    completed_trips=comp_t,
-                    remaining_trips=rem_t,
-                    valid_from=date(2026, 11, 1),
-                    valid_to=date(2027, 3, 31),
-                    status=q_status,
-                )
-                db.add(quota)
+        # 2. Per-vehicle trip allocations are not seeded: they come from the contract (a permit's
+        #    per_vehicle_trips) and are created on first use.
 
         # 3. Edge System State
         edge_state = db.scalar(select(EdgeSystemState).where(EdgeSystemState.id == 1))
@@ -348,10 +333,34 @@ def seed() -> None:
                     db.add(unres_session)
 
         db.commit()
-        print(f"seed: updated registry, RFID stickers, vehicle quotas, edge state.")
+        print("seed: updated registry, RFID stickers, edge state.")
+    finally:
+        db.close()
+
+
+def seed_permit() -> None:
+    """Separate and idempotent, so databases seeded before permits existed get one too."""
+    db = SessionLocal()
+    try:
+        if db.scalar(select(func.count()).select_from(Permit).where(Permit.source.is_(None))):
+            print("seed: permit already present, skipping")
+            return
+        contract = db.scalar(select(Contract).where(Contract.code == CONTRACT["code"]))
+        if contract is None:
+            print("seed: no contract, skipping permit")
+            return
+        permit = Permit(contract_id=contract.id, **PERMIT)
+        db.add(permit)
+        db.flush()
+        # trip sessions seeded before permits existed (e.g. the unresolved-trip example) belong to the real permit
+        for sess in db.scalars(select(TripSession).where(TripSession.permit_id.is_(None))).all():
+            sess.permit_id = permit.id
+        db.commit()
+        print("seed: loaded the contract permit")
     finally:
         db.close()
 
 
 if __name__ == "__main__":
     seed()
+    seed_permit()

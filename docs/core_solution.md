@@ -305,6 +305,12 @@ For a clone of the **same size and model** (length check can't tell them apart):
 → The pass catches **every clone that produces extra trips**. Axle and chassis checks (S3) become **nice-to-have**
 (confirming it's the exact physical truck), not required for limit enforcement.
 
+**GB RFID sticker (added 2026-11-22, built):** every truck also carries a GB-issued RFID sticker that answers a
+**challenge-response** with a secret key. A copied plate and a cloned FASTag can't answer it, so the "taking turns"
+row above is closed too: a perfect clone is refused at the entry barrier even while the real truck is away. The
+sticker must belong to the truck identified by plate + FASTag + length, be active (the GB can revoke it), and be the
+same sticker at exit as at entry. A missing or damaged sticker is refused for now (relaxations later).
+
 ### 2.8 Independence
 Registry: GB-built + VAHAN check · Camera, radar: GB pole · Reading and matching: GB server.
 
@@ -416,6 +422,12 @@ pass. All good → **barrier lifts**, pass **CLOSED** with **net tonnes**, trip 
 If the pole loses its server link, it issues and checks passes itself from a small **pre-allocated quota**
 (e.g. 5 passes) and syncs later, so it can't over-issue.
 
+**Built (2026-11-22):** a primary and a standby edge computer at the site with failover, local operation when the
+uplink is down (events queued in a sync outbox), signed recovery snapshots, officer-authorised emergency movements
+when both are down, and reconciliation afterwards. Every one of these raises an alert (silence is suspicious), and
+emergency movements stay provisional in the ledger until reconciled. Passes are Ed25519-signed, so a pole can check
+them offline with only the public key.
+
 ### PoC
 - **Backend pass service** with the rules above; QR codes **really generated and signed** (Python `qrcode` + Ed25519).
 - **Driver app mock:** phone-sized web page per truck showing its current pass as a real QR, plus a simulated SMS
@@ -525,11 +537,18 @@ and contract consequences are the GB's decision.
 
 No pass = no legal way to move material; anything that moves anyway becomes an illegal trip with evidence.
 
-### 4.1a GB-controlled boom barrier (exit; entry optional)
+### 4.1a GB-controlled boom barriers (entry and exit)
 Turns "prevent" from a paper refusal into a **physical** one. Mines already use RFID boom barriers (Coal India).
 
-**What:** a standard heavy-duty road barrier at each exit lane, wired to **our pole's computer**, powered by **our
-solar + battery**. Only the GB system can open it: not the Vendor's guard, software or office.
+**What:** a standard heavy-duty road barrier on **each entry and each exit lane**, wired to **our pole's computer**,
+powered by **our solar + battery**. Only the GB system can open it: not the Vendor's guard, software or office.
+
+**Entry barrier (decided 2026-11-21):** lifts **only when a pass is issued** (identified, authorised, not on hold, no
+open pass, inside permitted hours, quota left). A refused truck is turned back while it is still **empty**, so nothing
+is at stake: no loaded truck stranded at the exit putting pressure on an officer to "just let it go" (the insider
+collusion point), and a full quota becomes a clean stop at the gate. The cost is small: a second arm on the same GB
+controller. Light vehicles under 6 m (site jeeps, service vans) are let through and logged, not counted as trips; a
+pickup-sized load is a known, accepted gap.
 
 ```
 Truck stops at exit (already stops for the QR scan)
@@ -562,8 +581,9 @@ simply driving out.
 **Practical notes:** a few seconds per truck; very busy sites need more exit lanes. Installing it needs a contract
 clause (GB's decision). Signage and an emergency release are needed for safety.
 
-**PoC:** a simulated barrier on the gate view: lifts for a valid pass, stays down with a reason otherwise; a "forced
-open" event raises a critical alert.
+**PoC (built):** simulated entry and exit barriers in the gate API, exercised by the simulator (`trip_basic`): entry lifts only when a pass
+is issued, exit only on a valid pass close; otherwise the barrier stays down with the reason as an alert. A truck that
+breaks through raises a Critical `BARRIER_FORCED`; at the exit it is also counted as an `ILLEGAL_TRIP`.
 
 ### 4.2 Alert (severity, channel, escalation)
 | Level | Examples | Channel |

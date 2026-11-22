@@ -105,3 +105,9 @@ export function decisiveCheck(result: string, caughtBy: string[]): string | null
 }
 
 export const isWalkthroughSource = (source: string | null) => !!source?.startsWith("walkthrough:");
+
+/** 'site:4' -> 4; null otherwise. */
+export function parseSiteSource(source: string | null): number | null {
+  const m = source?.match(/^site:(\d+)$/);
+  return m ? Number(m[1]) : null;
+}

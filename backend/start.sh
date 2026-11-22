@@ -3,4 +3,5 @@
 set -e
 alembic upgrade head
 python -m app.seed
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# Short graceful shutdown: open live-log streams (SSE) would otherwise block every auto-reload.
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 2

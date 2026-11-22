@@ -22,7 +22,7 @@ from app.schemas import (
 from app.services import logbus
 from app.services.logbus import LogLine
 from app.services.registry import record_history, snapshot
-from app.services.trip_sessions import verify_and_complete_exit
+from app.services.plates import normalise_plate
 
 router = APIRouter(prefix="/api", tags=["trips"])
 
@@ -81,8 +81,9 @@ def resolve_trip(
         raise HTTPException(404, "Trip session not found")
 
     action = action.upper()
-    if action == "RESOLVE":
+    if action == "RESOLVE":  # officer late close (P11): the trip stays counted
         new_status = "COMPLETED"
+        session.close_mode = session.close_mode or "officer"
     elif action == "FLAG":
         new_status = "FLAGGED"
     elif action == "CANCEL":
@@ -116,26 +117,31 @@ def exit_verify(
     db: Session = Depends(get_db),
     officer: Officer = Depends(acting_officer),
 ):
-    """Exit verification endpoint for the Gate Console Exit Mode."""
-    res = verify_and_complete_exit(
-        db=db,
-        gate=body.gate,
-        truck_plate=body.truck_plate,
-        sticker_uid=body.rfid_sticker_uid,
-        qr_token=body.qr_token,
-        sim_auth_mode=body.sim_auth_mode,
-        officer_id=officer.id,
-        source=body.source,
-    )
+    """Officer-assisted exit verification (Gate Console Exit Mode). Runs the same exit pipeline as a pole; the
+    officer reads the plate, so the truck's registered FASTag and length stand in for those sensors. The GB RFID
+    sticker and the QR are still checked."""
+    from app.routers.gates import process_gate_event
+    from app.schemas import GateEventIn
+
+    plate = normalise_plate(body.truck_plate) if body.truck_plate else None
+    truck = db.scalar(select(Truck).where(Truck.plate == plate)) if plate else None
+    out = process_gate_event(db, body.gate, GateEventIn(
+        direction="OUT", plate_read=body.truck_plate, fastag_read=truck.fastag_tag_id if truck else None,
+        radar_length_m=truck.length_m if truck else None, rfid_sticker_uid=body.rfid_sticker_uid,
+        rfid_sim_mode=body.sim_auth_mode, qr_token=body.qr_token, source=body.source,
+        permit_id=body.permit_id,
+    ))
+    checks = out.trip_checks or []
+    passed = out.trip_decision == "EXIT AUTHORIZED"
     return ExitVerifyOut(
-        decision=res.decision,
-        passed=res.passed,
-        reasons=res.reasons,
-        checks=[TripCheckOut(name=c.name, status=c.status, detail=c.detail) for c in res.checks],
-        session=res.session,
-        quota_before=res.quota_before,
-        quota_after=res.quota_after,
-        exit_movement_id=res.exit_movement.id if res.exit_movement else None,
+        decision=out.trip_decision or "EXIT REJECTED",
+        passed=passed,
+        reasons=[c.detail for c in checks if c.status == "failed"],
+        checks=checks,
+        session=out.trip_session,
+        quota_before=None,
+        quota_after=out.quota_remaining,
+        exit_movement_id=out.id,
     )
 
 
@@ -150,7 +156,7 @@ def list_quotas(status: str | None = None, db: Session = Depends(get_db)):
 
 @router.get("/quotas/{truck_id}", response_model=VehicleQuotaOut)
 def get_quota(truck_id: int, db: Session = Depends(get_db)):
-    quota = db.scalar(select(VehicleQuota).where(VehicleQuota.truck_id == truck_id))
+    quota = db.scalar(select(VehicleQuota).where(VehicleQuota.truck_id == truck_id).order_by(VehicleQuota.id.desc()).limit(1))
     if not quota:
         raise HTTPException(404, "Quota record not found for truck")
     return quota
@@ -164,7 +170,7 @@ def adjust_quota(
     officer: Officer = Depends(acting_officer),
 ):
     """Authorized adjustment of a truck's maximum trip quota limit with mandatory reason."""
-    quota = db.scalar(select(VehicleQuota).where(VehicleQuota.truck_id == truck_id).with_for_update())
+    quota = db.scalar(select(VehicleQuota).where(VehicleQuota.truck_id == truck_id).order_by(VehicleQuota.id.desc()).limit(1).with_for_update())
     if not quota:
         raise HTTPException(404, "Quota record not found for truck")
 

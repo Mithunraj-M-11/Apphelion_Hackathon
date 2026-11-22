@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
 import {
+  LuBellRing,
   LuBuilding2,
+  LuCalendarClock,
   LuFlaskConical,
   LuGauge,
   LuLayers,
@@ -17,12 +19,14 @@ import {
 } from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
+import Alerts from "./pages/Alerts";
 import EdgeRecovery from "./pages/EdgeRecovery";
 import GateConsole from "./pages/GateConsole";
 import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
 import RfidStickers from "./pages/RfidStickers";
 import SimRuns from "./pages/SimRuns";
+import SiteRuns from "./pages/SiteRuns";
 import SolutionFlow from "./pages/SolutionFlow";
 import Transporters from "./pages/Transporters";
 import TripPasses from "./pages/TripPasses";
@@ -42,7 +46,9 @@ const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/trip-quotas", label: "Trip quotas", Icon: LuGauge },
   { to: "/edge-recovery", label: "Edge & recovery", Icon: LuShieldCheck },
   { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
+  { to: "/alerts", label: "Alerts", Icon: LuBellRing },
   { to: "/scenario-runs", label: "Scenario runs", Icon: LuFlaskConical },
+  { to: "/site-runs", label: "Site runs", Icon: LuCalendarClock },
 ];
 
 function readCollapsed(): boolean {
@@ -141,8 +147,11 @@ function Layout() {
           <Route path="/trip-quotas" element={<TripQuotas />} />
           <Route path="/edge-recovery" element={<EdgeRecovery />} />
           <Route path="/gate-events" element={<GateEvents />} />
+          <Route path="/alerts" element={<Alerts />} />
           <Route path="/scenario-runs" element={<SimRuns />} />
           <Route path="/scenario-runs/:id" element={<SimRuns />} />
+          <Route path="/site-runs" element={<SiteRuns />} />
+          <Route path="/site-runs/:id" element={<SiteRuns />} />
           <Route path="*" element={<p>Page not found.</p>} />
         </Routes>
       </main>

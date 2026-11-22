@@ -1,6 +1,6 @@
 """API request / response models for the registry."""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -234,6 +234,14 @@ class GateEventIn(BaseModel):
     plate_read: str | None = None
     fastag_read: str | None = None
     radar_length_m: float | None = Field(default=None, gt=0, lt=40)
+    weight_t: float | None = Field(default=None, gt=0, lt=200)  # GB weigh pad
+    pass_token: str | None = Field(default=None, max_length=2000)  # QR content shown at exit
+    pass_code: str | None = Field(default=None, max_length=20)  # SMS code given at exit
+    barrier_forced: bool = False  # barrier impact sensor: vehicle broke through
+    permit_id: int | None = None  # PoC: real poles resolve the permit from gate config
+    rfid_sticker_uid: str | None = Field(default=None, max_length=50)  # GB RFID sticker read by the pole
+    rfid_sim_mode: str | None = "genuine"  # PoC sensor truth: genuine | cloned | revoked | unknown_damaged
+    qr_token: str | None = Field(default=None, max_length=2000)  # same as pass_token (Gate console name)
     source: str | None = Field(default=None, max_length=100)
 
 
@@ -247,6 +255,54 @@ class TruckSummary(ORM):
     id: int
     plate: str
     plate_type: str
+
+
+class StepItemOut(BaseModel):
+    label: str
+    status: str
+    detail: str
+
+
+class StepOut(BaseModel):
+    name: str
+    status: str
+    items: list[StepItemOut]
+
+
+class AlertOut(ORM):
+    id: int
+    permit_id: int
+    movement_id: int | None
+    pass_id: int | None
+    truck_id: int | None
+    code: str
+    severity: str
+    message: str
+    status: str
+    source: str | None
+    created_at: datetime
+
+
+class PassSummary(ORM):
+    id: int
+    code: str
+    truck_id: int
+    status: str
+    issued_at: datetime
+    expires_at: datetime
+    closed_at: datetime | None
+    entry_weight_t: float | None
+    exit_weight_t: float | None
+    net_t: float | None
+    close_mode: str | None
+
+
+class PassFull(PassSummary):
+    """What the driver receives: QR content + SMS code (only returned when the pass is issued)."""
+
+    token: str
+    sms_code: str
+    plate: str
 
 
 class MovementOut(ORM):
@@ -267,6 +323,101 @@ class MovementOut(ORM):
     reasons: list[str]
     flags: list[str]
     source: str | None
+    rfid_sticker_uid: str | None = None
+    permit_id: int | None = None
+    weight_t: float | None = None
+    decision: str | None = None
+    barrier: str | None = None
+    barrier_forced: bool = False
+    counted_trip: bool = False
+    trip: str | None = None
+    steps: list[StepOut] | None = None
+    pass_: PassSummary | None = Field(default=None, serialization_alias="pass")
+    alerts: list[AlertOut] = []
+
+
+
+
+# ---------- Permits / holds ----------
+class PermitIn(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    valid_from: date
+    valid_to: date
+    trip_limit: int = Field(ge=1)
+    tonne_limit: float = Field(gt=0)
+    vehicle_limit: int = Field(ge=1)
+    hours_start: time
+    hours_end: time
+    exit_grace_min: int = Field(default=30, ge=0, le=240)
+    pass_expiry_min: int = Field(default=120, ge=5, le=24 * 60)
+    per_vehicle_trips: int | None = Field(default=None, ge=1)  # contract cap per truck, if any
+    source: str | None = Field(default=None, max_length=100)
+
+
+class PermitOut(ORM):
+    id: int
+    contract_id: int
+    label: str
+    valid_from: date
+    valid_to: date
+    trip_limit: int
+    tonne_limit: float
+    vehicle_limit: int
+    hours_start: time
+    hours_end: time
+    exit_grace_min: int
+    pass_expiry_min: int
+    per_vehicle_trips: int | None = None
+    source: str | None
+    created_at: datetime
+
+
+class HoldOut(ORM):
+    id: int
+    permit_id: int
+    truck_id: int
+    truck: TruckSummary
+    reason_code: str
+    movement_id: int | None
+    created_at: datetime
+    released_at: datetime | None
+    released_by: int | None
+    release_reason: str | None
+
+
+class VendorReportIn(BaseModel):
+    day: date
+    trips: int = Field(ge=0)
+    tonnes: float = Field(ge=0)
+
+
+class SiteRunCreate(BaseModel):
+    scenario: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    seed: int
+    days: int = Field(ge=1, le=60)
+    permit_id: int | None = None
+
+
+class SiteRunFinish(BaseModel):
+    permit_id: int | None = None
+    report: dict
+
+
+class SiteRunOut(ORM):
+    id: int
+    scenario: str
+    description: str | None
+    seed: int
+    days: int
+    permit_id: int | None
+    started_at: datetime
+    finished_at: datetime | None
+    report: dict | None
+
+
+class HoldRelease(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
 
 
 
@@ -335,6 +486,7 @@ class RfidRevokeIn(BaseModel):
 # ---------- Quotas ----------
 class VehicleQuotaOut(ORM):
     id: int
+    permit_id: int | None = None
     truck_id: int
     max_trips: int
     completed_trips: int
@@ -383,6 +535,14 @@ class TripSessionOut(ORM):
     created_by: int | None = None
     closed_by: int | None = None
     notes: str | None = None
+    permit_id: int | None = None
+    entry_weight_t: float | None = None
+    exit_weight_t: float | None = None
+    net_t: float | None = None
+    sms_code: str | None = None
+    close_mode: str | None = None
+    flags: list[str] = []
+    source: str | None = None
     truck: TruckSummary | None = None
     sticker: RfidStickerOut | None = None
 
@@ -393,19 +553,19 @@ class TripCheckOut(BaseModel):
     detail: str
 
 
-class GateEventExtendedIn(GateEventIn):
-    rfid_sticker_uid: str | None = None
-    rfid_sim_mode: str | None = "genuine"  # genuine | cloned | revoked | unknown_damaged
-    qr_token: str | None = None
+class GateDecisionOut(MovementOut):
+    """Answer to a gate event: the movement, our steps / barrier / alerts, and the trip-authorization view."""
 
-
-class MovementExtendedOut(MovementOut):
-    rfid_sticker_uid: str | None = None
+    issued_pass: PassFull | None = None
     trip_checks: list[TripCheckOut] | None = None
-    trip_decision: str | None = None
+    trip_decision: str | None = None  # ENTRY AUTHORIZED | ENTRY REJECTED | EXIT AUTHORIZED | EXIT REJECTED
     trip_session: TripSessionOut | None = None
     quota_remaining: int | None = None
     quota_max: int | None = None
+
+
+GateEventExtendedIn = GateEventIn  # one gate event schema (kept name for existing imports)
+MovementExtendedOut = GateDecisionOut
 
 
 class ExitVerifyIn(BaseModel):
@@ -415,6 +575,7 @@ class ExitVerifyIn(BaseModel):
     qr_token: str | None = None
     sim_auth_mode: str = "genuine"
     source: str | None = None
+    permit_id: int | None = None  # defaults to the real permit
 
 
 class ExitVerifyOut(BaseModel):

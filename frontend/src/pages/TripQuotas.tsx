@@ -97,8 +97,10 @@ export default function TripQuotas() {
         <div>
           <h1>Per-Vehicle Trip Quota Management</h1>
           <p className="muted">
-            Track authorized trip quotas per vehicle, enforce non-deduction on entry, and manage quota top-ups with full
-            officer audit trails.
+            Per-truck trip allocations, when the contract caps trips per vehicle (a permit's per-vehicle limit). A trip
+            is reserved when the pass is issued at entry, so a truck that leaves by a side route still uses it up.
+            Officers can top up an allocation with a reason; every change is audited. The permit's overall trip,
+            tonne and vehicle limits are shown on the Site runs and Gate console ledgers.
           </p>
         </div>
       </div>
@@ -165,7 +167,7 @@ export default function TripQuotas() {
           ) : filteredQuotas.length === 0 ? (
             <tr>
               <td colSpan={8} className="center muted" style={{ padding: 24 }}>
-                No vehicle quota records found.
+                No per-vehicle allocations: the current contracts don't cap trips per truck.
               </td>
             </tr>
           ) : (

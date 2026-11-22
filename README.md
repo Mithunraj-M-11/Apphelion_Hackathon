@@ -61,13 +61,30 @@ Data persists across restarts in Docker volumes (`pgdata` for Postgres, `uploads
 
 ### Tampering scenarios (simulator)
 
-The simulator plays a gate pole. Each scenario in `simulator/scenarios/<suite>.yaml` describes what **physically**
-happens (fake plate, stolen FASTag, removed identifiers…); the simulator reports faithful sensor readings to the
-backend like a real pole, and checks whether the system caught the tampering.
+The simulator plays the gate poles. Each scenario in `simulator/scenarios/<suite>.yaml` describes what **physically**
+happens (fake plate, stolen FASTag, removed identifiers, an old QR shown again, an overloaded body…); the simulator
+reports faithful sensor readings to the backend like a real pole, and checks whether the system caught the trick.
+Each scenario runs under its own small permit, so scenarios never affect each other or the real permit.
 
 ```bash
-docker compose run --rm simulator identify_basic
+docker compose run --rm simulator trip_basic       # 29 full-trip stories: entry, pass, exit, GB sticker, weight, quota, hours
+docker compose run --rm simulator trip_auth_full   # 16 GB RFID sticker / trip-session / edge-recovery cases
+docker compose run --rm simulator identify_basic   # 5 Identify-only cases
 ```
+
+### Site-level runs (a whole contract period)
+
+`simulator/site_run.py` plays a whole contract period (7 days by default) through the gates: honest trucks working
+their shifts plus cheats mixed in, with a simulated Vendor filing daily reports. It keeps the **ground truth** the GB
+never sees, and saves a site report comparing Permitted / Vendor reported / GB legal / GB actual / GB illegal /
+Ground truth, with every cheat scored as prevented, detected or missed. Same seed, same result.
+
+```bash
+docker compose run --rm simulator site clean_week   # control: honest traffic only
+docker compose run --rm simulator site brief_case   # permit 100 trips, the Vendor pushes on to ~200 and reports 100
+docker compose run --rm simulator site mixed_week   # every cheat type inside a normal week
+```
+Scenarios live in `simulator/scenarios/site/`. Each run takes about a minute and appears under **Site runs**.
 Prints a scorecard (scenarios passed, tampering caught, false alarms on honest trips) and saves the run, which the
 dashboard shows under **Scenario runs**. Every reading appears under **Gate events**. Scenario files are mounted, so
 edit them and re-run without rebuilding.
@@ -77,13 +94,21 @@ edit them and re-run without rebuilding.
 - **Truck registry** (`/registry`): search and filter trucks, see who is authorised today, open any truck for its
   full detail (identity, FASTag, measurements, documents, ownership, enrollment, photos, change history).
 - **Transporters** (`/transporters`): companies and their drivers.
-- **Gate console** (`/gate-console`): live walkthrough for demos. Describe what physically arrives at the gate
-  (mocked sensors: registered or outside truck, plate shown, FASTag on the windscreen, or pick a preset), press
-  "Truck arrives at gate", and watch the real GB software decide check by check while the server log streams
-  live (Server-Sent Events from `/api/logs/stream`). Each browser tab sees only its own walkthrough.
-- **Gate events** (`/gate-events`): every vehicle the poles observed, the raw readings, the Identify result and
-  each check (passed / failed / not applicable) with its reason.
-- **Scenario runs** (`/scenario-runs`): simulator scorecards and per-scenario expected vs actual.
+- **Gate console** (`/gate-console`): live walkthrough for demos, in entry and exit modes. Describe what physically
+  arrives (truck, plate, FASTag, GB RFID sticker and how its challenge-response answers, load on the weigh pad, the QR
+  shown at exit, whether it breaks through the barrier), or pick a preset; watch the real GB software decide step by
+  step (Identify incl. sticker, Eligibility / Pass check, Measure, Pass / Compare, Barrier), with the signed pass
+  (QR + SMS code), alerts, the session permit's ledger and the live server log. Each browser tab has its own permit.
+- **Trip passes** (`/trip-passes`): every trip session (pass), its status, QR, and the officer resolve (late close).
+- **RFID stickers** (`/rfid-stickers`): issue, replace and revoke the GB stickers.
+- **Trip quotas** (`/trip-quotas`): per-truck allocations, when the contract sets one, and audited top-ups.
+- **Edge & recovery** (`/edge-recovery`): edge failover, WAN state, signed snapshots, emergency movements, reconciliation.
+- **Gate events** (`/gate-events`): every vehicle the poles observed: raw readings, Identify result, barrier,
+  pass, alerts, and every step with its reason.
+- **Alerts** (`/alerts`): every alert raised, by severity and source.
+- **Scenario runs** (`/scenario-runs`): simulator scorecards; trip stories show each event expected vs actual.
+- **Site runs** (`/site-runs`): site-level reports: the ledger table, trips per day (chart and table), cheats by
+  type, alerts, false alarms.
 - **Acting as** (top right): the GB officer making changes. There's no login in the PoC; every change is recorded
   against the selected officer.
 

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.edge import EdgeSystemState, EmergencyMovement, SyncOutbox
+from app.models.trip import Alert
 from app.models.gate import Movement
 from app.models.logs import EventLog
 from app.models.registry import Officer, Truck
@@ -85,6 +86,19 @@ def update_edge_state(
         state.disaster_recovery_mode = disaster_recovery_mode
 
     state.updated_at = datetime.now(timezone.utc)
+    # Silence is suspicious (G5): losing the uplink or the primary edge computer is an alert, never just a state
+    degraded = []
+    if wan_connectivity is not None and wan_connectivity != "ONLINE" and any(c.startswith("WAN") for c in changes):
+        degraded.append(("EDGE_WAN_OFFLINE", "HIGH", f"Site uplink is {wan_connectivity}: gate data is held locally "
+                                                     "and totals are provisional until it syncs"))
+    if primary_status is not None and primary_status != "ACTIVE" and any(c.startswith("Primary") for c in changes):
+        degraded.append(("EDGE_PRIMARY_DOWN", "CRITICAL", f"Primary edge computer is {primary_status}; "
+                                                          f"authority is {state.active_authority}"))
+    if disaster_recovery_mode and any(c.startswith("DR") for c in changes):
+        degraded.append(("EDGE_DR_MODE", "CRITICAL", "Disaster-recovery mode on: only officer-authorised "
+                                                     "emergency movements until recovery"))
+    for code, severity, message in degraded:
+        db.add(Alert(code=code, severity=severity, message=message, status="open", source="edge"))
     db.commit()
     db.refresh(state)
 
@@ -320,6 +334,9 @@ def record_emergency_movement(
     )
     db.add(em)
     db.flush()
+    db.add(Alert(code="EMERGENCY_MOVEMENT", severity="MEDIUM", status="open", source="edge",
+                 message=f"{truck_plate.upper()} {direction.upper()} at {gate.upper()} authorised manually in emergency "
+                         f"mode; provisional until reconciled (CP11). Reason: {reason}"))
 
     # Log
     log_line = LogLine(

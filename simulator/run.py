@@ -1,17 +1,24 @@
-"""SiteWatch scenario simulator: plays the role of gate poles and edge controllers.
+"""SiteWatch scenario simulator: plays the role of the gate poles.
 
-Usage:  python run.py <suite>          (e.g. identify_basic, trip_auth_full)
+Usage:  python run.py <suite>        e.g. identify_basic -> scenarios/identify_basic.yaml
+                                          trip_basic     -> scenarios/trip_basic.yaml
+        python run.py site <scenario>  a whole contract period -> scenarios/site/<scenario>.yaml (see site_run.py)
+        python run.py trip_auth_full   GB RFID sticker / trip-session / edge-recovery suite (see auth_run.py)
 
-Supports:
-- Basic physical vehicle tampering cases (plate, FASTag, radar length)
-- GB-issued RFID sticker authentication (genuine, cloned, revoked, unknown)
-- Vehicle trip quota enforcement (entry non-deduction, exit deduction)
-- Internal signed QR token lifecycle & replay prevention
-- Offline-first operation, WAN failure, edge failover, and Level 3 disaster recovery
+Two scenario formats:
+- single (identify_basic): one gate reading per scenario, judged on the Identify result.
+- trip   (trip_basic):     a short story of timed gate events (entry, exit, ...) under a small permit, judged on
+                           every event (barrier, pass, trip, alerts).
+
+Each scenario gets its OWN permit (source-tagged), so passes, quotas and holds never leak between scenarios.
+For each event the simulator builds what a faithful pole would report for the physical situation (plate on the
+truck, tag on the windscreen, real length, real weight, what the driver shows at exit, barrier impact) and posts
+it to the GB backend exactly like a real pole. It never writes to the registry: the registry is ground truth.
 """
 
 import os
 import sys
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +27,18 @@ import yaml
 
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
+IST = timezone(timedelta(hours=5, minutes=30))
+SERIOUS = ("HIGH", "CRITICAL")
+
+DEFAULT_PERMIT = {"trip_limit": 50, "tonne_limit": 1500, "vehicle_limit": 20, "hours_start": "06:00",
+                  "hours_end": "18:00", "exit_grace_min": 30, "pass_expiry_min": 120}
 
 
 class ScenarioError(Exception):
     pass
+
+
+STICKERS: dict[str, str] = {}  # GB RFID sticker UID by plate, loaded per run
 
 
 def load_registry(client: httpx.Client) -> dict[str, dict]:
@@ -33,61 +48,68 @@ def load_registry(client: httpx.Client) -> dict[str, dict]:
 
 
 def load_stickers(client: httpx.Client) -> dict[str, str]:
-    """Active sticker UID keyed by truck plate."""
-    try:
-        stickers = client.get("/api/rfid-stickers").raise_for_status().json()
-        return {s["truck"]["plate"]: s["uid"] for s in stickers if s.get("truck")}
-    except Exception:
-        return {}
+    """GB RFID sticker UID keyed by truck plate (read-only)."""
+    stickers = client.get("/api/rfid-stickers").raise_for_status().json()
+    return {s["truck"]["plate"]: s["uid"] for s in stickers if s.get("truck") and s.get("status") != "REPLACED"}
 
 
-def sensor_readings(scn: dict, registry: dict[str, dict], rogues: dict[str, dict]) -> dict:
-    """What a faithful pole reports for the physical situation in the scenario."""
-    phys = scn.get("physical")
-    if not phys:
-        # Fallback / shorthand for extended scenarios
-        v = scn.get("vehicle", {})
-        if "registered" in v:
-            truck = registry.get(v["registered"])
-            if not truck:
-                raise ScenarioError(f"Registered truck {v['registered']} not found")
-            return {
-                "plate_read": truck["plate"],
-                "fastag_read": truck["fastag_tag_id"],
-                "radar_length_m": truck["length_m"],
-            }
-        return {"plate_read": None, "fastag_read": None, "radar_length_m": None}
-
-    vehicle = phys["vehicle"]
-    if "registered" in vehicle:
-        truck = registry.get(vehicle["registered"])
-        if truck is None:
-            raise ScenarioError(f"{scn['id']}: registered truck {vehicle['registered']} not found in the registry")
-        own_plate, own_tag, length = truck["plate"], truck["fastag_tag_id"], truck["length_m"]
+def sticker_reading(ev: dict, vehicle: dict, stickers: dict[str, str], sid: str) -> dict:
+    """What the GB RFID reader reports: the vehicle's own sticker (registered trucks), none, or one taken from
+    another truck; `rfid` = genuine | cloned | revoked | unknown_damaged (what the challenge-response shows)."""
+    spec = ev.get("sticker", "own")
+    if spec == "none":
+        uid = None
+    elif spec == "own":
+        uid = stickers.get(vehicle["plate"]) if vehicle.get("registered") else None
     else:
-        rogue = rogues.get(vehicle["rogue"])
-        if rogue is None:
-            raise ScenarioError(f"{scn['id']}: unknown rogue vehicle {vehicle['rogue']}")
-        own_plate, own_tag, length = rogue.get("own_plate"), rogue.get("fastag"), rogue["length_m"]
+        uid = stickers.get(spec["from"])
+        if uid is None:
+            raise ScenarioError(f"{sid}: no GB sticker for {spec['from']}")
+    return {"rfid_sticker_uid": uid, "rfid_sim_mode": ev.get("rfid", "genuine")}
 
+
+def create_permit(client: httpx.Client, label: str, source: str, overrides: dict | None) -> dict:
+    today = datetime.now(IST).date()
+    body = {**DEFAULT_PERMIT, **(overrides or {}), "label": label, "source": source,
+            "valid_from": (today - timedelta(days=30)).isoformat(), "valid_to": (today + timedelta(days=30)).isoformat()}
+    return client.post("/api/permits", json=body).raise_for_status().json()
+
+
+def vehicle_of(spec, sid: str, registry: dict[str, dict], rogues: dict[str, dict]) -> dict:
+    """The physical vehicle: own plate, own tag, real length, empty weight, rated capacity."""
+    if isinstance(spec, str):
+        spec = {"registered": spec}
+    if "registered" in spec:
+        t = registry.get(spec["registered"])
+        if t is None:
+            raise ScenarioError(f"{sid}: registered truck {spec['registered']} not found in the registry")
+        return {"label": t["plate"], "plate": t["plate"], "tag": t["fastag_tag_id"], "length": t["length_m"],
+                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"], "registered": True}
+    r = rogues.get(spec["rogue"])
+    if r is None:
+        raise ScenarioError(f"{sid}: unknown rogue vehicle {spec['rogue']}")
+    return {"label": spec["rogue"], "plate": r.get("own_plate"), "tag": r.get("fastag"), "length": r["length_m"],
+            "empty": r.get("empty_weight_t", 12.0), "rated": r.get("rated_capacity_t", 25.0)}
+
+
+def identity_readings(phys: dict, sid: str, vehicle: dict, registry: dict[str, dict]) -> dict:
     plate = phys.get("plate_shown", "own")
-    plate_read = own_plate if plate == "own" else None if plate == "none" else plate
-
+    plate_read = vehicle["plate"] if plate == "own" else None if plate == "none" else plate
     tag = phys.get("fastag", "own")
     if tag == "own":
-        fastag_read = own_tag
+        fastag_read = vehicle["tag"]
     elif tag == "none":
         fastag_read = None
-    else:
+    else:  # {from: <registered plate>}: tag physically taken from (or cloned from) another registered truck
         donor = registry.get(tag["from"])
         if donor is None:
-            raise ScenarioError(f"{scn['id']}: tag donor {tag['from']} not found in the registry")
+            raise ScenarioError(f"{sid}: tag donor {tag['from']} not found in the registry")
         fastag_read = donor["fastag_tag_id"]
+    return {"plate_read": plate_read, "fastag_read": fastag_read, "radar_length_m": vehicle["length"]}
 
-    return {"plate_read": plate_read, "fastag_read": fastag_read, "radar_length_m": length}
 
-
-def judge_identify(scn: dict, movement: dict) -> tuple[bool, list[str]]:
+# ================================================================ single-event format (identify_basic)
+def judge_single(scn: dict, movement: dict) -> tuple[bool, list[str]]:
     exp = scn["expected"]
     problems = []
     if movement["result"] != exp["result"]:
@@ -104,351 +126,212 @@ def judge_identify(scn: dict, movement: dict) -> tuple[bool, list[str]]:
     return not problems, problems
 
 
-def execute_extended_scenario(
-    scn: dict,
-    client: httpx.Client,
-    run_id: int,
-    registry: dict[str, dict],
-    stickers: dict[str, str],
-) -> dict[str, Any]:
-    """Execute one of the 16 advanced scenarios (entry, exit, quota, edge failover, disaster recovery)."""
-    scn_type = scn.get("type", "entry")
-    scn_id = scn["id"]
-    exp = scn["expected"]
-    problems: list[str] = []
-    actual: dict[str, Any] = {}
-    mov_id = 0
-
-    headers = {"X-Officer-Id": "1"}  # Acting as Adishesh (approver)
-
-    if scn_type == "entry":
-        plate = scn["vehicle"]["registered"]
-        truck = registry[plate]
-        sticker_uid = scn.get("rfid_uid") or stickers.get(plate, f"GB-RFID-{truck['id']:05d}")
-        sim_mode = scn.get("rfid_sim_mode", "genuine")
-
-        if scn_id == "TC01":
-            active_trips = client.get(f"/api/trips?status=ACTIVE&plate={plate}").json()
-            for at in active_trips:
-                client.post(
-                    f"/api/trips/{at['session_id']}/resolve?action=RESOLVE&reason=Scenario_Reset",
-                    headers=headers,
-                )
-        elif scn_id == "TC09":
-            active_trips = client.get(f"/api/trips?status=ACTIVE&plate={plate}").json()
-            for at in active_trips:
-                client.post(
-                    f"/api/trips/{at['session_id']}/resolve?action=FLAG&reason=Scenario_Flag",
-                    headers=headers,
-                )
-
-        res = client.post(
-            "/api/gates/G1/events",
-            json={
-                "direction": "IN",
-                "plate_read": plate,
-                "fastag_read": truck["fastag_tag_id"],
-                "radar_length_m": truck["length_m"],
-                "rfid_sticker_uid": sticker_uid,
-                "rfid_sim_mode": sim_mode,
-                "source": f"sim:{run_id}:{scn_id}",
-            },
-        ).raise_for_status().json()
-        mov_id = res["id"]
-        trip_failed = [c["name"] for c in res.get("trip_checks", []) if c.get("status") == "failed"]
-        actual["result"] = res.get("trip_decision") or res.get("result")
-        actual["caught_by"] = res.get("caught_by", []) + trip_failed
-        actual["reasons"] = res.get("reasons", [])
-        actual["flags"] = res.get("flags", [])
-
-        if exp.get("trip_decision") and res.get("trip_decision") != exp["trip_decision"]:
-            problems.append(f"trip_decision {res.get('trip_decision')} != expected {exp['trip_decision']}")
-        if exp.get("trip_created") and not res.get("trip_session"):
-            problems.append("expected trip_session to be created but was None")
-
-    elif scn_type == "exit":
-        plate = scn["vehicle"]["registered"]
-        sticker_uid = stickers.get(plate)
-        # Find active session
-        trips = client.get(f"/api/trips?status=ACTIVE&plate={plate}").raise_for_status().json()
-        token = trips[0]["signed_token"] if trips else None
-
-        res = client.post(
-            "/api/trips/exit-verify",
-            json={
-                "gate": "G1",
-                "truck_plate": plate,
-                "rfid_sticker_uid": sticker_uid,
-                "qr_token": token,
-                "sim_auth_mode": scn.get("rfid_sim_mode", "genuine"),
-                "source": f"sim:{run_id}:{scn_id}",
-            },
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = res["decision"]
-        actual["caught_by"] = []
-        actual["reasons"] = res.get("reasons", [])
-        actual["flags"] = []
-        mov_id = res.get("exit_movement_id") or 0
-
-        if res["decision"] != exp["decision"]:
-            problems.append(f"exit decision {res['decision']} != expected {exp['decision']}")
-        if exp.get("quota_deducted") and (res.get("quota_before") is None or res.get("quota_after") != res["quota_before"] - 1):
-            problems.append(f"quota not deducted by 1: before={res.get('quota_before')} after={res.get('quota_after')}")
-
-    elif scn_type == "duplicate_entry":
-        # Create first entry
-        plate = scn["vehicle"]["registered"]
-        truck = registry[plate]
-        sticker_uid = stickers.get(plate, f"GB-RFID-{truck['id']:05d}")
-
-        client.post(
-            "/api/gates/G1/events",
-            json={
-                "direction": "IN",
-                "plate_read": plate,
-                "fastag_read": truck["fastag_tag_id"],
-                "radar_length_m": truck["length_m"],
-                "rfid_sticker_uid": sticker_uid,
-                "rfid_sim_mode": "genuine",
-                "source": f"sim:{run_id}:{scn_id}:1",
-            },
-        ).raise_for_status()
-
-        # Attempt second entry
-        res2 = client.post(
-            "/api/gates/G1/events",
-            json={
-                "direction": "IN",
-                "plate_read": plate,
-                "fastag_read": truck["fastag_tag_id"],
-                "radar_length_m": truck["length_m"],
-                "rfid_sticker_uid": sticker_uid,
-                "rfid_sim_mode": "genuine",
-                "source": f"sim:{run_id}:{scn_id}:2",
-            },
-        ).raise_for_status().json()
-        mov_id = res2["id"]
-        actual["result"] = res2.get("trip_decision") or res2["result"]
-        actual["caught_by"] = ["active_trip"]
-        actual["reasons"] = res2.get("reasons", [])
-        actual["flags"] = res2.get("flags", [])
-
-        if res2.get("trip_decision") != exp["trip_decision"]:
-            problems.append(f"duplicate entry result {res2.get('trip_decision')} != {exp['trip_decision']}")
-
-    elif scn_type == "exit_replay":
-        # Attempt exit using token from completely different truck
-        plate = scn["vehicle"]["registered"]
-        sticker_uid = stickers.get(plate)
-        fake_token = "eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiJTRVMtUkVQTEFZIiwicGxhdGUiOiJGT1JFSUdOIn0.FAKE_SIGNATURE"
-        res = client.post(
-            "/api/trips/exit-verify",
-            json={
-                "gate": "G1",
-                "truck_plate": plate,
-                "rfid_sticker_uid": sticker_uid,
-                "qr_token": fake_token,
-                "sim_auth_mode": "genuine",
-                "source": f"sim:{run_id}:{scn_id}",
-            },
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = res["decision"]
-        actual["caught_by"] = ["qr_token_validity"]
-        actual["reasons"] = res.get("reasons", [])
-        actual["flags"] = []
-
-        if res["decision"] != exp["decision"]:
-            problems.append(f"exit replay decision {res['decision']} != {exp['decision']}")
-
-    elif scn_type == "wan_disconnect":
-        # Disconnect WAN
-        st = client.post("/api/edge/state", json={"wan_connectivity": "WAN_OFFLINE_LOCAL_OPERATIONAL"}, headers=headers).raise_for_status().json()
-        actual["result"] = st["wan_connectivity"]
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-        if st["wan_connectivity"] != exp["wan_status"]:
-            problems.append(f"WAN connectivity {st['wan_connectivity']} != {exp['wan_status']}")
-        # Revert WAN back
-        client.post("/api/edge/state", json={"wan_connectivity": "ONLINE"}, headers=headers)
-
-    elif scn_type == "primary_failover":
-        # Fail primary
-        st = client.post(
-            "/api/edge/state",
-            json={"primary_status": "FAILED", "active_authority": "STANDBY", "standby_status": "ACTIVE"},
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = f"Authority: {st['active_authority']}"
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-        if st["active_authority"] != exp["active_authority"]:
-            problems.append(f"Active authority {st['active_authority']} != {exp['active_authority']}")
-        # Restore primary
-        client.post("/api/edge/state", json={"primary_status": "ACTIVE", "active_authority": "PRIMARY", "standby_status": "STANDBY"}, headers=headers)
-
-    elif scn_type == "complete_failure":
-        st = client.post(
-            "/api/edge/state",
-            json={"disaster_recovery_mode": True, "active_authority": "EMERGENCY"},
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = "DISASTER_RECOVERY_MODE"
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-        if not st["disaster_recovery_mode"]:
-            problems.append("disaster_recovery_mode expected True")
-        client.post("/api/edge/state", json={"disaster_recovery_mode": False, "active_authority": "PRIMARY"}, headers=headers)
-
-    elif scn_type == "snapshot_recovery":
-        snap = client.post("/api/edge/snapshot", headers=headers).raise_for_status().json()
-        res = client.post(
-            "/api/edge/restore",
-            json={"snapshot_envelope": snap, "approval_reason": "Automated verification test restore"},
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = res["status"]
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-        if res.get("status") != "RESTORED":
-            problems.append(f"snapshot restore status {res.get('status')} != RESTORED")
-
-    elif scn_type == "stale_snapshot":
-        snap = client.post("/api/edge/snapshot", headers=headers).raise_for_status().json()
-        # Artificial age simulation: data created_at set to 3 days ago
-        snap["data"]["created_at"] = "2026-11-10T10:00:00Z"
-        # Re-sign
-        import hashlib, hmac, json
-        raw = json.dumps(snap["data"], sort_keys=True, separators=(",", ":"))
-        snap["digest"] = hashlib.sha256(raw.encode()).hexdigest()
-        snap["signature"] = hmac.new("sitewatch-gb-snapshot-root-key-2026".encode(), raw.encode(), hashlib.sha256).hexdigest()
-
-        res = client.post(
-            "/api/edge/restore",
-            json={"snapshot_envelope": snap, "approval_reason": "Stale snapshot verification test"},
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = "STALE_WARNING_LOGGED" if res.get("is_stale") else "NOT_STALE"
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-        if not res.get("is_stale"):
-            problems.append("expected snapshot to be flagged as stale")
-
-    elif scn_type == "emergency_auth":
-        em = client.post(
-            "/api/edge/emergency-movement",
-            json={
-                "truck_plate": "OD09AC5678",
-                "direction": "IN",
-                "gate": "G1",
-                "reason": "Emergency movement during outage verification test",
-            },
-            headers=headers,
-        ).raise_for_status().json()
-        actual["result"] = f"EMERGENCY_AUTH_#{em['id']}"
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-
-    elif scn_type == "reconciliation":
-        report = client.post("/api/edge/reconcile", headers=headers).raise_for_status().json()
-        actual["result"] = f"RECONCILED_{report['reconciled_count']}_MOVEMENTS"
-        actual["caught_by"] = []
-        actual["reasons"] = []
-        actual["flags"] = []
-
-    ok = len(problems) == 0
-    return {
-        "id": scn_id,
-        "name": scn["name"],
-        "kind": scn.get("kind", "honest"),
-        "why": scn.get("why"),
-        "readings": {"scenario_type": scn_type},
-        "expected": exp,
-        "actual": actual,
-        "movement_id": mov_id,
-        "pass": ok,
-        "problems": problems,
+def run_single(client, spec, run, registry) -> tuple[list[dict], dict]:
+    gate, direction = spec.get("gate", "G1"), spec.get("direction", "IN")
+    rogues = spec.get("rogue_vehicles", {})
+    results = []
+    for scn in spec["scenarios"]:
+        source = f"sim:{run['id']}:{scn['id']}"
+        permit = create_permit(client, f"Sim run {run['id']} {scn['id']}", source, spec.get("permit"))
+        vehicle = vehicle_of(scn["physical"]["vehicle"], scn["id"], registry, rogues)
+        reading = identity_readings(scn["physical"], scn["id"], vehicle, registry)
+        movement = client.post(f"/api/gates/{gate}/events", json={
+            "direction": direction, **reading, **sticker_reading(scn["physical"], vehicle, STICKERS, scn["id"]),
+            "source": source, "permit_id": permit["id"],
+            "weight_t": round(vehicle["empty"], 2),
+        }).raise_for_status().json()
+        ok, problems = judge_single(scn, movement)
+        results.append({
+            "id": scn["id"], "name": scn["name"], "kind": scn["kind"], "why": scn.get("why"),
+            "real_case": scn.get("real_case"), "readings": reading, "expected": scn["expected"],
+            "actual": {"result": movement["result"], "caught_by": movement["caught_by"],
+                       "flags": movement["flags"], "reasons": movement["reasons"]},
+            "movement_id": movement["id"], "permit_id": permit["id"], "pass": ok, "problems": problems,
+        })
+    honest = [r for r in results if r["kind"] == "honest"]
+    tamper = [r for r in results if r["kind"] == "tamper"]
+    summary = {
+        "total": len(results),
+        "passed": sum(r["pass"] for r in results),
+        "tamper_total": len(tamper),
+        "tamper_caught": sum(r["actual"]["result"] != "AUTHORISED" for r in tamper),
+        "honest_total": len(honest),
+        "false_alarms": sum(r["actual"]["result"] != "AUTHORISED" or bool(r["actual"]["flags"]) for r in honest),
     }
+    return results, summary
 
 
+# ================================================================ trip format (trip_basic)
+def weight_of(load, vehicle: dict) -> float | None:
+    """`load` = what is physically in the body: tonnes, 'NN%' of rated capacity, or 'none' (no pad reading)."""
+    if load == "none":
+        return None
+    if isinstance(load, str) and load.endswith("%"):
+        load_t = vehicle["rated"] * float(load[:-1]) / 100
+    else:
+        load_t = float(load)
+    return round(vehicle["empty"] + load_t, 2)
+
+
+def shown_at_exit(ev: dict, sid: str, vkey: str, own_pass: dict, issued: dict) -> tuple[dict, str]:
+    """What the driver presents at the exit barrier: own QR / SMS code, nothing, or another pass."""
+    shown = ev.get("pass", "qr")
+
+    def from_event(n: int) -> dict:
+        p = issued.get(n)
+        if p is None:
+            raise ScenarioError(f"{sid}: event {n} did not issue a pass")
+        return p
+
+    if shown == "none":
+        return {}, "nothing"
+    if shown in ("qr", "sms"):
+        p = own_pass.get(vkey)
+        if p is None:
+            return {}, "nothing (no pass)"
+        return ({"pass_token": p["token"]}, f"own QR {p['code']}") if shown == "qr" else \
+            ({"pass_code": p["sms_code"]}, f"own SMS code {p['sms_code']}")
+    if "qr_from" in shown:
+        p = from_event(shown["qr_from"])
+        return {"pass_token": p["token"]}, f"QR of {p['code']} (event {shown['qr_from']})"
+    if "sms_from" in shown:
+        p = from_event(shown["sms_from"])
+        return {"pass_code": p["sms_code"]}, f"SMS code of {p['code']} (event {shown['sms_from']})"
+    if "tampered_qr_from" in shown:
+        p = from_event(shown["tampered_qr_from"])
+        body, sig = p["token"].split(".")
+        i = len(body) // 2  # flip one character in the signed payload (e.g. an edited plate or expiry)
+        body = body[:i] + ("A" if body[i] != "A" else "B") + body[i + 1:]
+        return {"pass_token": f"{body}.{sig}"}, f"edited copy of the QR of {p['code']}"
+    raise ScenarioError(f"{sid}: unknown pass option {shown}")
+
+
+def judge_event(exp: dict, mv: dict) -> list[str]:
+    problems = []
+    codes = [a["code"] for a in mv["alerts"]]
+    if "barrier" in exp and mv["barrier"] != exp["barrier"]:
+        problems.append(f"barrier {mv['barrier']} != expected {exp['barrier']}")
+    if "pass_issued" in exp and bool(mv.get("issued_pass")) != exp["pass_issued"]:
+        problems.append(f"pass issued {bool(mv.get('issued_pass'))} != expected {exp['pass_issued']}")
+    if "trip" in exp and mv["trip"] != exp["trip"]:
+        problems.append(f"trip {mv['trip']} != expected {exp['trip']}")
+    if "result" in exp and mv["result"] != exp["result"]:
+        problems.append(f"identify {mv['result']} != expected {exp['result']}")
+    missing = [c for c in exp.get("alerts", []) if c not in codes]
+    if missing:
+        problems.append(f"expected alerts {missing} not raised")
+    extra = [c for c in exp.get("not_alerts", []) if c in codes]
+    if extra:
+        problems.append(f"should NOT raise {extra}")
+    return problems
+
+
+def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
+    gate = spec.get("gate", "G1")
+    rogues = spec.get("rogue_vehicles", {})
+    today = datetime.now(IST).date()
+    results = []
+    for scn in spec["scenarios"]:
+        sid = scn["id"]
+        source = f"sim:{run['id']}:{sid}"
+        permit = create_permit(client, f"Sim run {run['id']} {sid}", source,
+                               {**spec.get("permit", {}), **scn.get("permit", {})})
+        own_pass: dict[str, dict] = {}  # vehicle label -> its latest pass (what is on the driver's phone)
+        issued: dict[int, dict] = {}  # event number -> pass issued at that event
+        events, all_alerts, problems = [], [], []
+        for n, ev in enumerate(scn["events"], start=1):
+            vehicle = vehicle_of(ev["vehicle"], sid, registry, rogues)
+            vkey = vehicle["label"]
+            reading = identity_readings(ev, sid, vehicle, registry)
+            hh, mm = map(int, ev["at"].split(":"))
+            observed = datetime.combine(today, time(hh, mm), tzinfo=IST)
+            load = ev.get("load", 0 if ev["dir"] == "IN" else "90%")
+            body = {"direction": ev["dir"], **reading, **sticker_reading(ev, vehicle, STICKERS, sid),
+                    "weight_t": weight_of(load, vehicle),
+                    "observed_at": observed.isoformat(), "barrier_forced": bool(ev.get("forces")),
+                    "permit_id": permit["id"], "source": source}
+            shown = None
+            if ev["dir"] == "OUT":
+                extra, shown = shown_at_exit(ev, sid, vkey, own_pass, issued)
+                body.update(extra)
+            mv = client.post(f"/api/gates/{gate}/events", json=body).raise_for_status().json()
+            if mv.get("issued_pass"):
+                own_pass[vkey] = issued[n] = mv["issued_pass"]
+            exp = ev.get("expect", {})
+            ev_problems = judge_event(exp, mv)
+            problems += [f"event {n}: {p}" for p in ev_problems]
+            alerts = [{"code": a["code"], "severity": a["severity"], "message": a["message"]} for a in mv["alerts"]]
+            all_alerts += alerts
+            events.append({
+                "n": n, "at": ev["at"], "dir": ev["dir"], "vehicle": vkey, "note": ev.get("note"),
+                "readings": {**reading, "weight_t": body["weight_t"], "shown": shown,
+                             "forced": bool(ev.get("forces"))},
+                "expected": exp,
+                "actual": {"result": mv["result"], "decision": mv["decision"], "barrier": mv["barrier"],
+                           "trip": mv["trip"], "pass_issued": (mv.get("issued_pass") or {}).get("code"),
+                           "pass": (mv.get("pass") or {}).get("code"), "alerts": alerts},
+                "movement_id": mv["id"], "pass": not ev_problems, "problems": ev_problems,
+            })
+        serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS]
+        if scn["kind"] == "honest" and serious:
+            problems.append(f"false alarm: {serious}")
+        expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])]
+        raised = {a["code"] for a in all_alerts}
+        ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
+        results.append({
+            "id": sid, "name": scn["name"], "kind": scn["kind"], "why": scn.get("why"),
+            "real_case": scn.get("real_case"), "rules": scn.get("rules"), "format": "trip", "permit_id": permit["id"],
+            "events": events,
+            "expected": {"alerts": expected_codes},
+            "actual": {"caught_by": sorted(raised), "serious": sorted(set(serious))},
+            "caught": bool(expected_codes) and all(c in raised for c in expected_codes),
+            "ledger": ledger, "pass": not problems, "problems": problems,
+        })
+    honest = [r for r in results if r["kind"] == "honest"]
+    tamper = [r for r in results if r["kind"] == "tamper"]
+    summary = {
+        "total": len(results),
+        "passed": sum(r["pass"] for r in results),
+        "tamper_total": len(tamper),
+        "tamper_caught": sum(r["caught"] for r in tamper),
+        "honest_total": len(honest),
+        "false_alarms": sum(bool(r["actual"]["serious"]) for r in honest),
+    }
+    return results, summary
+
+
+# ================================================================ main
 def main(suite: str) -> int:
     path = SCENARIO_DIR / f"{suite}.yaml"
     if not path.exists():
         print(f"No scenario file {path}")
         return 2
     spec = yaml.safe_load(path.read_text(encoding="utf-8"))
-    gate, direction = spec.get("gate", "G1"), spec.get("direction", "IN")
-    rogues = spec.get("rogue_vehicles", {})
+    fmt = spec.get("format", "single")
+    if any("type" in scn for scn in spec.get("scenarios", [])):  # GB RFID / edge suite (trip_auth_full)
+        import auth_run
+
+        return auth_run.main(suite)
 
     with httpx.Client(base_url=BACKEND, timeout=30) as client:
         registry = load_registry(client)
-        stickers = load_stickers(client)
+        STICKERS.update(load_stickers(client))
         run = client.post("/api/sim-runs", json={"suite": suite}).raise_for_status().json()
-        print(f"\nSiteWatch simulator | suite: {suite} | run #{run['id']} | identify mode: {run['identify_mode']}")
+        print(f"\nSiteWatch simulator | suite: {suite} ({fmt}) | run #{run['id']} | "
+              f"identify mode: {run['identify_mode']}")
         print(f"{spec.get('description', '')}\n")
-
-        results = []
-        for scn in spec["scenarios"]:
-            if "type" in scn and scn["type"] != "standard":
-                res = execute_extended_scenario(scn, client, run["id"], registry, stickers)
-            else:
-                reading = sensor_readings(scn, registry, rogues)
-                movement = client.post(
-                    f"/api/gates/{gate}/events",
-                    json={"direction": direction, **reading, "source": f"sim:{run['id']}:{scn['id']}"},
-                ).raise_for_status().json()
-                ok, problems = judge_identify(scn, movement)
-                res = {
-                    "id": scn["id"],
-                    "name": scn["name"],
-                    "kind": scn["kind"],
-                    "why": scn.get("why"),
-                    "real_case": scn.get("real_case"),
-                    "readings": reading,
-                    "expected": scn["expected"],
-                    "actual": {
-                        "result": movement["result"],
-                        "caught_by": movement["caught_by"],
-                        "flags": movement["flags"],
-                        "reasons": movement["reasons"],
-                    },
-                    "movement_id": movement["id"],
-                    "pass": ok,
-                    "problems": problems,
-                }
-            results.append(res)
-
-        honest = [r for r in results if r["kind"] == "honest"]
-        tamper = [r for r in results if r["kind"] == "tamper"]
-        summary = {
-            "total": len(results),
-            "passed": sum(r["pass"] for r in results),
-            "tamper_total": len(tamper),
-            "tamper_caught": sum(
-                r["actual"].get("result") not in ["AUTHORISED", "ENTRY AUTHORIZED", "EXIT AUTHORIZED"]
-                for r in tamper
-            ),
-            "honest_total": len(honest),
-            "false_alarms": sum(
-                r["actual"].get("result") not in ["AUTHORISED", "ENTRY AUTHORIZED", "EXIT AUTHORIZED"]
-                and r.get("readings", {}).get("scenario_type") == "entry"
-                for r in honest
-            ),
-        }
+        results, summary = (run_trip if fmt == "trip" else run_single)(client, spec, run, registry)
         client.put(f"/api/sim-runs/{run['id']}", json={**summary, "results": results}).raise_for_status()
 
     width = max(len(r["name"]) for r in results)
     for r in results:
         verdict = "PASS" if r["pass"] else "FAIL"
-        caught = ", ".join(r["actual"].get("caught_by", [])) or "-"
-        print(f" {r['id']}  {r['name']:<{width}}  {str(r['actual'].get('result')):<26} {verdict}   caught by: {caught}")
+        if fmt == "trip":
+            caught = ", ".join(r["actual"]["caught_by"]) or "-"
+            print(f" {r['id']:<4} {r['name']:<{width}}  {verdict}   alerts: {caught}")
+        else:
+            caught = ", ".join(r["actual"]["caught_by"]) or "-"
+            print(f" {r['id']:<4} {r['name']:<{width}}  {r['actual']['result']:<15} {verdict}   caught by: {caught}")
         for p in r["problems"]:
             print(f"       ! {p}")
     print("-" * (width + 60))
@@ -460,7 +343,16 @@ def main(suite: str) -> int:
     return 0 if summary["passed"] == summary["total"] else 1
 
 
+def main_site(name: str) -> int:
+    import site_run
+
+    with httpx.Client(base_url=BACKEND, timeout=60) as client:
+        return site_run.main(name, client, load_registry(client))
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "site":
+        sys.exit(main_site(sys.argv[2]))
     if len(sys.argv) != 2:
         print(__doc__)
         sys.exit(2)

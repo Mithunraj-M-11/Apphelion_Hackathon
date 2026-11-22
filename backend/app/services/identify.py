@@ -51,6 +51,7 @@ class Decision:
     caught_by: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    involved: list[Truck] = field(default_factory=list)  # registered trucks named by the plate and/or the tag
 
 
 def evaluate(
@@ -174,7 +175,10 @@ def identify(db: Session, reading: Reading, mode: str = "strict") -> Decision:
     tag_truck = (
         db.scalar(select(Truck).where(or_(Truck.fastag_tag_id == tag, Truck.fastag_chip_id == tag))) if tag else None
     )
-    return evaluate(reading, plate_truck, tag_truck, mode=mode)
+    decision = evaluate(reading, plate_truck, tag_truck, mode=mode)
+    decision.involved = [t for i, t in enumerate((plate_truck, tag_truck))
+                         if t is not None and (i == 0 or plate_truck is None or t.id != plate_truck.id)]
+    return decision
 
 
 # ---------------------------------------------------------------- human-readable log lines
