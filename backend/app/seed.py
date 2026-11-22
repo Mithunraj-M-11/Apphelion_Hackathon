@@ -10,13 +10,24 @@ Vehicle specs are approximate values for typical Indian tippers.
 Run manually:  docker compose exec backend python -m app.seed
 """
 
+import hashlib
 import random
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
 from app.db import SessionLocal
-from app.models import Contract, Driver, Officer, Transporter, Truck
+from app.models import (
+    Contract,
+    Driver,
+    EdgeSystemState,
+    Officer,
+    RfidSticker,
+    Transporter,
+    TripSession,
+    Truck,
+    VehicleQuota,
+)
 from app.services.plates import validate_indian_plate
 from app.services.registry import record_history, snapshot
 
@@ -88,13 +99,13 @@ TRUCKS = [
     ("OD09AJ3579", "al2820", 1, "Orange", None),
     ("OD09AK6402", "bb2823", 1, "White", None),
     ("OD09AL9015", "signa3523", 1, "Yellow", None),
-    ("OD02BQ4410", "eicher6028", 1, "White", None),
+    ("OD02BQ4410", "eicher6028", 1, "White", "revoked_sticker"),
     ("OD02BR7120", "al3520", 1, "Blue", None),
-    ("OD11CE3305", "signa2823", 1, "Yellow", None),
-    ("OD14DF8821", "bb2823", 1, "White", None),
+    ("OD11CE3305", "signa2823", 1, "Yellow", "exhausted_quota"),
+    ("OD14DF8821", "bb2823", 1, "White", "low_quota"),
     ("JH05CK2290", "al2820", 2, "Orange", None),
     ("JH05CL6614", "signa3523", 2, "Yellow", None),
-    ("CG04MN5507", "eicher6028", 2, "White", None),
+    ("CG04MN5507", "eicher6028", 2, "White", "expired_unresolved"),
     ("22BH4581AB", "bb2823", 2, "Silver", None),    # Bharat (BH) series plate
     ("OD09AM1111", "al2820", 0, "Orange", "suspended"),
     ("OD09AN2025", "signa2823", 2, "Yellow", "expired_fitness"),
@@ -114,86 +125,230 @@ def _alnum(n: int) -> str:
 def seed() -> None:
     db = SessionLocal()
     try:
-        if db.scalar(select(func.count()).select_from(Truck)):
-            print("seed: trucks already present, skipping")
-            return
+        officers = db.scalars(select(Officer)).all()
+        if not officers:
+            officers = [Officer(name=n, role=r) for n, r in OFFICERS]
+            db.add_all(officers)
+            db.flush()
 
-        officers = [Officer(name=n, role=r) for n, r in OFFICERS]
-        db.add_all(officers)
-        contract = Contract(**CONTRACT)
-        db.add(contract)
-        db.flush()
         inspectors = [o for o in officers if o.role == "inspector"]
         approver = next(o for o in officers if o.role == "approver")
 
-        transporters = []
-        for t in TRANSPORTERS:
-            drivers = t["drivers"]
-            tr = Transporter(**{k: v for k, v in t.items() if k != "drivers"}, contract_id=contract.id)
-            db.add(tr)
+        contract = db.scalar(select(Contract))
+        if not contract:
+            contract = Contract(**CONTRACT)
+            db.add(contract)
             db.flush()
-            record_history(db, entity="transporter", entity_id=tr.id, action="create", officer=inspectors[0],
-                           reason="Initial enrollment (test data)", after=snapshot(tr))
-            for name, phone, licence in drivers:
-                d = Driver(transporter_id=tr.id, name=name, phone=phone, licence_no=licence)
-                db.add(d)
-                db.flush()
-                record_history(db, entity="driver", entity_id=d.id, action="create", officer=inspectors[0],
-                               reason="Initial enrollment (test data)", after=snapshot(d))
-            transporters.append(tr)
 
-        for i, (raw_plate, model_key, t_idx, colour, note) in enumerate(TRUCKS):
-            plate, kind = validate_indian_plate(raw_plate)
-            make, model, axles, length, empty, rated, gvw, vin = MODELS[model_key]
-            inspector = inspectors[i % len(inspectors)]
-            inspected = datetime(2026, 11, 2 + i % 10, 9 + i % 6, 15, tzinfo=timezone.utc)
-            truck = Truck(
-                plate=plate,
-                plate_type=kind,
-                fastag_tag_id="34161FA8" + _hex(16),
-                fastag_chip_id="E28011" + _hex(18),
-                length_m=round(length + rng.uniform(-0.1, 0.1), 2),
-                axle_count=axles,
-                make=make,
-                model=model,
-                body_type="Tipper",
-                colour=colour,
-                chassis_no=(vin + _alnum(17 - len(vin)))[:17],
-                engine_no=_alnum(12),
-                empty_weight_t=round(empty + rng.uniform(-0.3, 0.3), 2),
-                rated_capacity_t=rated,
-                gvw_t=gvw,
-                rc_valid_until=TODAY + timedelta(days=365 * rng.randint(4, 12)),
-                fitness_valid_until=(date(2026, 10, 31) if note == "expired_fitness"
-                                     else TODAY + timedelta(days=rng.randint(120, 700))),
-                insurance_valid_until=TODAY + timedelta(days=rng.randint(60, 360)),
-                permit_valid_until=TODAY + timedelta(days=rng.randint(150, 1500)),
-                vahan_verified=True,
-                vahan_checked_at=inspected,
-                status="suspended" if note == "suspended" else "active",
-                status_reason=("Suspended pending re-inspection after body modification"
-                               if note == "suspended" else None),
-                valid_from=date(2026, 11, 1),
-                valid_to=date(2027, 3, 31),
-                transporter_id=transporters[t_idx].id,
-                contract_id=contract.id,
-                inspected_by=inspector.id,
-                inspected_at=inspected,
-                inspection_location="GB enrollment bay, Joda East site gate 1",
-                approved_by=approver.id,
-                approved_at=inspected + timedelta(hours=3),
+        transporters = db.scalars(select(Transporter)).all()
+        if not transporters:
+            transporters = []
+            for t in TRANSPORTERS:
+                drivers = t["drivers"]
+                tr = Transporter(**{k: v for k, v in t.items() if k != "drivers"}, contract_id=contract.id)
+                db.add(tr)
+                db.flush()
+                record_history(
+                    db,
+                    entity="transporter",
+                    entity_id=tr.id,
+                    action="create",
+                    officer=inspectors[0],
+                    reason="Initial enrollment (test data)",
+                    after=snapshot(tr),
+                )
+                for name, phone, licence in drivers:
+                    d = Driver(transporter_id=tr.id, name=name, phone=phone, licence_no=licence)
+                    db.add(d)
+                    db.flush()
+                    record_history(
+                        db,
+                        entity="driver",
+                        entity_id=d.id,
+                        action="create",
+                        officer=inspectors[0],
+                        reason="Initial enrollment (test data)",
+                        after=snapshot(d),
+                    )
+                transporters.append(tr)
+
+        if not db.scalar(select(func.count()).select_from(Truck)):
+            for i, (raw_plate, model_key, t_idx, colour, note) in enumerate(TRUCKS):
+                plate, kind = validate_indian_plate(raw_plate)
+                make, model, axles, length, empty, rated, gvw, vin = MODELS[model_key]
+                inspector = inspectors[i % len(inspectors)]
+                inspected = datetime(2026, 11, 2 + i % 10, 9 + i % 6, 15, tzinfo=timezone.utc)
+                truck = Truck(
+                    plate=plate,
+                    plate_type=kind,
+                    fastag_tag_id="34161FA8" + _hex(16),
+                    fastag_chip_id="E28011" + _hex(18),
+                    length_m=round(length + rng.uniform(-0.1, 0.1), 2),
+                    axle_count=axles,
+                    make=make,
+                    model=model,
+                    body_type="Tipper",
+                    colour=colour,
+                    chassis_no=(vin + _alnum(17 - len(vin)))[:17],
+                    engine_no=_alnum(12),
+                    empty_weight_t=round(empty + rng.uniform(-0.3, 0.3), 2),
+                    rated_capacity_t=rated,
+                    gvw_t=gvw,
+                    rc_valid_until=TODAY + timedelta(days=365 * rng.randint(4, 12)),
+                    fitness_valid_until=(
+                        date(2026, 10, 31)
+                        if note == "expired_fitness"
+                        else TODAY + timedelta(days=rng.randint(120, 700))
+                    ),
+                    insurance_valid_until=TODAY + timedelta(days=rng.randint(60, 360)),
+                    permit_valid_until=TODAY + timedelta(days=rng.randint(150, 1500)),
+                    vahan_verified=True,
+                    vahan_checked_at=inspected,
+                    status="suspended" if note == "suspended" else "active",
+                    status_reason=(
+                        "Suspended pending re-inspection after body modification"
+                        if note == "suspended"
+                        else None
+                    ),
+                    valid_from=date(2026, 11, 1),
+                    valid_to=date(2027, 3, 31),
+                    transporter_id=transporters[t_idx].id,
+                    contract_id=contract.id,
+                    inspected_by=inspector.id,
+                    inspected_at=inspected,
+                    inspection_location="GB enrollment bay, Joda East site gate 1",
+                    approved_by=approver.id,
+                    approved_at=inspected + timedelta(hours=3),
+                )
+                db.add(truck)
+                db.flush()
+                record_history(
+                    db,
+                    entity="truck",
+                    entity_id=truck.id,
+                    action="create",
+                    officer=inspector,
+                    reason="Enrolled after physical inspection (test data)",
+                    after=snapshot(truck),
+                )
+                if note == "suspended":
+                    record_history(
+                        db,
+                        entity="truck",
+                        entity_id=truck.id,
+                        action="status",
+                        officer=approver,
+                        reason=truck.status_reason,
+                        before={"status": "active"},
+                        after={"status": "suspended", "status_reason": truck.status_reason},
+                    )
+
+        # Seed RFID Stickers and Quotas for all trucks if not present
+        all_trucks = db.scalars(select(Truck).order_by(Truck.id)).all()
+        approver = next(o for o in officers if o.role == "approver")
+        inspector = inspectors[0]
+
+        # 1. RFID Stickers
+        existing_stickers = {s.truck_id: s for s in db.scalars(select(RfidSticker)).all()}
+        for t in all_trucks:
+            if t.id not in existing_stickers:
+                uid = f"GB-RFID-{t.id:05d}"
+                # Find if this truck has special test note
+                note = next((item[4] for item in TRUCKS if item[0] == t.plate), None)
+                is_revoked = note == "revoked_sticker"
+                secret_hash = hashlib.sha256(f"gb_secret_key_{uid}".encode()).hexdigest()
+
+                sticker = RfidSticker(
+                    uid=uid,
+                    truck_id=t.id,
+                    status="REVOKED" if is_revoked else "ACTIVE",
+                    auth_key_hash=secret_hash,
+                    issued_at=datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc),
+                    expires_at=datetime(2027, 11, 1, 9, 0, tzinfo=timezone.utc),
+                    issued_by=inspector.id,
+                    revoked_at=datetime(2026, 11, 15, 14, 0, tzinfo=timezone.utc) if is_revoked else None,
+                    revoked_by=approver.id if is_revoked else None,
+                    revocation_reason="Reported damaged/tampered at weighbridge" if is_revoked else None,
+                )
+                db.add(sticker)
+
+        # 2. Vehicle Quotas
+        existing_quotas = {q.truck_id: q for q in db.scalars(select(VehicleQuota)).all()}
+        for t in all_trucks:
+            if t.id not in existing_quotas:
+                note = next((item[4] for item in TRUCKS if item[0] == t.plate), None)
+                if note == "exhausted_quota":
+                    max_t = 50
+                    comp_t = 50
+                    rem_t = 0
+                    q_status = "EXHAUSTED"
+                elif note == "low_quota":
+                    max_t = 50
+                    comp_t = 47
+                    rem_t = 3
+                    q_status = "LOW"
+                else:
+                    max_t = 100
+                    comp_t = 35
+                    rem_t = 65
+                    q_status = "AVAILABLE"
+
+                quota = VehicleQuota(
+                    truck_id=t.id,
+                    max_trips=max_t,
+                    completed_trips=comp_t,
+                    remaining_trips=rem_t,
+                    valid_from=date(2026, 11, 1),
+                    valid_to=date(2027, 3, 31),
+                    status=q_status,
+                )
+                db.add(quota)
+
+        # 3. Edge System State
+        edge_state = db.scalar(select(EdgeSystemState).where(EdgeSystemState.id == 1))
+        if not edge_state:
+            edge_state = EdgeSystemState(
+                id=1,
+                active_authority="PRIMARY",
+                primary_status="ACTIVE",
+                standby_status="STANDBY",
+                wan_connectivity="ONLINE",
+                disaster_recovery_mode=False,
+                last_heartbeat=datetime.now(timezone.utc),
+                last_replication=datetime.now(timezone.utc),
             )
-            db.add(truck)
-            db.flush()
-            record_history(db, entity="truck", entity_id=truck.id, action="create", officer=inspector,
-                           reason="Enrolled after physical inspection (test data)", after=snapshot(truck))
-            if note == "suspended":
-                record_history(db, entity="truck", entity_id=truck.id, action="status", officer=approver,
-                               reason=truck.status_reason, before={"status": "active"},
-                               after={"status": "suspended", "status_reason": truck.status_reason})
+            db.add(edge_state)
+
+        # 4. Expired Unresolved Session for testing
+        unresolved_truck = next((t for t in all_trucks if t.plate == "CG04MN5507"), None)
+        if unresolved_truck:
+            existing_unresolved = db.scalar(
+                select(TripSession).where(
+                    TripSession.truck_id == unresolved_truck.id,
+                    TripSession.status == "EXPIRED_UNRESOLVED",
+                )
+            )
+            if not existing_unresolved:
+                sticker = db.scalar(select(RfidSticker).where(RfidSticker.truck_id == unresolved_truck.id))
+                if sticker:
+                    unres_session = TripSession(
+                        session_id=f"SES-EXPIRED-{unresolved_truck.id}",
+                        trip_code=f"TRIP-2026-UNRES-{unresolved_truck.id:04d}",
+                        truck_id=unresolved_truck.id,
+                        sticker_id=sticker.id,
+                        signed_token="simulated_expired_token",
+                        token_hash=hashlib.sha256(b"simulated_expired_token").hexdigest(),
+                        entry_gate="G1",
+                        status="EXPIRED_UNRESOLVED",
+                        entry_at=datetime.now(timezone.utc) - timedelta(hours=36),
+                        expires_at=datetime.now(timezone.utc) - timedelta(hours=24),
+                        created_by=inspector.id,
+                        notes="Trip expired without exit verification",
+                    )
+                    db.add(unres_session)
 
         db.commit()
-        print(f"seed: loaded {len(officers)} officers, {len(transporters)} transporters, {len(TRUCKS)} trucks")
+        print(f"seed: updated registry, RFID stickers, vehicle quotas, edge state.")
     finally:
         db.close()
 
