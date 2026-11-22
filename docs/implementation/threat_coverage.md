@@ -94,3 +94,27 @@ The report adds, next to today's numbers: **trips and tonnes missed, by cause**,
 3. Defences, biggest and silent gaps first (likely order: pole heartbeat + fail-closed barrier, pole authentication,
    weigh pad drift check, hash chain, officer-action oversight, relaxed Identify with sticker + FASTag).
 4. Run again and show before / after.
+
+---
+
+## Results: before and after the first round of defences (2026-11-23)
+
+Defences built: weigh pad drift check A (median of entry weight minus enrolled empty weight over recent trucks),
+pole heartbeat + POLE_SILENT, LATE_EVENT, pole-signed events (unsigned = refused + FAKE_GATE_EVENT), hash chain +
+record check (RECORD_TAMPERED), body check at entry (BODY_MISMATCH), light vehicles weighed in and out
+(LIGHT_VEHICLE_LOADED), officer override pattern (OFFICER_OVERRIDE_PATTERN).
+
+| Run | Before | After |
+|---|---|---|
+| `threat_coverage` (scenario run) | 15 covered, 1 partial, 3 gap, 11 silent of 30 | **24 covered, 3 gap, 4 silent of 31** (C3b added) |
+| `threat_week` (site run) | 25 covered, 6 gap, 10 silent of 41 attempts | **29 covered, 8 gap, 4 silent** of 41 |
+| `gate_cheats` / `edge_resilience` | 34/34, 7/7 | 34/34, 7/7 (no regressions) |
+
+Still open, for the second pass:
+- **Side tracks both ways** (A1b, B1c, B3b): needs a volume check (mass balance). Gap 7.
+- **Strict Identify refuses genuine trucks** on a missed or misread plate / FASTag (D3a, D3b, D3c; 29 false alarms
+  in the week). Gap 10.
+- **Weigh chip that reads low only when loaded** (C3a; ~400 t in the week): method A can't see it because empty
+  trucks read correctly. Needs a reference weight test or a fleet-wide load-drop check. It also hides light vehicles
+  carrying material (their loaded exit reads light).
+- Officer cover-ups are now flagged as a pattern (gap), but the trip still counts as legal until reviewed.

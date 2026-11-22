@@ -211,6 +211,7 @@ scenarios:
       - { at: "08:00", dir: IN, vehicle: OD09AH2468, expect: { barrier: up, pass_issued: true } }
       - { at: "08:40", unseen: left loaded by a side track, vehicle: OD09AH2468, leaves: true, load: "90%" }
       - { at: "08:45", dir: OUT, vehicle: OD09AH2468, fake: true, expect: { rejected: true } }
+    expect_story: { alerts: [FAKE_GATE_EVENT] }
 
   - id: D1a
     name: Pole loses power for an hour while trucks keep moving
@@ -307,6 +308,23 @@ scenarios:
       - { at: "09:45", dir: OUT, vehicle: OD09AD0090, weigh_offset_t: -3 }
       - { at: "10:00", dir: IN,  vehicle: OD09AH2468 }
       - { at: "10:45", dir: OUT, vehicle: OD09AH2468, weigh_offset_t: -3 }
+
+  - id: C3b
+    name: GB weigh pad off on every reading (re-calibrated wrongly or a shim)
+    threat: C3
+    priority: P1
+    kind: tamper
+    category: measure
+    why: Every reading is 3 t light, empty or loaded. Empty trucks at the entry no longer weigh their enrolled empty
+      weights, all by the same amount, so the pad itself must be off.
+    expect_story: { alerts: [WEIGH_DRIFT] }
+    events:
+      - { at: "07:00", dir: IN, vehicle: OD09AC5678, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:10", dir: IN, vehicle: OD09AD0090, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:20", dir: IN, vehicle: OD09AH2468, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:30", dir: IN, vehicle: OD09AJ3579, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:40", dir: IN, vehicle: OD09AK6402, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "08:20", dir: OUT, vehicle: OD09AC5678, weigh_offset_t: -3, expect: { trip: LEGAL } }
 
   - id: D3a
     name: Genuine truck, camera can't read the plate (mud, rain, night)

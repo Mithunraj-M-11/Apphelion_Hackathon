@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import acting_officer
 from app.models.registry import Officer, Truck
-from app.models.trip import QuotaAdjustment, TripSession, VehicleQuota
+from app.models.trip import Alert, Permit, QuotaAdjustment, TripSession, VehicleQuota
+from app.services.trip import override_pattern
 from app.schemas import (
     ExitVerifyIn,
     ExitVerifyOut,
@@ -87,6 +88,13 @@ def resolve_trip(
     if action == "RESOLVE":  # officer late close (P11): the trip stays counted
         new_status = "COMPLETED"
         session.close_mode = session.close_mode or "officer"
+        if session.permit_id is not None:  # gap 9: a late close is an override; one officer doing many is a pattern
+            permit = db.get(Permit, session.permit_id)
+            db.add(Alert(permit_id=session.permit_id, pass_id=session.id, truck_id=session.truck_id,
+                         officer_id=officer.id, code="OFFICER_LATE_CLOSE", severity="MEDIUM",
+                         message=f"Trip {session.trip_code} ({session.status}) late-closed by officer {officer.name}: "
+                                 f"{reason}", status="open", source=permit.source if permit else None))
+            override_pattern(db, session.permit_id, officer.id, officer.name, permit.source if permit else None)
     elif action == "FLAG":
         new_status = "FLAGGED"
     elif action == "CANCEL":

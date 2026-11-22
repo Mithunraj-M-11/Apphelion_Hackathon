@@ -584,3 +584,5 @@ ul.plain li { padding: 3px 0; }
 .stats-4 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 10px; }
 .stats-3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .sc-line { margin: -4px 0 14px; }
+.sc-was { display: block; font-size: 0.75rem; margin-top: 2px; }
+.sc-before { margin: -6px 0 10px; }

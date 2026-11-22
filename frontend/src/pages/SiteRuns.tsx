@@ -17,7 +17,7 @@ import {
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-import { Scorecard, type Status } from "./Scorecard";
+import { Scorecard, type Cost, type ScoreItem, type Status } from "./Scorecard";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -542,13 +542,37 @@ function Headline({ r }: { r: SiteReport }) {
   );
 }
 
+/** A site run in the shared scorecard's terms: one status per cheat attempt, and the cost against ground truth. */
+function siteScore(r: SiteReport): { items: ScoreItem[]; cost: Cost } {
+  const h = r.headline.trips;
+  return {
+    items: r.cheats.map((c, i) => ({
+      id: String(i), name: `${dayLabel(c.day)} ${c.at} ${CHEAT_LABEL[c.type] ?? c.type}`,
+      area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c),
+      how: c.outcome === "prevented" ? "stopped" : c.outcome === "detected" ? "caught after" : undefined,
+    })),
+    cost: {
+      trips: { missed: Math.max(0, h.ground_truth - h.gb_actual), of: h.ground_truth },
+      tonnes: { missed: Math.max(0, r.headline.tonnes.ground_truth - r.headline.tonnes.gb_actual),
+                of: r.headline.tonnes.ground_truth },
+      honest: { refused: r.false_alarms.count, of: r.false_alarms.honest_events, label: "Honest gate events with a false alarm" },
+    },
+  };
+}
+
 function RunDetail({ id }: { id: number }) {
   const [run, setRun] = useState<SiteRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCheats, setShowCheats] = useState(false);
   const [group, setGroup] = useState<Group | null>(null);
+  const [previous, setPrevious] = useState<SiteRun | null>(null);
   useEffect(() => {
-    siteApi.run(id).then(setRun).catch((e) => setError(e.message));
+    siteApi.run(id).then((r) => {
+      setRun(r);
+      siteApi.runs().then((all) => {  // the run before this one of the same scenario, for before -> after
+        setPrevious(all.find((x) => x.scenario === r.scenario && x.id < r.id && x.report != null) ?? null);
+      }).catch(() => {});
+    }).catch((e) => setError(e.message));
   }, [id]);
   const going = run != null && run.finished_at == null;
   useEffect(() => {  // follow the run while it is going
@@ -612,18 +636,8 @@ function RunDetail({ id }: { id: number }) {
       <Scorecard
         judgedAgainst="A realistic period: every cheat attempt judged on whether the GB stopped it or caught it after (covered), only has the refusal on record (gap), or never knew (silent gap)."
         unit="attempts"
-        items={r.cheats.map((c, i) => ({
-          id: String(i), name: `${dayLabel(c.day)} ${c.at} ${CHEAT_LABEL[c.type] ?? c.type}`,
-          area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c),
-          how: c.outcome === "prevented" ? "stopped" : c.outcome === "detected" ? "caught after" : undefined,
-        }))}
-        cost={{
-          trips: { missed: Math.max(0, h.ground_truth - h.gb_actual), of: h.ground_truth },
-          tonnes: { missed: Math.max(0, r.headline.tonnes.ground_truth - r.headline.tonnes.gb_actual),
-                    of: r.headline.tonnes.ground_truth },
-          honest: { refused: r.false_alarms.count, of: r.false_alarms.honest_events,
-                    label: "Honest gate events with a false alarm" },
-        }}
+        {...siteScore(r)}
+        before={previous?.report ? { label: `run #${previous.id}`, ...siteScore(previous.report) } : null}
         onStatus={(st) => setGroup(st)}
         onCost={(k) => setGroup(k === "honest" ? "false" : "unseen")}
       />

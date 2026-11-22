@@ -23,6 +23,8 @@ from typing import Any
 import httpx
 import yaml
 
+import pole
+
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -373,8 +375,7 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             while cur + timedelta(minutes=5) <= t:
                 cur += timedelta(minutes=5)
                 if not offline(cur):
-                    client.post(f"/api/poles/{gate}/heartbeat",
-                                json={"at": cur.isoformat(), "permit_id": permit["id"], "source": source})
+                    pole.heartbeat(client, gate, {"at": cur.isoformat(), "permit_id": permit["id"], "source": source})
             beat["last"] = cur
 
         def add_event(n, ev, dir_, vkey, note, readings, exp, actual, movement_id, ev_problems, step):
@@ -442,7 +443,7 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             sent.append({"method": "POST", "path": f"/api/gates/{gate}/events", "body": shown_body,
                          **({"fake": True} if fake else {}),
                          **({"delivered_at": delivered_at.isoformat()} if delivered_at else {})})
-            res = client.post(f"/api/gates/{gate}/events", json=body)
+            res = pole.event(client, gate, body, signed=not fake)  # a fake has no pole key
             if fake and res.status_code in (401, 403):  # the ideal outcome: no pole credentials, refused
                 ev_problems = [] if exp.get("rejected") else ["fake event rejected but the story did not expect it"]
                 add_event(n, ev, ev["dir"], vkey, "fake gate event (no truck): rejected by the GB", readings, exp,
@@ -483,6 +484,7 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             for item in sorted(pending, key=lambda x: x[0]):
                 if upto is None or item[0] <= upto:
                     pending.remove(item)
+                    beat_until(item[0])  # the pole kept signalling while this event was held back
                     gate_event(item[1], item[2], delivered_at=item[0])
 
         for n, ev in enumerate(scn["events"], start=1):

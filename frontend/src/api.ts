@@ -422,9 +422,10 @@ export const gateApi = {
   /** Delete every scenario run and its data. Gate console and site runs are not touched. */
   clearSimRuns: () => request<Record<string, number>>("/sim-runs", { method: "DELETE" }, false),
   simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
-  /** What a gate pole sends (no officer: poles are machines). */
+  /** The Gate console's simulated pole (run by the GB, Gate console sessions only). Real poles sign their events
+   * and post to /gates/{gate}/events. */
   postEvent: (gate: string, body: GateEventIn) =>
-    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+    request<GateDecision>(`/console/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
   /** Source-tagged permits (simulator / Gate console) need no officer; real permits do. */
   createPermit: (body: PermitIn) =>
     request<Permit>("/permits", { method: "POST", body: JSON.stringify(body) }, body.source == null),

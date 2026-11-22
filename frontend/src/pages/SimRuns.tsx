@@ -26,7 +26,7 @@ import { ErrorNote } from "../components";
 import { formatDateTime } from "../format";
 import { ScenarioSheetButton } from "./SimScenarioSheet";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-import { Scorecard, StatusBadge, type Cost, type ScoreItem, type Status } from "./Scorecard";
+import { Scorecard, StatusBadge, type Before, type Cost, type ScoreItem, type Status } from "./Scorecard";
 
 const POLL_MS = 2000;
 
@@ -275,14 +275,55 @@ function TripExpanded({ s, movements }: { s: TripScenarioResult; movements: Reco
   );
 }
 
+/** Any scenario run in the shared scorecard's terms: one status per story / case, and the cost. */
+function score(run: SimRun): { items: ScoreItem[]; cost: Cost } {
+  const tripResults = run.results.filter(isTripResult);
+  const edgeResults = run.results.filter((r): r is EdgeScenarioResult => !isTripResult(r));
+  const status = (r: TripScenarioResult) => (r.coverage ?? (r.pass ? "covered" : "gap")) as Status;
+  const items: ScoreItem[] = [
+    ...tripResults.map((r) => ({
+      id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "control", priority: r.priority ?? null, status: status(r),
+    })),
+    ...edgeResults.map((r) => ({
+      id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "edge", status: (r.pass ? "covered" : "gap") as Status,
+    })),
+  ];
+  const sum = (f: (r: TripScenarioResult) => number) => tripResults.reduce((a, r) => a + f(r), 0);
+  const honest = tripResults.filter((r) => r.kind === "honest");
+  const hasTruth = tripResults.some((r) => r.really_moved);
+  const cost: Cost = {
+    ...(hasTruth
+      ? {
+          trips: { missed: sum((r) => Math.max(0, (r.really_moved?.trips ?? 0) - (r.gb_recorded?.trips ?? 0))),
+                   of: sum((r) => r.really_moved?.trips ?? 0) },
+          tonnes: { missed: sum((r) => Math.max(0, (r.really_moved?.tonnes ?? 0) - (r.gb_recorded?.tonnes ?? 0))),
+                    of: sum((r) => r.really_moved?.tonnes ?? 0) },
+        }
+      : {}),
+    ...(honest.length
+      ? { honest: { refused: honest.filter((r) => status(r) !== "covered").length, of: honest.length,
+                    label: "Honest trucks wrongly refused or flagged" } }
+      : {}),
+  };
+  return { items, cost };
+}
+
 function RunDetail({ id }: { id: number }) {
   const [run, setRun] = useState<SimRun | null>(null);
   const [movements, setMovements] = useState<Record<number, Movement>>({});
   const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [previous, setPrevious] = useState<SimRun | null>(null);
   const load = () => {
-    gateApi.simRun(id).then(setRun).catch((e) => setError(e.message));
+    gateApi.simRun(id).then((r) => {
+      setRun(r);
+      // the run before this one of the same suite, for before -> after
+      gateApi.simRuns().then((all) => {
+        const p = all.find((x) => x.suite === r.suite && x.id < r.id && x.finished_at != null);
+        if (p) gateApi.simRun(p.id).then(setPrevious).catch(() => {});
+      }).catch(() => {});
+    }).catch((e) => setError(e.message));
     gateApi
       .movements({ source_prefix: `sim:${id}:` })
       .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
@@ -309,34 +350,10 @@ function RunDetail({ id }: { id: number }) {
 
   const tripResults = run.results.filter(isTripResult);
   const threatRun = tripResults.some((r) => r.coverage && r.threat);
-  const lost = tripResults.reduce(
-    (a, r) => ({
-      trips: a.trips + Math.max(0, (r.really_moved?.trips ?? 0) - (r.gb_recorded?.trips ?? 0)),
-      tonnes: a.tonnes + Math.max(0, (r.really_moved?.tonnes ?? 0) - (r.gb_recorded?.tonnes ?? 0)),
-    }),
-    { trips: 0, tonnes: 0 },
-  );
-  const moved = tripResults.reduce(
-    (a, r) => ({ trips: a.trips + (r.really_moved?.trips ?? 0), tonnes: a.tonnes + (r.really_moved?.tonnes ?? 0) }),
-    { trips: 0, tonnes: 0 },
-  );
   const edgeResults = run.results.filter((r): r is EdgeScenarioResult => !isTripResult(r));
-  const items: ScoreItem[] = [
-    ...tripResults.map((r) => ({
-      id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "control", priority: r.priority ?? null,
-      status: (r.coverage ?? (r.pass ? "covered" : "gap")) as Status,
-    })),
-    ...edgeResults.map((r) => ({
-      id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "edge", status: (r.pass ? "covered" : "gap") as Status,
-    })),
-  ];
-  const honest = tripResults.filter((r) => r.kind === "honest");
-  const hasTruth = tripResults.some((r) => r.really_moved);
-  const cost: Cost = {
-    ...(hasTruth ? { trips: { missed: lost.trips, of: moved.trips }, tonnes: { missed: lost.tonnes, of: moved.tonnes } } : {}),
-    ...(honest.length ? { honest: { refused: honest.filter((r) => (r.coverage ?? (r.pass ? "covered" : "gap")) !== "covered").length,
-                                    of: honest.length, label: "Honest trucks wrongly refused or flagged" } } : {}),
-  };
+  const { items, cost } = score(run);
+  const prev = previous ? score(previous) : null;
+  const before: Before | null = previous && prev ? { label: `run #${previous.id}`, items: prev.items, cost: prev.cost } : null;
 
   return (
     <>
@@ -352,7 +369,8 @@ function RunDetail({ id }: { id: number }) {
       </div>
 
       <Scorecard judgedAgainst={JUDGED[run.suite] ?? "Judged against each story's expected outcome."}
-                 items={items} unit={edgeResults.length && !tripResults.length ? "cases" : "stories"} cost={cost} />
+                 items={items} unit={edgeResults.length && !tripResults.length ? "cases" : "stories"} cost={cost}
+                 before={before} />
 
       {tripResults.length > 0 && (
         <table className="table">

@@ -48,6 +48,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 LIGHT_VEHICLE_MAX_M = 6.0  # C2: shorter vehicles are logged, not trips
 ARRIVED_LOADED_MARGIN_T = 1.0  # M2
+PAD_DRIFT_T = 0.5  # gap 1: median (entry reading - enrolled empty) over recent entries beyond this = pad drift
+PAD_DRIFT_WINDOW, PAD_DRIFT_MIN_TRUCKS = 10, 5
+BODY_TOLERANCE_T = 0.4  # gap 6: an empty truck heavier than its enrolled empty weight by more = a different body
+LIGHT_LOADED_T = 0.5  # gap 8: a light vehicle leaving this much heavier than it came in carried material
+OVERRIDE_CODES = ("OFFICER_EXIT", "OFFICER_LATE_CLOSE")  # gap 9
+OVERRIDE_PATTERN_N = 3  # overrides by one officer on one permit within 24 h
 EMPTY_EXIT_T = 0.5  # M5
 OVERLOAD_HIGH_RATIO = 0.10  # M3: more than 10% over rated capacity = High
 NO_QR_CLOSES_PER_DAY = 1  # P9
@@ -303,6 +309,20 @@ def _light_vehicle(t: Trip) -> bool:
     s = t.step("Eligibility")
     s.add("Light vehicle", "passed", f"Radar {length:.2f} m (< {LIGHT_VEHICLE_MAX_M:g} m): logged, not a trip")
     t.log("COMPARE", "INFO", f"Light vehicle ({length:.2f} m): logged, not counted as a trip (rule C2)")
+    m = t.movement
+    if m.direction == "OUT" and m.weight_t is not None and m.plate_normalised:  # gap 8: did it carry material out?
+        came_in = t.db.scalar(select(Movement).where(
+            Movement.permit_id == t.permit.id, Movement.direction == "IN", Movement.plate_normalised == m.plate_normalised,
+            Movement.weight_t.is_not(None), Movement.id != m.id).order_by(Movement.id.desc()))
+        if came_in is not None:
+            gained = m.weight_t - came_in.weight_t
+            if gained > LIGHT_LOADED_T:
+                msg = (f"Light vehicle {m.plate_normalised} left {gained:.2f} t heavier than it came in "
+                       f"({came_in.weight_t:.2f} t in, {m.weight_t:.2f} t out): carrying material uncounted")
+                s.add("Light vehicle load", "warning", msg)
+                t.alert("LIGHT_VEHICLE_LOADED", "HIGH", msg)
+            else:
+                s.add("Light vehicle load", "passed", f"Left at {m.weight_t:.2f} t, came in at {came_in.weight_t:.2f} t")
     t.finish(allowed=True)
     return True
 
@@ -420,14 +440,34 @@ def process_entry(t: Trip) -> None:
         entry_weight, measured = truck.empty_weight_t, False
         ms.add("Entry weight", "failed", f"No weigh pad reading; using enrolled empty weight {truck.empty_weight_t:.2f} t")
         t.alert("WEIGH_BYPASS", "HIGH", f"{truck.plate} entered without a weigh pad reading", truck=truck)
-    elif entry_weight > truck.empty_weight_t + ARRIVED_LOADED_MARGIN_T:
-        ms.add("Entry weight", "warning", f"{entry_weight:.2f} t vs enrolled empty {truck.empty_weight_t:.2f} t: "
-                                          "arrived loaded")
-        t.alert("ARRIVED_LOADED", "MEDIUM",
-                f"{truck.plate} arrived weighing {entry_weight:.2f} t, {entry_weight - truck.empty_weight_t:.2f} t "
-                f"above its enrolled empty weight", truck=truck)
     else:
-        ms.add("Entry weight", "passed", f"{entry_weight:.2f} t (enrolled empty {truck.empty_weight_t:.2f} t)")
+        offset = _pad_offset(t)  # gap 1: is the pad itself off? (median over recent trucks)
+        drift = offset is not None and abs(offset) > PAD_DRIFT_T
+        if drift:
+            ms.add("Weigh pad", "warning", f"Recent empty trucks read {offset:+.2f} t off their enrolled empty weights: "
+                                           "pad drift; this truck is judged with that offset removed")
+            _weigh_drift_alert(t, offset)
+        diff = entry_weight - truck.empty_weight_t - (offset if drift else 0.0)
+        if diff > ARRIVED_LOADED_MARGIN_T:
+            ms.add("Entry weight", "warning", f"{entry_weight:.2f} t vs enrolled empty {truck.empty_weight_t:.2f} t: "
+                                              "arrived loaded")
+            t.alert("ARRIVED_LOADED", "MEDIUM",
+                    f"{truck.plate} arrived weighing {entry_weight:.2f} t, {diff:.2f} t above its enrolled empty "
+                    "weight", truck=truck)
+        elif diff > BODY_TOLERANCE_T:  # gap 6: identifiers genuine, but not the body they were enrolled on
+            msg = (f"{truck.plate} weighs {entry_weight:.2f} t empty, {diff:.2f} t more than the {truck.empty_weight_t:.2f} t "
+                   "enrolled at inspection: a different truck may be wearing this truck's plate, FASTag and sticker")
+            ms.add("Body matches enrolment", "failed", msg)
+            t.alert("BODY_MISMATCH", "HIGH", msg, truck=truck)
+            t.hold(truck, "BODY_MISMATCH")
+            return t.finish(allowed=False, forced_note=forced)
+        elif diff < -BODY_TOLERANCE_T:  # lighter than its own empty weight: pad fault or a changed body; let it work
+            msg = (f"{truck.plate} weighs {entry_weight:.2f} t, {-diff:.2f} t less than its enrolled empty weight "
+                   f"{truck.empty_weight_t:.2f} t (pad fault or changed body)")
+            ms.add("Body matches enrolment", "warning", msg)
+            t.alert("WEIGHT_BELOW_EMPTY", "MEDIUM", msg, truck=truck)
+        else:
+            ms.add("Entry weight", "passed", f"{entry_weight:.2f} t (enrolled empty {truck.empty_weight_t:.2f} t)")
     t.log("MEASURE", "INFO", f"Entry weight {entry_weight:.2f} t" + ("" if measured else " (fallback)"))
 
     _issue_pass(t, truck, entry_weight, measured)
@@ -437,6 +477,53 @@ def process_entry(t: Trip) -> None:
         t.alert("PER_VEHICLE_LOW", "INFO", f"{truck.plate} has {q.remaining_trips} of {q.max_trips} trips left",
                 truck=truck)
     t.finish(allowed=True)
+
+
+def _pad_offset(t: Trip) -> float | None:
+    """Gap 1: the median of (entry reading - enrolled empty weight) over the recent entries at this gate, from at
+    least PAD_DRIFT_MIN_TRUCKS different trucks. One odd truck can't move a median; a pad that is off moves them all."""
+    rows = t.db.execute(
+        select(Movement.weight_t, Truck.empty_weight_t, Movement.truck_id).join(Truck, Truck.id == Movement.truck_id)
+        .where(Movement.permit_id == t.permit.id, Movement.gate == t.movement.gate, Movement.direction == "IN",
+               Movement.weight_t.is_not(None), Movement.id != t.movement.id)
+        .order_by(Movement.id.desc()).limit(PAD_DRIFT_WINDOW)).all()
+    rows = list(rows) + [(t.movement.weight_t, t.decision.truck.empty_weight_t, t.decision.truck.id)]
+    if len({r[2] for r in rows}) < PAD_DRIFT_MIN_TRUCKS:
+        return None
+    diffs = sorted(w - e for w, e, _ in rows)
+    mid = len(diffs) // 2
+    return diffs[mid] if len(diffs) % 2 else (diffs[mid - 1] + diffs[mid]) / 2
+
+
+def _weigh_drift_alert(t: Trip, offset: float) -> None:
+    """Once per permit: the GB's own weigh pad reads off. Every weight from it is suspect until it is checked."""
+    already = t.db.scalar(select(func.count()).select_from(Alert).where(Alert.permit_id == t.permit.id,
+                                                                       Alert.code == "WEIGH_DRIFT")) or 0
+    if not already:
+        t.alert("WEIGH_DRIFT", "HIGH", f"Weigh pad at {t.movement.gate} reads {offset:+.2f} t off: empty trucks no "
+                                       "longer weigh their enrolled weights. Tampering or a calibration fault; check it "
+                                       "with a reference load")
+
+
+def override_pattern(db: Session, permit_id: int, officer_id: int, officer_name: str, source: str | None,
+                     movement_id: int | None = None) -> Alert | None:
+    """Gap 9: each override is fine on its own; many by one officer on one permit within a day is a pattern."""
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    db.flush()
+    n = db.scalar(select(func.count()).select_from(Alert).where(
+        Alert.permit_id == permit_id, Alert.officer_id == officer_id, Alert.code.in_(OVERRIDE_CODES),
+        Alert.created_at >= since)) or 0
+    already = db.scalar(select(func.count()).select_from(Alert).where(
+        Alert.permit_id == permit_id, Alert.officer_id == officer_id, Alert.code == "OFFICER_OVERRIDE_PATTERN",
+        Alert.created_at >= since)) or 0
+    if n < OVERRIDE_PATTERN_N or already:
+        return None
+    a = Alert(permit_id=permit_id, movement_id=movement_id, officer_id=officer_id, code="OFFICER_OVERRIDE_PATTERN",
+              severity="HIGH", message=f"Officer {officer_name} has overridden {n} refusals or open trips on this permit "
+                                       "within 24 h (let-outs, late closes): needs review by a second officer",
+              status="open", source=source)
+    db.add(a)
+    return a
 
 
 def _issue_pass(t: Trip, truck: Truck, entry_weight: float, measured: bool) -> None:
@@ -665,10 +752,11 @@ class OfficerActionError(Exception):
     """An officer action that does not apply to this movement (the message says why)."""
 
 
-def officer_exit(db: Session, refused: Movement, officer_name: str, reason: str, at: datetime) -> Trip:
+def officer_exit(db: Session, refused: Movement, officer, reason: str, at: datetime) -> Trip:
     """A2 / P11 at the gate: an officer checks a truck whose exit was refused and lets it out. The truck's own
     pass is closed by the officer (close_mode "officer", flagged), so the trip stays counted as legal. Not allowed
     while the truck is on hold (release the hold first), for an unidentified vehicle, or with no pass to close."""
+    officer_name = officer.name
     if refused.direction != "OUT" or refused.decision != "REFUSED":
         raise OfficerActionError("Only a refused exit can be let out by an officer")
     if refused.barrier_forced:
@@ -715,8 +803,13 @@ def officer_exit(db: Session, refused: Movement, officer_name: str, reason: str,
     sess.notes = f"Let out at the gate by {officer_name}: {reason}"
     m.pass_id = sess.id
     m.counted_trip, m.trip = True, "LEGAL"
-    t.alert("OFFICER_EXIT", "MEDIUM", f"{truck.plate} let out by officer {officer_name} after a refused exit "
-                                      f"(pass {sess.trip_code} closed by the officer): {reason}", truck=truck, pass_=sess)
+    a = t.alert("OFFICER_EXIT", "MEDIUM", f"{truck.plate} let out by officer {officer_name} after a refused exit "
+                                          f"(pass {sess.trip_code} closed by the officer): {reason}", truck=truck, pass_=sess)
+    a.officer_id = officer.id
+    p = override_pattern(db, permit.id, officer.id, officer_name, m.source, m.id)
+    if p is not None:
+        t.alerts.append(p)
+        t.log("ACT", "ALERT", f"HIGH OFFICER_OVERRIDE_PATTERN: {p.message}", {"alert": p.code})
     t.log("PASS", "INFO", f"Pass {sess.trip_code} closed by officer {officer_name}"
                           + (f" with {net:.2f} t" if net is not None else ""), {"pass": sess.trip_code})
     t.outbox("TRIP_COMPLETED", {"session_id": sess.session_id, "trip_code": sess.trip_code, "truck_plate": truck.plate,

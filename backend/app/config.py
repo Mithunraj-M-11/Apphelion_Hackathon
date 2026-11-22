@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     upload_dir: str = "/app/data/uploads"
     # Identify rules: "strict" = plate + FASTag + radar length must all be present and agree.
     identify_mode: str = "strict"
+    # GB master secret each pole's signing key is derived from (PoC value; real poles keep keys in a secure element).
+    pole_master_key: str = "sitewatch-dev-pole-master-key"
 
 
 settings = Settings()

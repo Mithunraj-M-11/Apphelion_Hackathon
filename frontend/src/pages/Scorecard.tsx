@@ -14,6 +14,9 @@ export type ScoreItem = {
   how?: string; // e.g. "stopped" / "caught after" for covered site attempts
 };
 
+/** The previous run of the same suite / scenario, to show before -> after. */
+export type Before = { label: string; items: ScoreItem[]; cost: Cost };
+
 export type Cost = {
   trips?: { missed: number; of: number };
   tonnes?: { missed: number; of: number };
@@ -48,6 +51,12 @@ export function StatusBadge({ s }: { s?: Status | null }) {
   return <span className={`badge ${cls}`}>{s ? STATUS_TEXT[s] : "—"}</span>;
 }
 
+function Was({ was, now, lowerIsBetter }: { was: number | undefined; now: number; lowerIsBetter?: boolean }) {
+  if (was === undefined || Math.round(was) === Math.round(now)) return was === undefined ? null : <span className="sc-was">same as before</span>;
+  const better = lowerIsBetter ? now < was : now > was;
+  return <span className={`sc-was ${better ? "ok-text" : "bad-text"}`}>was {Math.round(was).toLocaleString("en-IN")}</span>;
+}
+
 function Tile({ label, value, total, tone, sub, onClick }: { label: string; value: number; total?: number;
   tone?: "ok" | "warn" | "bad"; sub?: ReactNode; onClick?: () => void }) {
   return (
@@ -70,16 +79,19 @@ export function Scorecard({
   cost,
   onStatus,
   onCost,
+  before,
 }: {
   judgedAgainst: string;
   items: ScoreItem[];
   unit: string; // "stories", "cases", "attempts"
   cost: Cost;
+  before?: Before | null;
   onStatus?: (s: Status) => void;
   onCost?: (k: "trips" | "tonnes" | "honest") => void;
 }) {
   const n = items.length;
   const count = (s: Status) => items.filter((i) => i.status === s).length;
+  const was = (s: Status) => (before ? before.items.filter((i) => i.status === s).length : undefined);
   const hows = items.filter((i) => i.status === "covered" && i.how).reduce<Record<string, number>>((a, i) => {
     a[i.how as string] = (a[i.how as string] ?? 0) + 1;
     return a;
@@ -98,25 +110,33 @@ export function Scorecard({
   return (
     <>
       <p className="sc-judged">{judgedAgainst}</p>
+      {before && <p className="small muted sc-before">Compared with {before.label}: green = better than before, red = worse.</p>}
       <div className="stats stats-4">
-        <Tile label="Covered" value={count("covered")} total={n} tone="ok" sub={howText || undefined} onClick={click("covered")} />
-        <Tile label="Partial" value={count("partial")} total={n} tone={count("partial") ? "warn" : undefined} onClick={click("partial")} />
-        <Tile label="Gap" value={count("gap")} total={n} tone={count("gap") ? "bad" : undefined} onClick={click("gap")} />
+        <Tile label="Covered" value={count("covered")} total={n} tone="ok" onClick={click("covered")}
+              sub={<>{howText && <div>{howText}</div>}<Was was={was("covered")} now={count("covered")} /></>} />
+        <Tile label="Partial" value={count("partial")} total={n} tone={count("partial") ? "warn" : undefined} onClick={click("partial")}
+              sub={<Was was={was("partial")} now={count("partial")} lowerIsBetter />} />
+        <Tile label="Gap" value={count("gap")} total={n} tone={count("gap") ? "bad" : undefined} onClick={click("gap")}
+              sub={<Was was={was("gap")} now={count("gap")} lowerIsBetter />} />
         <Tile label="Silent gap" value={count("silent")} total={n} tone={count("silent") ? "bad" : undefined}
-              sub="the GB doesn't know" onClick={click("silent")} />
+              sub={<><div>the GB doesn't know</div><Was was={was("silent")} now={count("silent")} lowerIsBetter /></>}
+              onClick={click("silent")} />
       </div>
       {(cost.trips || cost.tonnes || cost.honest) && (
         <div className="stats stats-3">
           {cost.trips && (
-            <Tile label="Trips the GB missed" value={cost.trips.missed} total={cost.trips.of} sub="of what really moved"
+            <Tile label="Trips the GB missed" value={cost.trips.missed} total={cost.trips.of}
+                  sub={<><div>of what really moved</div><Was was={before?.cost.trips?.missed} now={cost.trips.missed} lowerIsBetter /></>}
                   tone={cost.trips.missed ? "bad" : "ok"} onClick={costClick("trips")} />
           )}
           {cost.tonnes && (
             <Tile label="Tonnes the GB missed" value={Math.round(cost.tonnes.missed)} total={Math.round(cost.tonnes.of)}
-                  sub="of what really moved" tone={cost.tonnes.missed >= 1 ? "bad" : "ok"} onClick={costClick("tonnes")} />
+                  sub={<><div>of what really moved</div><Was was={before?.cost.tonnes?.missed} now={cost.tonnes.missed} lowerIsBetter /></>}
+                  tone={cost.tonnes.missed >= 1 ? "bad" : "ok"} onClick={costClick("tonnes")} />
           )}
           {cost.honest && (
             <Tile label={cost.honest.label} value={cost.honest.refused} total={cost.honest.of}
+                  sub={<Was was={before?.cost.honest?.refused} now={cost.honest.refused} lowerIsBetter />}
                   tone={cost.honest.refused ? "bad" : "ok"} onClick={costClick("honest")} />
           )}
         </div>

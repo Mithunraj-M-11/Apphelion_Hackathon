@@ -22,6 +22,8 @@ from pathlib import Path
 import httpx
 import yaml
 
+import pole
+
 IST = timezone(timedelta(hours=5, minutes=30))
 SITE_DIR = Path(__file__).parent / "scenarios" / "site"
 SERIOUS = ("HIGH", "CRITICAL")
@@ -504,7 +506,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
                   "weigh_bypass": "drove round the weigh pad"}[type_]
     elif type_ == "transplant":  # X's real plate, FASTag and GB sticker moved onto the Vendor's extra truck
         body = Veh(f"extra truck wearing {v.label}'s identity", v.plate, v.tag, round(v.length + 0.04, 2),
-                   round(v.empty + w.u(0.4, 0.8), 2), v.rated, v.sticker)
+                   round(v.empty + w.u(0.5, 0.8), 2), v.rated, v.sticker)
         c.off(start - timedelta(minutes=30), f"{v.label}'s plate, FASTag and GB sticker moved onto an extra truck")
         r = yield Ev(start, "IN", body, w.w(body, 0), honest=False)
         c.saw(r, start, "the extra truck")
@@ -563,7 +565,8 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         r = yield Ev(out_at, "OUT", pickup, w.w(pickup, load_t), tag=None, honest=False)
         c.saw(r, out_at)
         w.trip(out_at, pickup, load_t, "cheat", True, type_, cause="light vehicle")
-        c.outcome, c.note = "missed", "let through as a light vehicle; the load is not counted"
+        c.outcome = "detected" if c.alerts else "missed"
+        c.note = "let through as a light vehicle; the load is not counted" + (" (flagged)" if c.alerts else "")
 
     elif type_ == "outage_trip":  # an extra truck moves while the pole is down; the barrier is lifted by hand
         window = w.down(start)
@@ -679,7 +682,7 @@ def post(w: World, permit: dict, source: str, ev: Ev) -> dict:
         body["pass_token"] = ev.token
     if ev.code:
         body["pass_code"] = ev.code
-    return w.client.post(f"/api/gates/{GATE}/events", json=body).raise_for_status().json()
+    return pole.event(w.client, GATE, body).raise_for_status().json()
 
 
 def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dict]) -> int:
@@ -730,8 +733,7 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
         while heartbeats and beat_at + timedelta(minutes=15) <= at:  # the pole's 'I'm alive' signal (staging)
             beat_at += timedelta(minutes=15)
             if not w.down(beat_at):
-                client.post(f"/api/poles/{GATE}/heartbeat", json={"at": beat_at.isoformat(), "permit_id": permit["id"],
-                                                                 "source": source})
+                pole.heartbeat(client, GATE, {"at": beat_at.isoformat(), "permit_id": permit["id"], "source": source})
         while day_i < len(w.days) - 1 and at.date() > w.days[day_i]:
             end_of_day(w, permit, w.days[day_i], officer_id)
             day_i += 1
@@ -787,6 +789,11 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
     ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
     daily = client.get(f"/api/permits/{permit['id']}/ledger/daily").raise_for_status().json()
     alerts = client.get(f"/api/alerts?permit_id={permit['id']}&limit=5000").raise_for_status().json()
+    if any(a["code"] == "POLE_SILENT" for a in alerts):  # the GB knows the pole was down, not what moved meanwhile
+        for c in w.cheats:
+            if c.type == "outage_trip":
+                c.attempt_flagged = True
+                c.note += " (pole outage flagged: POLE_SILENT)"
 
     truth_trips, truth_t = len(w.truth), sum(t["tonnes"] for t in w.truth)
     invisible = [t for t in w.truth if not t["crossed_gate"]]

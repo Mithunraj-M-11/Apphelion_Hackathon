@@ -10,7 +10,7 @@ from app.db import get_db
 from app.deps import acting_officer
 from app.models import Alert, Contract, Officer, Permit, TruckHold, VendorReport
 from app.schemas import AlertOut, HoldOut, HoldRelease, PermitIn, PermitOut, VendorReportIn
-from app.services import logbus, trip
+from app.services import integrity, logbus, trip
 from app.services.logbus import LogLine
 
 router = APIRouter(prefix="/api", tags=["permits"])
@@ -115,6 +115,16 @@ def list_alerts(
     elif origin in ("sim", "walkthrough", "site"):
         stmt = stmt.where(Alert.source.startswith(f"{origin}:"))
     return db.scalars(stmt).all()
+
+
+@router.get("/permits/{permit_id}/verify-records")
+def verify_records(permit_id: int, db: Session = Depends(get_db)) -> dict:
+    """Record check (gap 5): recompute the hash chain over this permit's gate events. Any event edited or deleted
+    after it was recorded breaks the chain and raises RECORD_TAMPERED."""
+    permit = _permit(db, permit_id)
+    report = integrity.verify(db, permit)
+    db.commit()
+    return report
 
 
 @router.get("/holds", response_model=list[HoldOut])

@@ -1,5 +1,6 @@
 from app.models.edge import EdgeSystemState, EmergencyMovement, SyncOutbox
 from app.models.gate import Movement, SimRun, SiteRun
+from app.models.integrity import PoleState, RecordEntry
 from app.models.logs import EventLog
 from app.models.registry import (
     Contract,
@@ -32,7 +33,9 @@ __all__ = [
     "Movement",
     "Officer",
     "Permit",
+    "PoleState",
     "QuotaAdjustment",
+    "RecordEntry",
     "RegistryHistory",
     "RfidSticker",
     "ServerKey",
