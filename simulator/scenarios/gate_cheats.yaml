@@ -158,7 +158,7 @@ scenarios:
     rules: M2
     why: Material brought in from outside (or a different truck) to be dispatched as if mined here.
     events:
-      - { at: "08:00", dir: IN,  vehicle: OD09AK6402, load: 8, expect: { barrier: up, pass_issued: true, alerts: [ARRIVED_LOADED] } }
+      - { at: "08:00", dir: IN,  vehicle: OD09AK6402, load: 8, note: picked up material outside the site, expect: { barrier: up, pass_issued: true, alerts: [ARRIVED_LOADED] } }
       - { at: "08:50", dir: OUT, vehicle: OD09AK6402, load: 24, expect: { barrier: up, trip: LEGAL } }
 
   - id: T11
@@ -170,7 +170,7 @@ scenarios:
     why: The GB pad measures real net tonnes; the quota counts what actually left, and the overload is flagged.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AL9015, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:50", dir: OUT, vehicle: OD09AL9015, load: "125%", expect: { barrier: up, trip: LEGAL, alerts: [OVERLOAD] } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AL9015, load: "125%", note: loaded well above its rated capacity, expect: { barrier: up, trip: LEGAL, alerts: [OVERLOAD] } }
 
   - id: T12
     name: Leaves empty
@@ -180,7 +180,7 @@ scenarios:
     why: An empty exit doesn't give the reserved trip back, so passes can't be cycled to game the quota.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AJ3579, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:30", dir: OUT, vehicle: OD09AJ3579, load: 0.2, expect: { barrier: up, trip: LEGAL, alerts: [EMPTY_EXIT] } }
+      - { at: "08:30", dir: OUT, vehicle: OD09AJ3579, load: 0.2, note: left almost empty, expect: { barrier: up, trip: LEGAL, alerts: [EMPTY_EXIT] } }
 
   - id: T13
     name: Weigh pad skipped at exit
@@ -190,7 +190,7 @@ scenarios:
     why: Silence is suspicious; a missing weight is an alert, never an assumed normal load.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD02BR7120, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:50", dir: OUT, vehicle: OD02BR7120, load: none, expect: { barrier: up, alerts: [WEIGH_BYPASS] } }
+      - { at: "08:50", dir: OUT, vehicle: OD02BR7120, load: none, note: drove round the exit weigh pad, expect: { barrier: up, alerts: [WEIGH_BYPASS] } }
 
   # ------------------------------------------------------------------ pass at exit
   - id: T14
@@ -214,7 +214,7 @@ scenarios:
     why: The pass is bound to one truck's plate and FASTag; a different truck can't leave on it.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD14DF8821, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:40", dir: OUT, vehicle: JH05CK2290, pass: { qr_from: 1 }, note: entered by a side track,
+      - { at: "08:40", dir: OUT, vehicle: JH05CK2290, pass: { qr_from: 1 }, note: came in by a side track and was handed the QR of OD14DF8821,
           expect: { barrier: down, alerts: [PASS_MISMATCH] } }
 
   - id: T16
@@ -225,7 +225,7 @@ scenarios:
     why: Every pass is signed by the GB key; changing a single character breaks the signature.
     events:
       - { at: "08:00", dir: IN,  vehicle: JH05CL6614, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:50", dir: OUT, vehicle: JH05CL6614, pass: { tampered_qr_from: 1 }, expect: { barrier: down, alerts: [INVALID_PASS] } }
+      - { at: "08:50", dir: OUT, vehicle: JH05CL6614, pass: { tampered_qr_from: 1 }, note: edited its QR (e.g. the expiry) before showing it, expect: { barrier: down, alerts: [INVALID_PASS] } }
 
   - id: T17
     name: Dead phone twice in a day
@@ -238,7 +238,7 @@ scenarios:
       - { at: "07:00", dir: IN,  vehicle: CG04MN5507, expect: { barrier: up, pass_issued: true } }
       - { at: "07:45", dir: OUT, vehicle: CG04MN5507, pass: none, expect: { barrier: up, trip: LEGAL, alerts: [CLOSED_WITHOUT_QR] } }
       - { at: "08:00", dir: IN,  vehicle: CG04MN5507, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:45", dir: OUT, vehicle: CG04MN5507, pass: none, expect: { barrier: down, alerts: [NO_QR_LIMIT] } }
+      - { at: "08:45", dir: OUT, vehicle: CG04MN5507, pass: none, note: says the phone is dead again, expect: { barrier: down, alerts: [NO_QR_LIMIT] } }
 
   - id: T18
     name: Pass expired at exit
@@ -344,7 +344,7 @@ scenarios:
     why: The pass is bound to the sticker seen at entry; a different sticker at the exit means a different vehicle.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AF7733, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:45", dir: OUT, vehicle: OD09AF7733, sticker: { from: OD09AG1180 },
+      - { at: "08:45", dir: OUT, vehicle: OD09AF7733, sticker: { from: OD09AG1180 }, note: its own sticker swapped for another truck's inside the site,
           expect: { barrier: down, alerts: [RFID_MISMATCH] } }
 
   # ------------------------------------------------------------------ contract settings
@@ -382,7 +382,7 @@ scenarios:
     why: Without an entry weight the net load can't be measured; the pass falls back to the enrolled empty weight
       and the bypass is flagged.
     events:
-      - { at: "08:00", dir: IN, vehicle: OD09AH2468, load: none,
+      - { at: "08:00", dir: IN, vehicle: OD09AH2468, load: none, note: drove round the entry weigh pad,
           expect: { barrier: up, pass_issued: true, alerts: [WEIGH_BYPASS] } }
 
   - id: T31

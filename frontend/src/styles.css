@@ -571,3 +571,5 @@ ul.plain li { padding: 3px 0; }
 .sr-timeline li.unseen .sr-tl-text { color: var(--muted); font-style: italic; }
 .sr-tl-unseen { font-size: 0.72rem; color: var(--muted); border: 1px dashed var(--border); border-radius: 10px; padding: 0 8px; }
 .sr-tl-alerts { color: var(--bad); }
+.sr-timeline li.officer::before { background: var(--warn); }
+.sr-tl-expect { margin: 0 0 2px 54px; }

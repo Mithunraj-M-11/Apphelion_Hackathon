@@ -23,10 +23,10 @@ import {
   type TripEventExpect,
   type TripScenarioResult,
 } from "../api";
-import { AlertList, BarrierBadge, ErrorNote, TripBadge } from "../components";
-import { formatDateTime, formatPlate } from "../format";
-import { MovementDetail } from "./GateEvents";
+import { ErrorNote } from "../components";
+import { formatDateTime } from "../format";
 import { ScenarioSheetButton } from "./SimScenarioSheet";
+import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
 
 /** The threats a story belongs to, in the order the scorecard shows them. */
 const CATEGORIES: { key: string; title: string }[] = [
@@ -251,76 +251,56 @@ const expectText = (e: TripEventExpect) =>
     e.not_alerts?.length ? `not ${e.not_alerts.join(", ")}` : null,
   ].filter(Boolean).join(" · ") || "—";
 
+/** One gate event in plain words: where, what was read, what the driver showed, what the GB decided. */
+function gateText(e: TripScenarioResult["events"][number]) {
+  const a = e.actual;
+  const read = e.readings.plate_read ?? "no plate";
+  const really = e.vehicle && e.vehicle !== e.readings.plate_read ? `, really ${e.vehicle.replace(/_/g, " ")}` : "";
+  const shown = e.dir === "OUT" && e.readings.shown ? `, shows ${e.readings.shown}` : "";
+  let outcome: string;
+  if (a.barrier === "up") {
+    outcome = e.dir === "IN" ? (a.pass_issued ? `let in, pass ${a.pass_issued} issued` : "let through")
+      : a.trip ? `let out, ${a.trip.toLowerCase()} trip` : "let out";
+  } else {
+    outcome = "barrier stays down";
+    if (e.readings.forced) outcome += `, broke through${a.trip === "ILLEGAL" ? ": illegal trip" : ""}`;
+  }
+  return `${e.dir === "IN" ? "Entry" : "Exit"} gate: read ${read}${really}${shown}, ${outcome}`;
+}
+
+function storySteps(s: TripScenarioResult): TimelineStep[] {
+  const steps: TimelineStep[] = [];
+  for (const e of s.events) {
+    const alerts = e.actual.alerts.map((x) => x.code);
+    const hasExpect = Object.keys(e.expected ?? {}).length > 0;
+    if (e.dir === "OFFICER") {
+      steps.push({ at: e.at, kind: "officer", text: `Officer ${e.note ?? ""}`, movement: e.movement_id, alerts,
+                   expected: hasExpect ? expectText(e.expected) : undefined, pass: e.pass });
+      continue;
+    }
+    if (e.note) steps.push({ at: "", kind: "unseen", text: e.note });
+    steps.push({ at: e.at, kind: "gate", text: gateText(e), movement: e.movement_id, alerts,
+                 expected: expectText(e.expected), pass: e.pass });
+  }
+  return steps;
+}
+
 function TripExpanded({ s, movements }: { s: TripScenarioResult; movements: Record<number, Movement> }) {
-  const [openEvent, setOpenEvent] = useState<number | null>(null);
   const L = s.ledger;
   return (
     <div className="scenario-expanded">
       {s.why && (
-        <p className="why">
+        <p className="sr-cheat-story">
           {s.why}
           {s.rules && <span className="muted"> Rules {s.rules}.</span>}
           {s.real_case && <span className="muted"> ({s.real_case})</span>}
         </p>
       )}
-      <table className="table table-inner">
-        <thead>
-          <tr><th>#</th><th>Time</th><th>Gate</th><th>Vehicle</th><th>Shown / note</th><th>Expected</th><th>What happened</th><th>Check</th></tr>
-        </thead>
-        <tbody>
-          {s.events.map((e) => (
-            <Fragment key={e.n}>
-              <tr className="clickable" onClick={() => setOpenEvent(openEvent === e.n ? null : e.n)}>
-                <td>{e.n}</td>
-                <td className="nowrap">{e.at}</td>
-                <td className="nowrap">{e.dir === "IN" ? "Entry" : e.dir === "OUT" ? "Exit" : "Officer"}</td>
-                <td className="nowrap">
-                  {e.dir === "OFFICER" ? (
-                    e.vehicle ? <span className="plate plate-sm">{formatPlate(e.vehicle)}</span> : <span className="muted">—</span>
-                  ) : (
-                    <>
-                      {e.readings.plate_read ? <span className="plate plate-sm">{formatPlate(e.readings.plate_read)}</span> : <span className="muted">no plate</span>}
-                      <div className="small muted">
-                        {e.vehicle !== e.readings.plate_read ? `really ${e.vehicle} · ` : ""}
-                        {e.readings.weight_t != null ? `${e.readings.weight_t.toFixed(1)} t` : "no weight"}
-                      </div>
-                    </>
-                  )}
-                </td>
-                <td className="small">
-                  {e.dir === "OUT" && <div>Shows: {e.readings.shown}</div>}
-                  {e.readings.forced && <div className="bad-text">Forces the barrier</div>}
-                  {e.note && <div className="muted">{e.note}</div>}
-                </td>
-                <td className="small">{expectText(e.expected)}</td>
-                <td>
-                  <div className="badges-row">
-                    <BarrierBadge barrier={e.actual.barrier} />
-                    {e.actual.pass_issued && <span className="badge neutral">{e.actual.pass_issued} issued</span>}
-                    <TripBadge trip={e.actual.trip} />
-                  </div>
-                  <div style={{ marginTop: 6 }}><AlertList alerts={e.actual.alerts} /></div>
-                </td>
-                <td><PassTag pass={e.pass} /></td>
-              </tr>
-              {openEvent === e.n && (
-                <tr className="detail-row">
-                  <td colSpan={8}>
-                    {e.problems.length > 0 && <ErrorNote error={e.problems.join("; ")} />}
-                    {e.movement_id != null && movements[e.movement_id] ? <MovementDetail m={movements[e.movement_id]} /> :
-                      <p className="muted small">{e.movement_id == null ? "Officer action, no gate event." : `Gate event #${e.movement_id} not loaded.`}</p>}
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
+      <StoryTimeline steps={storySteps(s)} movements={movements} />
       {s.problems.length > 0 && <ErrorNote error={s.problems.join("; ")} />}
       <div className="small muted" style={{ marginTop: 8 }}>
-        Permit ledger after the story: trips {L.trips_reserved}/{L.trip_limit} reserved, {L.legal_trips} legal,{" "}
-        {L.actual_trips} actual, {L.illegal_trips} illegal · {L.tonnes} t of {L.tonne_limit} t ·{" "}
-        {L.active_holds} truck(s) on hold
+        Permit after the story: {L.trips_reserved}/{L.trip_limit} trips reserved, {L.legal_trips} legal,{" "}
+        {L.actual_trips} actual, {L.illegal_trips} illegal · {L.tonnes} t of {L.tonne_limit} t · {L.active_holds} truck(s) on hold
       </div>
     </div>
   );

@@ -16,7 +16,7 @@ import {
 } from "../api";
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
-import { MovementDetail } from "./GateEvents";
+import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -290,10 +290,10 @@ const GROUP_TITLE: Record<Group, string> = {
  * the full gate-event detail). */
 function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, Movement> }) {
   const [open, setOpen] = useState(false);
-  const [openEvent, setOpenEvent] = useState<number | null>(null);
-  const steps = c.timeline?.length
-    ? [...c.timeline].sort((a, b) => a.at.localeCompare(b.at))
-    : (c.movements ?? []).map((id) => ({ at: "", seen: true, text: `Gate event #${id}`, movement: id, alerts: [] as string[] }));
+  const steps: TimelineStep[] = c.timeline?.length
+    ? [...c.timeline].sort((a, b) => a.at.localeCompare(b.at)).map((t) => ({
+        at: t.at, kind: t.seen ? "gate" : "unseen", text: t.text, movement: t.movement, alerts: t.alerts }))
+    : (c.movements ?? []).map((id) => ({ at: "", kind: "gate", text: `Gate event #${id}`, movement: id }));
   return (
     <>
       <tr className="clickable" onClick={() => setOpen((o) => !o)}>
@@ -311,32 +311,7 @@ function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, 
           <td />
           <td colSpan={7}>
             {CHEAT_STORY[c.type] && <p className="sr-cheat-story">{CHEAT_STORY[c.type]}</p>}
-            <ol className="sr-timeline">
-              {steps.map((st, k) => (
-                <li key={k} className={st.seen ? "seen" : "unseen"}>
-                  <div
-                    className={`sr-tl-row${st.movement ? " clickable" : ""}`}
-                    onClick={() => st.movement && setOpenEvent(openEvent === st.movement ? null : st.movement)}
-                  >
-                    <span className="sr-tl-time">{st.at}</span>
-                    <span className="sr-tl-text">{st.text}</span>
-                    {st.seen ? (
-                      st.alerts && st.alerts.length > 0 && <span className="small mono sr-tl-alerts">{st.alerts.join(", ")}</span>
-                    ) : (
-                      <span className="sr-tl-unseen">not seen by the GB</span>
-                    )}
-                    {st.movement && (openEvent === st.movement ? <LuChevronDown /> : <LuChevronRight />)}
-                  </div>
-                  {st.movement && openEvent === st.movement && (
-                    <div className="sr-event">
-                      {movements[st.movement] ? <MovementDetail m={movements[st.movement]} /> :
-                        <p className="muted small">Gate event #{st.movement} not loaded.</p>}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ol>
-            {steps.length === 0 && <p className="muted small">No gate event for this attempt.</p>}
+            <StoryTimeline steps={steps} movements={movements} />
           </td>
         </tr>
       )}
