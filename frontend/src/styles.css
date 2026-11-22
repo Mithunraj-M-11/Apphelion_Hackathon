@@ -466,3 +466,19 @@ ul.plain li { padding: 3px 0; }
 .gc-clear-history { display: inline-flex; align-items: center; gap: 6px; margin-right: auto;
   color: var(--bad); border-color: var(--bad); }
 .gc-hint { margin: -4px 0 10px; line-height: 1.35; }
+
+/* Gate console: one row per thing on the truck, with a marker for what was staged */
+.gc-vrows { display: flex; flex-direction: column; margin: 4px 0 14px; border-top: 1px solid var(--border); }
+.gc-vrow { display: grid; grid-template-columns: 10px 84px minmax(0, 1fr); column-gap: 10px; row-gap: 2px;
+  align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.gc-vlabel { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.gc-vctrl select, .gc-vctrl input { width: 100%; font: inherit; font-size: 0.85rem; }
+.gc-vread { grid-column: 3; font-size: 0.75rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-vsub { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.gc-vsub input[type="number"] { width: 80px; flex: none; }
+.gc-mark { width: 10px; height: 10px; border-radius: 50%; }
+.gc-mark-ok { background: var(--ok); }
+.gc-mark-warn { background: var(--warn); }
+.gc-mark-bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
+.gc-tamper-count { display: inline-flex; gap: 4px; }

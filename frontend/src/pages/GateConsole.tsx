@@ -38,33 +38,19 @@ import {
   type TripSession,
   type Truck,
   type TruckListItem,
-  type VehicleQuota,
 } from "../api";
 import { AlertList, BarrierBadge, ErrorNote, ResultBadge, TripBadge } from "../components";
 import { CHECK_LABEL, formatDateTime, formatPlate } from "../format";
 import { OfficerPanel, OpenItems } from "./GateOfficer";
-
-// ---------------------------------------------------------------- mocked physical world
-type VehicleKind = "registered" | "outside";
-type PlateShown = "own" | "none" | "custom";
-type TagShown = "own" | "none" | "from";
-type RfidSimMode = "genuine" | "cloned" | "revoked" | "unknown_damaged";
-
-type Setup = {
-  vehicle: VehicleKind;
-  registeredPlate: string;
-  outsidePlate: string;
-  outsideLength: number;
-  plate: PlateShown;
-  customPlate: string;
-  tag: TagShown;
-  tagFrom: string;
-  // GB RFID Sticker additions
-  rfidUid: string;
-  rfidSimMode: RfidSimMode;
-};
-
-const OUTSIDE_TAG = "34161FA8000000000000OUT1"; // an outside truck's own FASTag: real tag, not in the GB registry
+import {
+  markCounts,
+  readingsFor,
+  TamperCount,
+  VehicleRows,
+  type RfidSimMode,
+  type RowsProps,
+  type Setup,
+} from "./GateVehicleRows";
 
 /** A registered truck as it physically arrives: its own plate and FASTag, with the given GB sticker. */
 const registered = (plate: string, rfidUid: string, rfidSimMode: RfidSimMode = "genuine"): Setup => ({
@@ -254,7 +240,6 @@ function sessionId(): string {
   }
 }
 
-const shortTag = (t: string | null) => (t ? (t.length > 12 ? `${t.slice(0, 8)}…${t.slice(-4)}` : t) : "none");
 const clock = (iso: string) => {
   const d = new Date(iso);
   return `${d.toLocaleTimeString("en-GB", { hour12: false })}.${String(d.getMilliseconds()).padStart(3, "0")}`;
@@ -293,176 +278,6 @@ function stepsFor(m: Movement): StepView[] {
   return steps;
 }
 
-/** Sensor readings a faithful pole reports for a physical setup (plate, FASTag, radar length). */
-function readingsFor(s: Setup, details: Record<string, Truck>) {
-  const reg = s.vehicle === "registered" ? details[s.registeredPlate] : undefined;
-  const ownPlate = s.vehicle === "registered" ? s.registeredPlate : s.outsidePlate;
-  const ownTag = s.vehicle === "registered" ? reg?.fastag_tag_id ?? null : OUTSIDE_TAG;
-  const length = s.vehicle === "registered" ? reg?.length_m ?? null : s.outsideLength;
-  const plateRead = s.plate === "own" ? ownPlate || null : s.plate === "none" ? null : s.customPlate.trim() || null;
-  const tagRead = s.tag === "own" ? ownTag : s.tag === "none" ? null : details[s.tagFrom]?.fastag_tag_id ?? null;
-  const ready = s.vehicle === "outside" || !!reg;
-  return { reg, ownPlate, plateRead, tagRead, length, ready };
-}
-
-/** What physically arrives at a barrier: the vehicle, the plate on it, the FASTag, the GB RFID sticker.
- * Used by both entry and exit: the exit identifies the vehicle again from scratch. */
-function IdentityInputs({
-  setup,
-  update,
-  trucks,
-  title = "What physically arrives",
-  activePlates,
-}: {
-  setup: Setup;
-  update: (patch: Partial<Setup>) => void;
-  trucks: TruckListItem[];
-  title?: string;
-  activePlates?: Set<string>;
-}) {
-  // trucks with an open trip in this session first (exit), newest registry order otherwise
-  const ordered = activePlates
-    ? [...trucks].sort((a, b) => Number(activePlates.has(b.plate)) - Number(activePlates.has(a.plate)))
-    : trucks;
-  return (
-    <>
-            <div className="gc-sep">{title}</div>
-            <div className="gc-radio">
-              <label>
-                <input
-                  type="radio"
-                  checked={setup.vehicle === "registered"}
-                  onChange={() => update({ vehicle: "registered" })}
-                />{" "}
-                Registered truck
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  checked={setup.vehicle === "outside"}
-                  onChange={() => update({ vehicle: "outside" })}
-                />{" "}
-                Outside truck
-              </label>
-            </div>
-
-            {setup.vehicle === "registered" ? (
-              <label className="gc-field">
-                Truck
-                <select
-                  value={setup.registeredPlate}
-                  onChange={(e) => update({ registeredPlate: e.target.value })}
-                >
-                  <option value="">Choose…</option>
-                  {ordered.map((t) => (
-                    <option key={t.id} value={t.plate}>
-                      {formatPlate(t.plate, t.plate_type)} · {t.make} {t.model}
-                      {activePlates?.has(t.plate) ? " (open trip)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <div className="gc-row">
-                <label className="gc-field">
-                  Its own plate
-                  <input
-                    value={setup.outsidePlate}
-                    onChange={(e) => update({ outsidePlate: e.target.value })}
-                  />
-                </label>
-                <label className="gc-field">
-                  True length (m)
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={setup.outsideLength}
-                    onChange={(e) => update({ outsideLength: Number(e.target.value) })}
-                  />
-                </label>
-              </div>
-            )}
-
-            <label className="gc-field">
-              Plate on the truck
-              <select
-                value={setup.plate}
-                onChange={(e) => update({ plate: e.target.value as PlateShown })}
-              >
-                <option value="own">Its own plate</option>
-                <option value="none">No plate (removed / covered)</option>
-                <option value="custom">A different plate (fake)</option>
-              </select>
-            </label>
-            {setup.plate === "custom" && (
-              <label className="gc-field">
-                Fake plate shown
-                <input
-                  value={setup.customPlate}
-                  onChange={(e) => update({ customPlate: e.target.value })}
-                  placeholder="OD09AB1234"
-                />
-              </label>
-            )}
-
-            <label className="gc-field">
-              FASTag on the windscreen
-              <select
-                value={setup.tag}
-                onChange={(e) => update({ tag: e.target.value as TagShown })}
-              >
-                <option value="own">
-                  {setup.vehicle === "registered" ? "Its own tag" : "Its own tag (not in GB registry)"}
-                </option>
-                <option value="none">No tag (removed / blocked)</option>
-                <option value="from">Tag taken from another registered truck</option>
-              </select>
-            </label>
-            {setup.tag === "from" && (
-              <label className="gc-field">
-                Taken from
-                <select value={setup.tagFrom} onChange={(e) => update({ tagFrom: e.target.value })}>
-                  <option value="">Choose…</option>
-                  {trucks.map((t) => (
-                    <option key={t.id} value={t.plate}>
-                      {formatPlate(t.plate, t.plate_type)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            {/* GB RFID Sticker Section */}
-            <div className="gc-sep" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <LuTag /> GB-ISSUED RFID STICKER
-            </div>
-
-            <label className="gc-field">
-              GB RFID Sticker UID
-              <input
-                value={setup.rfidUid}
-                onChange={(e) => update({ rfidUid: e.target.value })}
-                placeholder="GB-RFID-00001"
-              />
-            </label>
-
-            <label className="gc-field">
-              Simulated Chip Authentication
-              <select
-                value={setup.rfidSimMode}
-                onChange={(e) => update({ rfidSimMode: e.target.value as RfidSimMode })}
-              >
-                <option value="genuine">Genuine sticker (cryptographic challenge-response valid)</option>
-                <option value="cloned">Cloned / invalid sticker (crypto challenge mismatch)</option>
-                <option value="revoked">Revoked sticker (listed in central GB revocation list)</option>
-                <option value="unknown_damaged">Damaged or unknown sticker (unregistered / unreadable)</option>
-              </select>
-            </label>
-
-    </>
-  );
-}
-
 const BLANK_EXIT: Setup = {
   vehicle: "registered",
   registeredPlate: "",
@@ -489,7 +304,6 @@ export default function GateConsole() {
   const [trucks, setTrucks] = useState<TruckListItem[]>([]);
   const [details, setDetails] = useState<Record<string, Truck>>({});
   const [stickers, setStickers] = useState<Record<string, RfidSticker>>({});
-  const [quotas, setQuotas] = useState<Record<string, VehicleQuota>>({});
   const [activeSessions, setActiveSessions] = useState<TripSession[]>([]);
   // Waiting for an officer under the session permit: active holds, open and unresolved passes
   const [holds, setHolds] = useState<Hold[]>([]);
@@ -499,6 +313,7 @@ export default function GateConsole() {
   const [setup, setSetup] = useState<Setup>(PRESETS[0].setup);
   const [preset, setPreset] = useState(0);
   const [entrySetup, setEntrySetup] = useState<Setup | null>(null); // what the latest entry physically was
+  const [closedPasses, setClosedPasses] = useState<string[]>([]); // passes closed at an exit in this tab
   const [exitPreset, setExitPreset] = useState(0);
 
   // Exit setup
@@ -619,7 +434,6 @@ export default function GateConsole() {
       const t = trucks.find((x) => x.plate === plate);
       if (t) {
         api.truck(t.id).then((d) => setDetails((cur) => ({ ...cur, [plate]: d })));
-        api.quota(t.id).then((q) => setQuotas((cur) => ({ ...cur, [plate]: q }))).catch(() => {});
       }
     }
   }, [setup, exitSetup, trucks, details]);
@@ -661,7 +475,6 @@ export default function GateConsole() {
   // What the sensors will report for physical setup
   const { reg, plateRead, tagRead, length, ready } = readingsFor(setup, details);
   const exitR = readingsFor(exitSetup, details);
-  const activePlates = new Set(activeSessions.map((s) => s.truck?.plate).filter((p): p is string => !!p));
   const exitActive = activeSessions.find((s) => s.truck?.plate === exitR.plateRead);
 
   /** Entry form edits. Picking a registered truck by hand fills in its own GB sticker (a preset keeps its own). */
@@ -754,6 +567,49 @@ export default function GateConsole() {
   };
   const entryWeight = weighPad(reg, entryLoad);
 
+  // One row per thing on the truck, for each barrier; markers show what was staged
+  const entryRows: RowsProps = {
+    dir: "IN",
+    setup,
+    update,
+    trucks,
+    details,
+    stickers,
+    physical: { load: entryLoad, noWeight, force: forceBarrier },
+    setPhysical: (ph) => {
+      if (ph.load !== undefined) setEntryLoad(ph.load);
+      if (ph.noWeight !== undefined) setNoWeight(ph.noWeight);
+      if (ph.force !== undefined) setForceBarrier(ph.force);
+    },
+    weight: entryWeight,
+    openPass: entryOpen?.trip_code ?? null,
+  };
+  const entryToken = movement?.trip_session?.signed_token ?? "";
+  const exitRows: RowsProps = {
+    dir: "OUT",
+    setup: exitSetup,
+    update: updateExit,
+    trucks,
+    details,
+    stickers,
+    physical: { load: exitLoad, noWeight, force: forceBarrier },
+    setPhysical: (ph) => {
+      if (ph.load !== undefined) setExitLoad(ph.load);
+      if (ph.noWeight !== undefined) setNoWeight(ph.noWeight);
+      if (ph.force !== undefined) setForceBarrier(ph.force);
+    },
+    weight: weighPad(exitR.reg, exitLoad),
+    qr: {
+      value: exitQrToken,
+      entryToken,
+      editedToken: entryToken ? editToken(entryToken) : "",
+      entryPlate: movement?.trip_session?.truck?.plate ?? movement?.truck?.plate ?? "",
+      entryPassUsed: !!movement?.trip_session && closedPasses.includes(movement.trip_session.trip_code),
+      set: setExitQrToken,
+    },
+    openPass: exitActive?.trip_code ?? null,
+  };
+
   // Arrive at Entry Gate
   const arriveEntry = async () => {
     setBusy(true);
@@ -814,6 +670,8 @@ export default function GateConsole() {
   /** Show an exit decision (from the exit pole, or from an officer letting the truck out). */
   const showExit = (m: GateDecision) => {
     const checks = (m.trip_checks ?? []) as Check[];
+    const closed = m.barrier === "up" ? m.trip_session?.trip_code : undefined;
+    if (closed) setClosedPasses((cur) => (cur.includes(closed) ? cur : [...cur, closed]));
     setRevealed(0);
     setExitMovement(m);
     setExitResult({
@@ -841,6 +699,7 @@ export default function GateConsole() {
       setExitMovement(null);
       setExitResult(null);
       setPrefilledFrom(null);
+      setClosedPasses([]);
       setExitSetup(BLANK_EXIT);
       setExitQrToken("");
       setRevealed(0);
@@ -955,6 +814,7 @@ export default function GateConsole() {
           <section className="card gc-panel">
             <header className="gc-panel-head">
               <LuRadioTower /> <h3>Gate G1 · Entry</h3>
+              <TamperCount marks={markCounts(entryRows)} />
               <span className="gc-tag gc-tag-mock">Mocked sensors</span>
             </header>
 
@@ -984,60 +844,7 @@ export default function GateConsole() {
               </div>
             )}
 
-            <IdentityInputs setup={setup} update={update} trucks={trucks} />
-
-            <div className="gc-sep" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <LuScale /> WEIGH PAD AND BARRIER
-            </div>
-            <div className="gc-row">
-              <label className="gc-field">
-                Load in the body (t, or % of rated)
-                <input value={entryLoad} disabled={noWeight} onChange={(e) => setEntryLoad(e.target.value)} placeholder="0" />
-              </label>
-              <label className="gc-field">
-                Weigh pad
-                <select value={noWeight ? "skip" : "read"} onChange={(e) => setNoWeight(e.target.value === "skip")}>
-                  <option value="read">Reads the truck</option>
-                  <option value="skip">Skipped (no reading)</option>
-                </select>
-              </label>
-            </div>
-            <label className="gc-field" style={{ flexDirection: "row", alignItems: "center", gap: 6, color: "var(--bad)" }}>
-              <input type="checkbox" checked={forceBarrier} onChange={(e) => setForceBarrier(e.target.checked)} />
-              Breaks through if the barrier stays down
-            </label>
-
-            <div className="gc-preview">
-              <div className="field-label">Sensors will report at gate</div>
-              <div>
-                Plate:{" "}
-                {plateRead ? (
-                  <span className="plate plate-sm">{formatPlate(plateRead)}</span>
-                ) : (
-                  <span className="muted">none</span>
-                )}
-              </div>
-              <div>
-                FASTag: <span className="mono small">{shortTag(tagRead)}</span>
-              </div>
-              <div>Radar length: {length != null ? `${length.toFixed(2)} m` : "…"}</div>
-              <div>Weigh pad: {entryWeight != null ? `${entryWeight.toFixed(2)} t` : noWeight ? "no reading" : "…"}</div>
-              <div>
-                GB RFID: <span className="mono small">{setup.rfidUid || "none"}</span>{" "}
-                <span className="badge neutral small">{setup.rfidSimMode}</span>
-              </div>
-              {setup.vehicle === "registered" && setup.registeredPlate && quotas[setup.registeredPlate] && (
-                <div>
-                  Quota:{" "}
-                  <strong>
-                    {quotas[setup.registeredPlate].remaining_trips} / {quotas[setup.registeredPlate].max_trips} trips
-                  </strong>{" "}
-                  <span className={`badge ${quotas[setup.registeredPlate].status === "AVAILABLE" ? "ok" : "bad"} small`}>
-                    {quotas[setup.registeredPlate].status}
-                  </span>
-                </div>
-              )}
-            </div>
+            <VehicleRows {...entryRows} />
 
             <button
               className="btn primary gc-go"
@@ -1249,6 +1056,7 @@ export default function GateConsole() {
           <section className="card gc-panel">
             <header className="gc-panel-head">
               <LuLogOut /> <h3>Gate G1 · Exit Verification</h3>
+              <TamperCount marks={markCounts(exitRows)} />
               <span className="gc-tag gc-tag-mock">Exit sensors</span>
             </header>
 
@@ -1292,80 +1100,7 @@ export default function GateConsole() {
               </div>
             )}
 
-            <IdentityInputs
-              setup={exitSetup}
-              update={updateExit}
-              trucks={trucks}
-              title="What physically arrives at the exit"
-              activePlates={activePlates}
-            />
-
-            <label className="gc-field">
-              Presented Internal Trip QR Token
-              <textarea
-                rows={3}
-                style={{ font: "inherit", fontSize: "0.8rem", width: "100%", padding: 6, borderRadius: 6, border: "1px solid var(--border)" }}
-                value={exitQrToken}
-                onChange={(e) => setExitQrToken(e.target.value)}
-                placeholder="The pass shown at the exit (filled from the entry, or paste another one)"
-              />
-            </label>
-
-            <div className="gc-row">
-              <label className="gc-field">
-                Load in the body (t, or % of rated)
-                <input value={exitLoad} disabled={noWeight} onChange={(e) => setExitLoad(e.target.value)} placeholder="90%" />
-              </label>
-              <label className="gc-field">
-                Weigh pad
-                <select value={noWeight ? "skip" : "read"} onChange={(e) => setNoWeight(e.target.value === "skip")}>
-                  <option value="read">Reads the truck</option>
-                  <option value="skip">Skipped (no reading)</option>
-                </select>
-              </label>
-            </div>
-            <label className="gc-field" style={{ flexDirection: "row", alignItems: "center", gap: 6, color: "var(--bad)" }}>
-              <input type="checkbox" checked={forceBarrier} onChange={(e) => setForceBarrier(e.target.checked)} />
-              Breaks through if the barrier stays down
-            </label>
-
-            <div className="gc-preview">
-              <div className="field-label">Exit pole will report</div>
-              <div>
-                Plate:{" "}
-                {exitR.plateRead ? (
-                  <span className="plate plate-sm">{formatPlate(exitR.plateRead)}</span>
-                ) : (
-                  <span className="muted">none</span>
-                )}
-              </div>
-              <div>
-                FASTag: <span className="mono small">{shortTag(exitR.tagRead)}</span>
-              </div>
-              <div>Radar length: {exitR.length != null ? `${exitR.length.toFixed(2)} m` : "…"}</div>
-              <div>
-                GB RFID: <span className="mono small">{exitSetup.rfidUid || "none"}</span>{" "}
-                <span className="badge neutral small">{exitSetup.rfidSimMode}</span>
-              </div>
-              <div>
-                Weigh pad:{" "}
-                {(() => {
-                  const w = weighPad(exitR.reg, exitLoad);
-                  return w != null ? `${w.toFixed(2)} t` : noWeight ? "no reading" : "…";
-                })()}
-              </div>
-              <div>
-                QR shown: <span className="mono small">{exitQrToken ? `${exitQrToken.slice(0, 18)}…` : "none"}</span>
-              </div>
-              <div>
-                Open trip for this plate:{" "}
-                {exitActive ? (
-                  <span className="ok-text">{exitActive.trip_code}</span>
-                ) : (
-                  <span className="muted">none found</span>
-                )}
-              </div>
-            </div>
+            <VehicleRows {...exitRows} />
 
             <button
               className="btn primary gc-go"
