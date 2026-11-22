@@ -56,9 +56,24 @@ class Cheat:
     alerts: list[str] = field(default_factory=list)
     first_alert_min: float | None = None
     note: str = ""
+    movements: list[int] = field(default_factory=list)  # the GB gate events of this attempt
+    timeline: list[dict] = field(default_factory=list)  # every leg in order: gate events (seen) and the rest (unseen)
     _start: datetime | None = None
 
-    def saw(self, resp: dict, at: datetime) -> list[str]:
+    def gate(self, resp: dict, at: datetime, who: str | None = None) -> None:
+        """A gate event that belongs to this story (seen by the GB). `who` names the vehicle when the plate read
+        doesn't (the real truck vs its copy)."""
+        if resp.get("id") is not None and resp["id"] not in self.movements:
+            self.movements.append(resp["id"])
+            self.timeline.append({"at": at.strftime("%H:%M"), "seen": True, "movement": resp["id"],
+                                  "text": gate_line(resp, who), "alerts": alert_codes(resp)})
+
+    def off(self, at: datetime, text: str) -> None:
+        """A leg the GB cannot see (side track, loading inside the site, ...)."""
+        self.timeline.append({"at": at.strftime("%H:%M"), "seen": False, "text": text})
+
+    def saw(self, resp: dict, at: datetime, who: str | None = None) -> list[str]:
+        self.gate(resp, at, who)
         codes = [a["code"] for a in resp["alerts"] if not a["code"].startswith(PERMIT_WARNINGS)]
         if codes and self.first_alert_min is None and self._start is not None:
             self.first_alert_min = round((at - self._start).total_seconds() / 60, 1)
@@ -67,6 +82,29 @@ class Cheat:
 
     def as_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+
+
+def alert_codes(resp: dict) -> list[str]:
+    return [a["code"] for a in resp.get("alerts", []) if not a["code"].startswith(PERMIT_WARNINGS)]
+
+
+def gate_line(resp: dict, who: str | None = None) -> str:
+    """One gate event in plain words: where, who / what was read, what the GB decided."""
+    entry = resp.get("direction") == "IN"
+    where = f"{'Entry' if entry else 'Exit'} gate {resp.get('gate', GATE)}"
+    read = resp.get("plate_read") or "no plate"
+    read = f"{who}, plate read {read}" if who else read
+    if resp.get("barrier") == "up":
+        if entry:
+            issued = (resp.get("issued_pass") or {}).get("code")
+            what = f"let in, pass {issued} issued" if issued else "let through"
+        else:
+            what = f"let out, {resp['trip'].lower()} trip" if resp.get("trip") else "let out"
+    else:
+        what = "barrier stays down"
+        if resp.get("barrier_forced"):
+            what += ", broke through" + (": illegal trip" if resp.get("trip") == "ILLEGAL" else "")
+    return f"{where}: {'' if who else 'read '}{read}, {what}"
 
 
 @dataclass
@@ -200,8 +238,10 @@ def honest_truck(w: World, v: Veh):
                     load_min, load_t = w.u(*hc["loading_min"]), v.rated * w.u(*hc["load_pct"]) / 100
                     if behaviour == "turn_back":
                         c.outcome, c.note = "prevented", "turned back at the entry barrier, empty"
+                        c.off(t + timedelta(minutes=2), "turned back empty")
                         t += timedelta(minutes=w.u(*hc["haul_min"]))
                     elif behaviour == "force":
+                        c.off(t + timedelta(minutes=5), "loaded inside the site with no pass")
                         out = Ev(t + timedelta(minutes=load_min), "OUT", v, w.w(v, load_t), forced=True, honest=False)
                         r2 = yield out
                         c.saw(r2, out.at)
@@ -210,6 +250,8 @@ def honest_truck(w: World, v: Veh):
                         t = out.at + timedelta(minutes=w.u(*hc["haul_min"]))
                     else:  # side track in and out
                         out_at = t + timedelta(minutes=load_min)
+                        c.off(t + timedelta(minutes=5), "went round: came in by a side track and loaded")
+                        c.off(out_at, "left loaded by a side track")
                         w.trip(out_at, v, load_t, "cheat", False, "quota_push")
                         c.outcome, c.attempt_flagged = "missed", True
                         c.note = "refused at entry, then went round by a side track"
@@ -247,12 +289,14 @@ def _leave_after_refusal(w: World, c: Cheat, ev: Ev, r: dict, v: Veh, load_t: fl
         c.outcome, c.note = "detected", "forced the exit barrier"
     elif c.on_refusal == "side_track":
         w.trip(ev.at + timedelta(minutes=10), v, load_t, "cheat", False, c.type)
+        c.off(ev.at + timedelta(minutes=10), "turned round and left loaded by a side track")
         c.outcome, c.note = "detected", "refused at exit, then left by a side track"
     else:
+        c.off(ev.at + timedelta(minutes=5), "stayed inside; the load stays on site")
         c.outcome, c.note = "prevented", "refused at exit; load stayed on site"
 
 
-def _refused_at_entry(w: World, c: Cheat, ev: Ev, r: dict, v: Veh):
+def _refused_at_entry(w: World, c: Cheat, ev: Ev, r: dict, v: Veh, who: str | None = None):
     """A vehicle refused at the entry barrier does what the Vendor told it to."""
     load_t = v.rated * w.u(85, 95) / 100
     load_min = w.u(30, 60)
@@ -266,17 +310,21 @@ def _refused_at_entry(w: World, c: Cheat, ev: Ev, r: dict, v: Veh):
             c.outcome, c.note = "missed", "was let in and out"
         return
     if c.on_refusal == "force":
+        c.off(ev.at + timedelta(minutes=5), "loaded inside the site with no pass")
         out = Ev(ev.at + timedelta(minutes=load_min), "OUT", v, w.w(v, load_t), forced=True, honest=False,
                  plate_shown=ev.plate_shown, tag=ev.tag, rfid=ev.rfid)
         r2 = yield out
-        c.saw(r2, out.at)
+        c.saw(r2, out.at, who)
         w.trip(out.at, v, load_t, "cheat", True, c.type)
         c.outcome, c.note = "detected", "forced the entry and the exit barrier"
     elif c.on_refusal == "side_track":
         w.trip(ev.at + timedelta(minutes=load_min), v, load_t, "cheat", False, c.type)
+        c.off(ev.at + timedelta(minutes=5), "went round: came in by a side track and loaded")
+        c.off(ev.at + timedelta(minutes=load_min), "left loaded by a side track")
         c.outcome, c.attempt_flagged = "missed", True
         c.note = "refused at entry, then went round by a side track"
     else:
+        c.off(ev.at + timedelta(minutes=2), "turned back empty")
         c.outcome, c.note = "prevented", "turned back at the entry barrier, empty"
 
 
@@ -293,6 +341,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
 
     elif type_ == "clone":  # the real truck is inside with an open pass; a same-size copy arrives
         r = yield Ev(start, "IN", v, w.w(v, 0))
+        c.gate(r, start, "the real truck")
         if down(r):
             return w.drop(c, f"real truck refused ({[a['code'] for a in r['alerts']]})")
         p = r["issued_pass"]
@@ -301,24 +350,28 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         ev = Ev(start + mins(10, 25), "IN", twin, w.w(twin, 0), forced=(on_refusal == "force"), honest=False,
                 rfid="cloned")
         r = yield ev
-        c.saw(r, ev.at)
-        yield from _refused_at_entry(w, c, ev, r, twin)
+        c.saw(r, ev.at, "the copy")
+        yield from _refused_at_entry(w, c, ev, r, twin, "the copy")
         out_at = max(ev.at, start) + mins(20, 40)
         load_t = load(v)
         r = yield Ev(out_at, "OUT", v, w.w(v, load_t), token=p["token"])
+        c.gate(r, out_at, "the real truck")
         if not down(r):
             w.trip(out_at, v, load_t, "legal", True)
 
     elif type_ == "pass_reuse":
         r = yield Ev(start, "IN", v, w.w(v, 0))
+        c.gate(r, start)
         if down(r):
             return w.drop(c, f"refused at entry ({[a['code'] for a in r['alerts']]})")
         p = r["issued_pass"]
         out_at, load_t = start + mins(30, 60), load(v)
         r = yield Ev(out_at, "OUT", v, w.w(v, load_t), token=p["token"])
+        c.gate(r, out_at)
         if not down(r):
             w.trip(out_at, v, load_t, "legal", True)
         again = out_at + mins(90, 150)  # came back in by a side track, reloaded
+        c.off(again - timedelta(minutes=40), "came back in by a side track and loaded again, keeping the old QR")
         load_t = load(v)
         ev = Ev(again, "OUT", v, w.w(v, load_t), token=p["token"], forced=(on_refusal == "force"), honest=False)
         r = yield ev
@@ -327,15 +380,17 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
 
     elif type_ == "pass_handover":
         r = yield Ev(start, "IN", v, w.w(v, 0))
+        c.gate(r, start)
         if down(r) or other is None:
             return w.drop(c, f"refused at entry ({[a['code'] for a in r['alerts']]})")
         p = r["issued_pass"]
         c.vehicle = f"{other.label} with the pass of {v.label}"
+        c.off(start + mins(5, 15), f"{v.label} hands its QR to {other.label}, which came in by a side track and loaded")
         load_t = load(other)
         ev = Ev(start + mins(30, 50), "OUT", other, w.w(other, load_t), token=p["token"],
                 forced=(on_refusal == "force"), honest=False)
         r = yield ev
-        c.saw(r, ev.at)
+        c.saw(r, ev.at, f"{other.label} showing the QR of {v.label}")
         _leave_after_refusal(w, c, ev, r, other, load_t)
         out_at, load_t = ev.at + mins(10, 30), load(v)
         r = yield Ev(out_at, "OUT", v, w.w(v, load_t), token=p["token"], honest=False)  # phone handed back
@@ -349,6 +404,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         i = len(body) // 2
         forged = f"{body[:i]}{'B' if body[i] == 'A' else 'A'}{body[i + 1:]}.{sig}"
         load_t = load(v)
+        c.off(start - timedelta(minutes=40), "came in by a side track and loaded, carrying an edited copy of a QR")
         ev = Ev(start, "OUT", v, w.w(v, load_t), token=forged, forced=(on_refusal == "force"), honest=False)
         r = yield ev  # came in by a side track
         c.saw(r, ev.at)
@@ -356,12 +412,16 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
 
     elif type_ == "side_track_in_gate_out":
         load_t = load(v)
+        c.off(start - timedelta(minutes=40), "came in by a side track: no entry gate, so no pass")
+        c.off(start - timedelta(minutes=20), "loaded inside the site")
         ev = Ev(start, "OUT", v, w.w(v, load_t), forced=(on_refusal == "force"), honest=False)
         r = yield ev
         c.saw(r, ev.at)
         _leave_after_refusal(w, c, ev, r, v, load_t)
 
     elif type_ == "side_track_both":
+        c.off(start, "came in by a side track")
+        c.off(start + timedelta(minutes=30), "left loaded by a side track: never at a GB gate")
         w.trip(start + mins(30, 60), v, load(v), "cheat", False, type_)
         c.outcome, c.note = "missed", "never crossed a GB gate (only the monthly mass balance, CP10, would show it)"
         return
@@ -369,9 +429,11 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
 
     elif type_ == "side_track_out":
         r = yield Ev(start, "IN", v, w.w(v, 0))
+        c.gate(r, start)
         if down(r):
             return w.drop(c, f"refused at entry ({[a['code'] for a in r['alerts']]})")
         load_t = load(v)
+        c.off(start + timedelta(minutes=40), "loaded and left by a side track: its pass stays open")
         w.trip(start + mins(30, 60), v, load_t, "cheat", False, type_)  # left by a side track; pass stays open
         back = start + mins(180, 260)
         ev = Ev(back, "IN", v, w.w(v, 0), honest=False)
@@ -382,6 +444,8 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
 
     elif type_ in ("overload", "arrive_loaded", "weigh_bypass"):
         extra_in = w.u(6, 10) if type_ == "arrive_loaded" else 0
+        if type_ == "arrive_loaded":
+            c.off(start - timedelta(minutes=30), "picked up material outside the site")
         r = yield Ev(start, "IN", v, w.w(v, extra_in), honest=False)
         if down(r):
             return w.drop(c, f"refused at entry ({[a['code'] for a in r['alerts']]})")
@@ -390,6 +454,9 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         load_t = v.rated * (w.u(118, 135) if type_ == "overload" else w.u(85, 95)) / 100
         out_at = start + mins(30, 60)
         weight = None if type_ == "weigh_bypass" else w.w(v, load_t + extra_in)
+        c.off(out_at - timedelta(minutes=15), {"overload": "loaded well above its rated capacity",
+                                               "arrive_loaded": "loaded on top of what it brought in",
+                                               "weigh_bypass": "loaded, then drove round the exit weigh pad"}[type_])
         r = yield Ev(out_at, "OUT", v, weight, token=p["token"], honest=False)
         c.saw(r, out_at)
         w.trip(out_at, v, load_t, "legal", True, type_)
@@ -630,6 +697,7 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         "accuracy": {
             "true_trips": truth_trips, "gb_actual_trips": ledger["actual_trips"],
             "trips_never_at_a_gate": len(invisible),
+            "never_at_a_gate": invisible,  # each trip: day, at, vehicle, tonnes, cheat
             "trips_seen_pct": round(100 * ledger["actual_trips"] / truth_trips, 1) if truth_trips else 100.0,
             "true_tonnes": round(truth_t, 2),
             "gb_tonnes_weighed": round(ledger["tonnes"] + illegal_t_est, 2),

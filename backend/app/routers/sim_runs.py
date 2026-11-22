@@ -2,11 +2,7 @@
 story, so the dashboard shows progress). The dashboard can also start a suite: the backend launches the same
 simulator script, which talks to this API over HTTP exactly like a gate pole."""
 
-import os
-import subprocess
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,21 +13,11 @@ from app.config import settings
 from app.db import get_db
 from app.models import SimRun
 from app.schemas import SimRunCreate, SimRunFinish, SimRunOut, SimRunStart, SimSuiteOut
-from app.services import cleanup
+from app.services import cleanup, simproc
 
 router = APIRouter(prefix="/api/sim-runs", tags=["simulator"])
 
-SIMULATOR_DIR = Path(os.environ.get("SIMULATOR_DIR", "/simulator"))  # mounted from ./simulator (docker-compose)
 SUITES = ("gate_cheats", "edge_resilience")
-_running: dict[str, subprocess.Popen] = {}  # suite -> simulator process started from the dashboard
-
-
-def _busy() -> str | None:
-    for suite, proc in list(_running.items()):
-        if proc.poll() is None:
-            return suite
-        del _running[suite]
-    return None
 
 
 @router.get("/suites", response_model=list[SimSuiteOut])
@@ -39,7 +25,7 @@ def list_suites():
     """The suites the dashboard can run, read from the scenario files."""
     out = []
     for suite in SUITES:
-        path = SIMULATOR_DIR / "scenarios" / f"{suite}.yaml"
+        path = simproc.SIMULATOR_DIR / "scenarios" / f"{suite}.yaml"
         if not path.exists():
             continue
         spec = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -53,14 +39,10 @@ def start_suite(body: SimRunStart):
     """Run a suite in the background (one at a time). The run appears in the list as soon as it starts."""
     if body.suite not in SUITES:
         raise HTTPException(404, f"Unknown suite {body.suite}")
-    if not (SIMULATOR_DIR / "run.py").exists():
-        raise HTTPException(503, f"Simulator not found at {SIMULATOR_DIR}")
-    busy = _busy()
-    if busy:
-        raise HTTPException(409, f"Suite {busy} is still running")
-    env = {**os.environ, "BACKEND_URL": "http://localhost:8000"}
-    _running[body.suite] = subprocess.Popen([sys.executable, "run.py", body.suite], cwd=SIMULATOR_DIR, env=env,
-                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        simproc.start([body.suite])
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"started": body.suite}
 
 
@@ -68,9 +50,9 @@ def start_suite(body: SimRunStart):
 def clear_runs(db: Session = Depends(get_db)):
     """Delete every scenario run and its data (permits, gate events, passes, holds, alerts, logs). Gate console
     sessions, site runs and real gate data are not touched."""
-    busy = _busy()
+    busy = simproc.busy()
     if busy:
-        raise HTTPException(409, f"Suite {busy} is still running")
+        raise HTTPException(409, f"{busy} is still running")
     counts = cleanup.clear_source(db, "sim:")
     counts["runs"] = db.execute(delete(SimRun)).rowcount
     db.commit()

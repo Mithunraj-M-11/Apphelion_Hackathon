@@ -414,6 +414,7 @@ class SiteRunOut(ORM):
     started_at: datetime
     finished_at: datetime | None
     report: dict | None
+    gate_events_so_far: int | None = None  # while the run is going: gate events posted so far
 
 
 class HoldRelease(BaseModel):
@@ -447,6 +448,18 @@ class SimRunFinish(BaseModel):
 
 class SimRunStart(BaseModel):
     suite: str
+
+
+class SiteRunStart(BaseModel):
+    scenario: str
+
+
+class SiteScenarioOut(BaseModel):
+    scenario: str
+    description: str
+    days: int
+    fleet: int
+    trip_limit: int | None
 
 
 class SimSuiteOut(BaseModel):
