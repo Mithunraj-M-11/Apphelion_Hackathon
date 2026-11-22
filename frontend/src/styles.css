@@ -449,3 +449,20 @@ ul.plain li { padding: 3px 0; }
 .gc-continue { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px;
   padding: 8px 12px; border-radius: 8px; background: var(--ok-bg); border: 1px solid var(--ok); font-size: 0.85rem; }
 .gc-continue .btn { padding: 3px 10px; font-size: 0.8rem; }
+
+/* Gate console: officer actions (hold release, late close, let out) and the queue waiting for an officer */
+.gc-officer { margin-top: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--warn);
+  background: var(--warn-bg); display: flex; flex-direction: column; gap: 8px; }
+.gc-officer-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--warn); }
+.gc-officer p { margin: 0; }
+.gc-officer-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 0; border-top: 1px solid var(--border); }
+.gc-officer-btns { display: flex; gap: 6px; }
+.gc-officer .btn.small, .gc-open-items .btn.small { padding: 3px 10px; font-size: 0.8rem; display: inline-flex;
+  align-items: center; gap: 4px; }
+.gc-officer-again { align-self: flex-start; }
+.gc-open-items { margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+.gc-open-items .gc-panel-head { margin-bottom: 0; }
+.gc-clear-history { display: inline-flex; align-items: center; gap: 6px; margin-right: auto;
+  color: var(--bad); border-color: var(--bad); }
+.gc-hint { margin: -4px 0 10px; line-height: 1.35; }

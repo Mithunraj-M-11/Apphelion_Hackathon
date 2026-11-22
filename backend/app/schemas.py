@@ -420,6 +420,13 @@ class HoldRelease(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class OfficerActionIn(BaseModel):
+    """An officer action at the gate: always with a reason (recorded, never deleted)."""
+
+    reason: str = Field(min_length=3, max_length=500)
+    observed_at: datetime | None = None  # the console's clock; defaults to now
+
+
 
 # ---------- Simulator runs ----------
 class SimRunCreate(BaseModel):

@@ -30,7 +30,8 @@ router = APIRouter(prefix="/api", tags=["trips"])
 # ---------- Trips ----------
 @router.get("/trips", response_model=list[TripSessionOut])
 def list_trips(
-    status: str | None = None,
+    status: str | None = Query(None, description="One status, or several separated by commas"),
+    permit_id: int | None = None,
     plate: str | None = None,
     trip_code: str | None = None,
     limit: int = Query(200, ge=1, le=1000),
@@ -38,7 +39,9 @@ def list_trips(
 ):
     stmt = select(TripSession).order_by(TripSession.id.desc()).limit(limit)
     if status:
-        stmt = stmt.where(TripSession.status == status.upper())
+        stmt = stmt.where(TripSession.status.in_([x.strip().upper() for x in status.split(",") if x.strip()]))
+    if permit_id is not None:
+        stmt = stmt.where(TripSession.permit_id == permit_id)
     if trip_code:
         stmt = stmt.where(TripSession.trip_code == trip_code)
     if plate:
@@ -104,7 +107,7 @@ def resolve_trip(
         f"Trip session {session.trip_code} {before_status} -> {new_status} resolved by Officer {officer.name}. Reason: {reason}",
         {"session_id": session_id, "action": action, "officer": officer.name, "reason": reason},
     )
-    rows = logbus.save(db, [log_line], source="trips_admin")
+    rows = logbus.save(db, [log_line], source=session.source)  # shows in the run / console it belongs to
     db.commit()
     db.refresh(session)
     logbus.publish(rows)

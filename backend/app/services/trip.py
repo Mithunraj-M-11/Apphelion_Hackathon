@@ -54,6 +54,7 @@ NO_QR_CLOSES_PER_DAY = 1  # P9
 THRESHOLDS = ((1.0, "100PCT", "HIGH"), (0.9, "90PCT", "MEDIUM"), (0.8, "80PCT", "INFO"))  # CP5
 PER_VEHICLE_LOW = 0.1  # info alert when a truck's own allocation is down to its last 10%
 OPEN, DONE, CANCELLED = "ACTIVE", "COMPLETED", "CANCELLED"
+CLONE_HOLDS = ("POSSIBLE_CLONE", "CLONE_SUSPECT", "RFID_CLONED", "RFID_MISMATCH")  # someone wore this identity
 
 LEVEL = {"INFO": "INFO", "MEDIUM": "WARN", "HIGH": "ALERT", "CRITICAL": "CRITICAL"}
 
@@ -359,6 +360,10 @@ def process_entry(t: Trip) -> None:
 
     hold = _active_hold(t.db, p.id, truck.id)  # A4
     if hold:
+        if hold.reason_code in CLONE_HOLDS:  # evidence for the officer: this vehicle carries the genuine sticker
+            s.add("GB sticker on this read", "info", f"Sticker {t.sticker.uid} authenticated and is assigned to "
+                                                     f"{truck.plate}: likely the genuine truck; an officer can verify "
+                                                     "and release the hold")
         return refuse("Not on hold", "TRUCK_ON_HOLD", "HIGH",
                       f"{truck.plate} is on hold ({hold.reason_code}) pending officer review")
     s.add("Not on hold", "passed", "No hold on this truck")
@@ -655,6 +660,70 @@ def _exit_refused(t: Trip, forced_note: str) -> None:
         t.alert("ILLEGAL_TRIP", "CRITICAL", "Heavy vehicle left the site without a valid pass close",
                 truck=t.decision.truck)
         t.outbox("ILLEGAL_TRIP", {"movement_id": m.id, "gate": m.gate, "plate": m.plate_normalised})
+
+
+class OfficerActionError(Exception):
+    """An officer action that does not apply to this movement (the message says why)."""
+
+
+def officer_exit(db: Session, refused: Movement, officer_name: str, reason: str, at: datetime) -> Trip:
+    """A2 / P11 at the gate: an officer checks a truck whose exit was refused and lets it out. The truck's own
+    pass is closed by the officer (close_mode "officer", flagged), so the trip stays counted as legal. Not allowed
+    while the truck is on hold (release the hold first), for an unidentified vehicle, or with no pass to close."""
+    if refused.direction != "OUT" or refused.decision != "REFUSED":
+        raise OfficerActionError("Only a refused exit can be let out by an officer")
+    if refused.barrier_forced:
+        raise OfficerActionError("The vehicle already forced the barrier: nothing to let out")
+    if refused.truck_id is None or refused.permit_id is None:
+        raise OfficerActionError("Vehicle not identified: it cannot be let out against a pass; escalate instead")
+    if "OFFICER_EXIT_DONE" in (refused.flags or []):
+        raise OfficerActionError("This refused exit was already handled by an officer")
+    permit, truck = db.get(Permit, refused.permit_id), db.get(Truck, refused.truck_id)
+    hold = _active_hold(db, permit.id, truck.id)
+    if hold is not None:
+        raise OfficerActionError(f"{truck.plate} is on hold ({hold.reason_code}): release the hold first")
+    sess = _session_of(db, permit.id, truck.id, (OPEN, *UNRESOLVED_STATUSES))
+    if sess is None:
+        raise OfficerActionError(f"{truck.plate} has no open pass to close: it did not enter through a GB gate. "
+                                 "Keep it at the barrier and escalate")
+
+    m = Movement(gate=refused.gate, direction="OUT", observed_at=at, plate_read=refused.plate_read,
+                 plate_normalised=refused.plate_normalised, fastag_read=refused.fastag_read,
+                 radar_length_m=refused.radar_length_m, rfid_sticker_uid=refused.rfid_sticker_uid,
+                 result=refused.result, truck_id=truck.id, identify_mode="officer", checks=[], caught_by=[],
+                 reasons=[], flags=["OFFICER_EXIT"], source=refused.source, permit_id=permit.id,
+                 weight_t=refused.weight_t, barrier_forced=False)
+    db.add(m)
+    db.flush()
+    refused.flags = [*(refused.flags or []), "OFFICER_EXIT_DONE"]
+    t = Trip(db, permit, m, Decision(refused.result, truck, refused.plate_normalised), [], session=sess)
+
+    s = t.step("Officer exit")
+    s.add("Refused exit", "info", f"Exit #{refused.id} at {refused.observed_at.astimezone(IST):%H:%M} was refused")
+    s.add("Officer check", "warning", f"{officer_name} checked {truck.plate} and let it out: {reason}")
+    s.add("Pass closed by officer", "warning", f"Pass {sess.trip_code} ({sess.status}) closed by the officer; "
+                                               "the trip counts as legal and is flagged for review")
+    net = None
+    if m.weight_t is not None:
+        entry_w = sess.entry_weight_t if sess.entry_weight_t is not None else truck.empty_weight_t
+        net = round(m.weight_t - entry_w, 2)
+        t.step("Measure").add("Net load", "passed", f"{m.weight_t:.2f} t out - {entry_w:.2f} t in = {net:.2f} t")
+    else:
+        t.step("Measure").add("Exit weight", "failed", "No weigh pad reading: net tonnes unknown")
+    sess.status, sess.close_mode, sess.completed_at = DONE, "officer", at
+    sess.exit_gate, sess.exit_movement_id, sess.exit_weight_t, sess.net_t = m.gate, m.id, m.weight_t, net
+    sess.flags = [*(sess.flags or []), "OFFICER_EXIT"]
+    sess.notes = f"Let out at the gate by {officer_name}: {reason}"
+    m.pass_id = sess.id
+    m.counted_trip, m.trip = True, "LEGAL"
+    t.alert("OFFICER_EXIT", "MEDIUM", f"{truck.plate} let out by officer {officer_name} after a refused exit "
+                                      f"(pass {sess.trip_code} closed by the officer): {reason}", truck=truck, pass_=sess)
+    t.log("PASS", "INFO", f"Pass {sess.trip_code} closed by officer {officer_name}"
+                          + (f" with {net:.2f} t" if net is not None else ""), {"pass": sess.trip_code})
+    t.outbox("TRIP_COMPLETED", {"session_id": sess.session_id, "trip_code": sess.trip_code, "truck_plate": truck.plate,
+                                "exit_gate": m.gate, "completed_at": at.isoformat(), "net_t": net, "officer": True})
+    t.finish(allowed=True)
+    return t
 
 
 def process(t: Trip) -> None:

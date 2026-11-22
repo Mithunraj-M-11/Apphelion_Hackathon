@@ -160,7 +160,7 @@ export const api = {
     request<RfidSticker>(`/rfid-stickers/${id}/revoke`, { method: "POST", body: JSON.stringify(data) }),
 
   // ---------- Trip Sessions & Quotas ----------
-  trips: (params: { status?: string; plate?: string; trip_code?: string; limit?: number } = {}) => {
+  trips: (params: { status?: string; plate?: string; trip_code?: string; limit?: number; permit_id?: number } = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v != null) as [string, string][]
     );
@@ -419,6 +419,12 @@ export const gateApi = {
   holds: (permitId?: number) => request<Hold[]>(`/holds${permitId != null ? `?permit_id=${permitId}` : ""}`),
   releaseHold: (id: number, reason: string) =>
     request<Hold>(`/holds/${id}/release`, { method: "POST", body: JSON.stringify({ reason }) }),
+  /** Delete every Gate console session (permits, gate events, passes, holds, alerts, logs). Demo data only. */
+  clearWalkthroughHistory: () =>
+    request<Record<string, number>>("/walkthrough-history", { method: "DELETE" }, false),
+  /** An officer lets out a truck whose exit was refused: its own pass is closed by the officer and flagged. */
+  officerExit: (movementId: number, reason: string) =>
+    request<GateDecision>(`/movements/${movementId}/officer-exit`, { method: "POST", body: JSON.stringify({ reason }) }),
   exitVerify: (body: ExitVerifyIn) =>
     request<ExitVerifyOut>("/trips/exit-verify", { method: "POST", body: JSON.stringify(body) }),
   logs: (source: string, limit = 300) =>

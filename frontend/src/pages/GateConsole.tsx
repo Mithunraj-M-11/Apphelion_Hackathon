@@ -29,6 +29,7 @@ import {
   type EdgeSystemState,
   type ExitVerifyOut,
   type GateDecision,
+  type Hold,
   type Ledger,
   type LogEntry,
   type Movement,
@@ -41,6 +42,7 @@ import {
 } from "../api";
 import { AlertList, BarrierBadge, ErrorNote, ResultBadge, TripBadge } from "../components";
 import { CHECK_LABEL, formatDateTime, formatPlate } from "../format";
+import { OfficerPanel, OpenItems } from "./GateOfficer";
 
 // ---------------------------------------------------------------- mocked physical world
 type VehicleKind = "registered" | "outside";
@@ -64,73 +66,56 @@ type Setup = {
 
 const OUTSIDE_TAG = "34161FA8000000000000OUT1"; // an outside truck's own FASTag: real tag, not in the GB registry
 
-/** Extended presets exercising both Identity and GB Trip Authorization workflows. */
-const PRESETS: { name: string; setup: Setup }[] = [
+/** A registered truck as it physically arrives: its own plate and FASTag, with the given GB sticker. */
+const registered = (plate: string, rfidUid: string, rfidSimMode: RfidSimMode = "genuine"): Setup => ({
+  vehicle: "registered",
+  registeredPlate: plate,
+  outsidePlate: "",
+  outsideLength: 8.2,
+  plate: "own",
+  customPlate: "",
+  tag: "own",
+  tagFrom: "",
+  rfidUid,
+  rfidSimMode,
+});
+
+/** A vehicle that is not in the GB registry, optionally showing a copied plate / FASTag / sticker. */
+const outside = (o: Partial<Setup> & { outsidePlate: string; outsideLength: number }): Setup => ({
+  vehicle: "outside",
+  registeredPlate: "",
+  plate: "own",
+  customPlate: "",
+  tag: "none",
+  tagFrom: "",
+  rfidUid: "",
+  rfidSimMode: "genuine",
+  ...o,
+});
+
+/** The weigh pad and barrier side of a preset (load in tonnes, or % of rated capacity). */
+type Physical = { load: string; noWeight: boolean; force: boolean };
+const NORMAL: Physical = { load: "0", noWeight: false, force: false };
+
+type EntryPreset = { name: string; setup: Setup; physical?: Partial<Physical> };
+
+/** Entry presets. Each story uses its own truck, so running one never blocks another. The trucks the impostor
+ * stories pretend to be (OD09AB1234, OD09AE4521) are not used by any honest story, because those stories hold them. */
+const PRESETS: EntryPreset[] = [
+  { name: "Honest truck (control)", setup: registered("OD09AC5678", "GB-RFID-00002") },
+  { name: "Arrives already loaded", setup: registered("OD09AG1180", "GB-RFID-00006"), physical: { load: "10" } },
+  { name: "Weigh pad skipped at entry", setup: registered("OD09AH2468", "GB-RFID-00007"), physical: { noWeight: true } },
+  { name: "Cloned GB RFID sticker (chip fails)", setup: registered("OD09AD0090", "GB-RFID-00003", "cloned") },
   {
-    name: "Honest trip & trip pass issuance (control)",
-    setup: {
-      vehicle: "registered",
-      registeredPlate: "OD09AC5678",
-      outsidePlate: "",
-      outsideLength: 8.2,
-      plate: "own",
-      customPlate: "",
-      tag: "own",
-      tagFrom: "",
-      rfidUid: "GB-RFID-00002",
-      rfidSimMode: "genuine",
-    },
+    name: "Genuine truck after a clone attempt (run the previous preset first)",
+    setup: registered("OD09AD0090", "GB-RFID-00003"),
   },
-  {
-    name: "Cloned GB RFID sticker (crypto mismatch)",
-    setup: {
-      vehicle: "registered",
-      registeredPlate: "OD09AC5678",
-      outsidePlate: "",
-      outsideLength: 8.2,
-      plate: "own",
-      customPlate: "",
-      tag: "own",
-      tagFrom: "",
-      rfidUid: "GB-RFID-00002",
-      rfidSimMode: "cloned",
-    },
-  },
-  {
-    name: "Revoked GB RFID sticker",
-    setup: {
-      vehicle: "registered",
-      registeredPlate: "OD02BQ4410",
-      outsidePlate: "",
-      outsideLength: 8.3,
-      plate: "own",
-      customPlate: "",
-      tag: "own",
-      tagFrom: "",
-      rfidUid: "GB-RFID-00011",
-      rfidSimMode: "revoked",
-    },
-  },
-  {
-    name: "GB RFID sticker removed",
-    setup: {
-      vehicle: "registered",
-      registeredPlate: "OD09AF7733",
-      outsidePlate: "",
-      outsideLength: 8.3,
-      plate: "own",
-      customPlate: "",
-      tag: "own",
-      tagFrom: "",
-      rfidUid: "",
-      rfidSimMode: "genuine",
-    },
-  },
+  { name: "Revoked GB RFID sticker", setup: registered("OD02BQ4410", "GB-RFID-00011", "revoked") },
+  { name: "GB RFID sticker removed", setup: registered("OD09AF7733", "") },
+  { name: "Suspended truck", setup: registered("OD09AM1111", "GB-RFID-00019") },
   {
     name: "Perfect clone: copied plate, FASTag and sticker UID",
-    setup: {
-      vehicle: "outside",
-      registeredPlate: "",
+    setup: outside({
       outsidePlate: "OD02KK7310",
       outsideLength: 8.3,
       plate: "custom",
@@ -139,69 +124,122 @@ const PRESETS: { name: string; setup: Setup }[] = [
       tagFrom: "OD09AB1234",
       rfidUid: "GB-RFID-00001",
       rfidSimMode: "cloned",
-    },
-  },
-  {
-    name: "Unregistered truck",
-    setup: {
-      vehicle: "outside",
-      registeredPlate: "",
-      outsidePlate: "OD09ZX7781",
-      outsideLength: 8.1,
-      plate: "own",
-      customPlate: "",
-      tag: "none",
-      tagFrom: "",
-      rfidUid: "GB-RFID-99999",
-      rfidSimMode: "unknown_damaged",
-    },
+    }),
   },
   {
     name: "Fake plate, FASTag removed",
-    setup: {
-      vehicle: "outside",
-      registeredPlate: "",
-      outsidePlate: "OD14QQ0042",
-      outsideLength: 9.7,
-      plate: "custom",
-      customPlate: "OD09AB1234",
-      tag: "none",
-      tagFrom: "",
-      rfidUid: "GB-RFID-00001",
-      rfidSimMode: "genuine",
-    },
+    setup: outside({ outsidePlate: "OD14QQ0042", outsideLength: 9.7, plate: "custom", customPlate: "OD09AB1234" }),
   },
   {
     name: "Fake plate + FASTag stolen from another truck",
-    setup: {
-      vehicle: "outside",
-      registeredPlate: "",
+    setup: outside({
       outsidePlate: "OD02KK7310",
       outsideLength: 8.3,
       plate: "custom",
       customPlate: "OD09AB1234",
       tag: "from",
       tagFrom: "OD09AE4521",
-      rfidUid: "GB-RFID-00001",
-      rfidSimMode: "genuine",
-    },
+    }),
   },
   {
-    name: "Suspended truck, genuine tag",
-    setup: {
-      vehicle: "registered",
-      registeredPlate: "OD09AM1111",
-      outsidePlate: "",
-      outsideLength: 8.2,
-      plate: "own",
-      customPlate: "",
-      tag: "own",
-      tagFrom: "",
-      rfidUid: "GB-RFID-00019",
-      rfidSimMode: "genuine",
-    },
+    name: "Unregistered truck",
+    setup: outside({
+      outsidePlate: "OD09ZX7781",
+      outsideLength: 8.1,
+      rfidUid: "GB-RFID-99999",
+      rfidSimMode: "unknown_damaged",
+    }),
+  },
+  {
+    name: "Unregistered truck breaks through the barrier",
+    setup: outside({ outsidePlate: "OD07TT4410", outsideLength: 9.1 }),
+    physical: { force: true },
+  },
+  { name: "Light vehicle (car): logged, not a trip", setup: outside({ outsidePlate: "OD02CA1188", outsideLength: 4.3 }) },
+];
+
+/** Exit presets, applied to the latest entry: the same vehicle (or another one) arrives at the exit. */
+type ExitPreset = {
+  name: string;
+  vehicle: "entry" | { plate: string; rfidUid: string }; // the entry's vehicle, or another registered truck
+  sticker?: string; // a different GB sticker read on the entry's vehicle
+  qr: "entry" | "none" | "edited";
+  physical: Partial<Physical>;
+  hint: string;
+};
+
+const EXIT_PRESETS: ExitPreset[] = [
+  {
+    name: "Honest exit, loaded 90%",
+    vehicle: "entry",
+    qr: "entry",
+    physical: { load: "90%" },
+    hint: "Pass closed, legal trip, net tonnes recorded.",
+  },
+  {
+    name: "No QR shown (fallback close)",
+    vehicle: "entry",
+    qr: "none",
+    physical: { load: "90%" },
+    hint: "Closed on plate + FASTag + length + sticker, once a day per truck, with a Medium alert.",
+  },
+  {
+    name: "Overloaded (120% of rated)",
+    vehicle: "entry",
+    qr: "entry",
+    physical: { load: "120%" },
+    hint: "Allowed out (the trip is real), with an overload alert.",
+  },
+  {
+    name: "Weigh pad skipped at exit",
+    vehicle: "entry",
+    qr: "entry",
+    physical: { load: "90%", noWeight: true },
+    hint: "Allowed out, with a weigh-bypass alert: net tonnes unknown.",
+  },
+  {
+    name: "Same QR used again (run an exit first)",
+    vehicle: "entry",
+    qr: "entry",
+    physical: { load: "90%" },
+    hint: "The pass is already closed: refused, PASS_REUSE, truck on hold.",
+  },
+  {
+    name: "QR of a different truck",
+    vehicle: { plate: "OD09AJ3579", rfidUid: "GB-RFID-00008" },
+    qr: "entry",
+    physical: { load: "90%" },
+    hint: "OD 09 AJ 3579 shows this entry's QR: refused, both trucks on hold.",
+  },
+  {
+    name: "Different GB sticker at exit",
+    vehicle: "entry",
+    sticker: "GB-RFID-00010",
+    qr: "entry",
+    physical: { load: "90%" },
+    hint: "The sticker belongs to another truck: refused, both on hold. Then Release hold and Let out.",
+  },
+  {
+    name: "Edited / forged QR",
+    vehicle: "entry",
+    qr: "edited",
+    physical: { load: "90%" },
+    hint: "One character of the QR changed: the signature fails, refused.",
+  },
+  {
+    name: "No pass, breaks through",
+    vehicle: { plate: "OD09AK6402", rfidUid: "GB-RFID-00009" },
+    qr: "none",
+    physical: { load: "90%", force: true },
+    hint: "A truck that never entered through a GB gate forces the exit: ILLEGAL trip, critical alert.",
   },
 ];
+
+/** A QR with one character of its signed body changed: what an edited or forged pass looks like. */
+const editToken = (token: string) => {
+  const i = Math.min(12, Math.max(0, token.indexOf(".") - 1));
+  return token.slice(0, i) + (token[i] === "A" ? "B" : "A") + token.slice(i + 1);
+};
 
 function sessionId(): string {
   const key = "sitewatch.walkSession";
@@ -453,10 +491,15 @@ export default function GateConsole() {
   const [stickers, setStickers] = useState<Record<string, RfidSticker>>({});
   const [quotas, setQuotas] = useState<Record<string, VehicleQuota>>({});
   const [activeSessions, setActiveSessions] = useState<TripSession[]>([]);
+  // Waiting for an officer under the session permit: active holds, open and unresolved passes
+  const [holds, setHolds] = useState<Hold[]>([]);
+  const [permitSessions, setPermitSessions] = useState<TripSession[]>([]);
 
   // Entry setup
   const [setup, setSetup] = useState<Setup>(PRESETS[0].setup);
   const [preset, setPreset] = useState(0);
+  const [entrySetup, setEntrySetup] = useState<Setup | null>(null); // what the latest entry physically was
+  const [exitPreset, setExitPreset] = useState(0);
 
   // Exit setup
   const [exitGate, setExitGate] = useState("G1");
@@ -491,7 +534,9 @@ export default function GateConsole() {
     api.edgeState().then(setEdge).catch(() => {});
   }, []);
 
-  // This walkthrough session's own permit (kept for the browser tab), so the demo never touches the real permit
+  // This walkthrough session's own permit (kept for the browser tab), so the demo never touches the real permit.
+  // Bumping permitEpoch (after "Clear history") starts a fresh one.
+  const [permitEpoch, setPermitEpoch] = useState(0);
   useEffect(() => {
     const key = `sitewatch.walkPermit.${session}`;
     let saved: number | null = null;
@@ -525,10 +570,9 @@ export default function GateConsole() {
         } catch {
           /* not remembered; fine */
         }
-        gateApi.ledger(p.id).then(setLedger).catch(() => {});
       })
       .catch((e) => setError(e.message));
-  }, [session, source]);
+  }, [session, source, permitEpoch]);
 
   // Registry (read-only) and active sessions
   const reloadData = () => {
@@ -544,12 +588,25 @@ export default function GateConsole() {
       .trips({ status: "ACTIVE" })
       .then((list) => setActiveSessions(list.filter((s) => s.source === source)))
       .catch(() => {});
-    if (permit) gateApi.ledger(permit.id).then(setLedger).catch(() => {});
+    if (permit) reloadPermit(permit.id);
+  };
+
+  const reloadPermit = (permitId: number) => {
+    gateApi.ledger(permitId).then(setLedger).catch(() => {});
+    gateApi.holds(permitId).then(setHolds).catch(() => {});
+    api
+      .trips({ permit_id: permitId, status: "ACTIVE,EXPIRED_UNRESOLVED,FLAGGED" })
+      .then(setPermitSessions)
+      .catch(() => {});
   };
 
   useEffect(() => {
     reloadData();
   }, []);
+
+  useEffect(() => {
+    if (permit) reloadPermit(permit.id);
+  }, [permit]);
 
   useEffect(() => {
     const needed = [
@@ -566,17 +623,6 @@ export default function GateConsole() {
       }
     }
   }, [setup, exitSetup, trucks, details]);
-
-  // When registered truck changes in Entry mode, automatically sync its GB RFID sticker UID
-  useEffect(() => {
-    if (setup.vehicle === "registered" && setup.registeredPlate) {
-      const s = stickers[setup.registeredPlate];
-      if (s) {
-        setSetup((cur) => ({ ...cur, rfidUid: s.uid }));
-      }
-    }
-  }, [setup.vehicle, setup.registeredPlate, stickers]);
-
 
   // Live log stream for this tab's walkthrough
   useEffect(() => {
@@ -618,7 +664,21 @@ export default function GateConsole() {
   const activePlates = new Set(activeSessions.map((s) => s.truck?.plate).filter((p): p is string => !!p));
   const exitActive = activeSessions.find((s) => s.truck?.plate === exitR.plateRead);
 
-  const update = (patch: Partial<Setup>) => setSetup((s) => ({ ...s, ...patch }));
+  /** Entry form edits. Picking a registered truck by hand fills in its own GB sticker (a preset keeps its own). */
+  // Hints under the entry preset: the claimed truck already has an open pass, or is on hold
+  const claimedPlate =
+    setup.vehicle === "registered" ? setup.registeredPlate : setup.plate === "custom" ? setup.customPlate : "";
+  const entryOpen = claimedPlate ? permitSessions.find((x) => x.status === "ACTIVE" && x.truck?.plate === claimedPlate) : undefined;
+  const entryHeld = claimedPlate ? holds.find((h) => h.truck.plate === claimedPlate) : undefined;
+
+  const update = (patch: Partial<Setup>) =>
+    setSetup((s) => {
+      const next = { ...s, ...patch };
+      if (patch.registeredPlate !== undefined && next.vehicle === "registered") {
+        next.rfidUid = stickers[next.registeredPlate]?.uid ?? "";
+      }
+      return next;
+    });
 
   /** Exit form edits. Picking a registered truck by hand fills in its own sticker and its open trip's QR. */
   const updateExit = (patch: Partial<Setup>) => {
@@ -642,14 +702,37 @@ export default function GateConsole() {
     setMode("EXIT");
     setRevealed(0);
     if (movement && movement.id !== prefilledFrom) {
-      setExitSetup({ ...setup });
-      setExitQrToken(movement.trip_session?.signed_token ?? "");
-      setExitLoad("90%");
-      setForceBarrier(false);
+      applyExitPreset(0);
       setExitResult(null);
       setExitMovement(null);
-      setPrefilledFrom(movement.id);
     }
+  };
+
+  /** Entry preset: the vehicle, plus the weigh pad and barrier side of the story. */
+  const applyPreset = (i: number) => {
+    const ph = { ...NORMAL, ...PRESETS[i].physical };
+    setPreset(i);
+    setSetup(PRESETS[i].setup);
+    setEntryLoad(ph.load);
+    setNoWeight(ph.noWeight);
+    setForceBarrier(ph.force);
+  };
+
+  /** Exit preset, applied to the latest entry (its vehicle and the pass it was given). */
+  const applyExitPreset = (i: number) => {
+    const ep = EXIT_PRESETS[i];
+    const ph = { ...NORMAL, ...ep.physical };
+    const base = entrySetup ?? setup;
+    let next: Setup = ep.vehicle === "entry" ? { ...base } : registered(ep.vehicle.plate, ep.vehicle.rfidUid);
+    if (ep.sticker) next = { ...next, rfidUid: ep.sticker, rfidSimMode: "genuine" };
+    const token = movement?.trip_session?.signed_token ?? "";
+    setExitPreset(i);
+    setExitSetup(next);
+    setExitQrToken(ep.qr === "none" || !token ? "" : ep.qr === "edited" ? editToken(token) : token);
+    setExitLoad(ph.load);
+    setNoWeight(ph.noWeight);
+    setForceBarrier(ph.force);
+    setPrefilledFrom(movement?.id ?? null);
   };
 
   const clearExit = () => {
@@ -691,6 +774,7 @@ export default function GateConsole() {
       });
       setRevealed(0);
       setMovement(m);
+      setEntrySetup({ ...setup });
       reloadData();
     } catch (e) {
       setError((e as Error).message);
@@ -719,19 +803,55 @@ export default function GateConsole() {
         rfid_sim_mode: exitSetup.rfidSimMode,
         qr_token: exitQrToken.trim() || null,
       });
-      const checks = (m.trip_checks ?? []) as Check[];
+      showExit(m);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Show an exit decision (from the exit pole, or from an officer letting the truck out). */
+  const showExit = (m: GateDecision) => {
+    const checks = (m.trip_checks ?? []) as Check[];
+    setRevealed(0);
+    setExitMovement(m);
+    setExitResult({
+      decision: m.trip_decision ?? (m.barrier === "up" ? "EXIT AUTHORIZED" : "EXIT REJECTED"),
+      passed: m.barrier === "up",
+      reasons: checks.filter((c) => c.status === "failed").map((c) => c.detail),
+      checks,
+      session: m.trip_session ?? null,
+      quota_before: null,
+      quota_after: m.quota_remaining ?? null,
+      exit_movement_id: m.id,
+    });
+    reloadData();
+  };
+
+  /** Wipe every Gate console session from the database and start again on a fresh permit. */
+  const clearHistory = async () => {
+    if (!window.confirm("Clear the entire Gate console history? All console gate events, passes, holds, alerts and " +
+                        "log lines are deleted. Scenario runs, site runs and real gate data are kept.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await gateApi.clearWalkthroughHistory();
+      setMovement(null);
+      setExitMovement(null);
+      setExitResult(null);
+      setPrefilledFrom(null);
+      setExitSetup(BLANK_EXIT);
+      setExitQrToken("");
       setRevealed(0);
-      setExitMovement(m);
-      setExitResult({
-        decision: m.trip_decision ?? (m.barrier === "up" ? "EXIT AUTHORIZED" : "EXIT REJECTED"),
-        passed: m.barrier === "up",
-        reasons: checks.filter((c) => c.status === "failed").map((c) => c.detail),
-        checks,
-        session: m.trip_session ?? null,
-        quota_before: null,
-        quota_after: m.quota_remaining ?? null,
-        exit_movement_id: m.id,
-      });
+      setLogs([]);
+      setHolds([]);
+      setPermitSessions([]);
+      setActiveSessions([]);
+      setLedger(null);
+      setPermit(null);
+      setMode("ENTRY");
+      setPermitEpoch((n) => n + 1);
       reloadData();
     } catch (e) {
       setError((e as Error).message);
@@ -793,6 +913,10 @@ export default function GateConsole() {
             <LuLogOut /> EXIT MODE
           </button>
         </div>
+        <button className="btn gc-clear-history" disabled={busy} onClick={clearHistory}
+                title="Delete every Gate console session and start on a fresh permit">
+          <LuTrash2 /> Clear history
+        </button>
 
         <div className="gc-edge-status-wrap" style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div className={`gc-edge-status ${edgeStatusCls}`}>
@@ -822,6 +946,8 @@ export default function GateConsole() {
         </div>
       )}
 
+      {permit && <OpenItems holds={holds} sessions={permitSessions} onChanged={reloadData} />}
+
       {mode === "ENTRY" ? (
         /* ================================================= ENTRY MODE ================================================= */
         <div className="gc-grid">
@@ -836,11 +962,7 @@ export default function GateConsole() {
               Preset scenario
               <select
                 value={preset}
-                onChange={(e) => {
-                  const i = Number(e.target.value);
-                  setPreset(i);
-                  setSetup(PRESETS[i].setup);
-                }}
+                onChange={(e) => applyPreset(Number(e.target.value))}
               >
                 {PRESETS.map((p, i) => (
                   <option key={p.name} value={i}>
@@ -849,6 +971,18 @@ export default function GateConsole() {
                 ))}
               </select>
             </label>
+            {entryOpen && (
+              <div className="gc-hint warn-text small">
+                {formatPlate(entryOpen.truck?.plate ?? "")} already has open pass {entryOpen.trip_code}: run its exit
+                first, or this entry is treated as a second copy of the same identity (and the truck is held).
+              </div>
+            )}
+            {entryHeld && (
+              <div className="gc-hint warn-text small">
+                {formatPlate(entryHeld.truck.plate, entryHeld.truck.plate_type)} is on hold ({entryHeld.reason_code}):
+                it will be refused until an officer releases it under "Waiting for an officer".
+              </div>
+            )}
 
             <IdentityInputs setup={setup} update={update} trucks={trucks} />
 
@@ -980,6 +1114,15 @@ export default function GateConsole() {
                       ))}
                     </div>
                     <AlertList alerts={movement.alerts} />
+                    <OfficerPanel
+                      key={movement.id}
+                      m={movement}
+                      holds={holds}
+                      sessions={permitSessions}
+                      onChanged={reloadData}
+                      onReadAgain={arriveEntry}
+                      onExit={() => {}}
+                    />
 
                     {movement.caught_by.length > 0 && (
                       <div className="small">
@@ -1108,6 +1251,23 @@ export default function GateConsole() {
               <LuLogOut /> <h3>Gate G1 · Exit Verification</h3>
               <span className="gc-tag gc-tag-mock">Exit sensors</span>
             </header>
+
+            <label className="gc-field">
+              Exit preset (applied to the latest entry)
+              <select value={exitPreset} onChange={(e) => applyExitPreset(Number(e.target.value))}>
+                {EXIT_PRESETS.map((p, i) => (
+                  <option key={p.name} value={i}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="gc-hint muted small">{EXIT_PRESETS[exitPreset].hint}</div>
+            {EXIT_PRESETS[exitPreset].qr !== "none" && !movement?.trip_session && (
+              <div className="gc-hint warn-text small">
+                The latest entry was not given a pass, so there is no QR to show. Run an honest entry first.
+              </div>
+            )}
 
             <label className="gc-field">
               Exit Gate
@@ -1264,6 +1424,17 @@ export default function GateConsole() {
                       {exitMovement && <TripBadge trip={exitMovement.trip} />}
                     </div>
                     {exitMovement && <AlertList alerts={exitMovement.alerts} />}
+                    {exitMovement && (
+                      <OfficerPanel
+                        key={exitMovement.id}
+                        m={exitMovement}
+                        holds={holds}
+                        sessions={permitSessions}
+                        onChanged={reloadData}
+                        onReadAgain={arriveExit}
+                        onExit={showExit}
+                      />
+                    )}
 
                     {exitResult.reasons && exitResult.reasons.length > 0 && (
                       <div className="small bad-text">
@@ -1275,9 +1446,12 @@ export default function GateConsole() {
                       <div className="gc-trip-pass" style={{ background: "var(--ok-bg)", border: "1px solid var(--ok)" }}>
                         <div className="gc-trip-pass-head">
                           <h4 style={{ margin: 0 }}>
-                            Trip {exitResult.session.trip_code} Completed Successfully
+                            Trip {exitResult.session.trip_code} Completed
+                            {exitResult.session.close_mode === "officer" ? " (let out by an officer)" : ""}
                           </h4>
-                          <span className="badge ok">COMPLETED</span>
+                          <span className={`badge ${exitResult.session.close_mode === "officer" ? "warn" : "ok"}`}>
+                            {exitResult.session.close_mode === "officer" ? "CLOSED BY OFFICER" : "COMPLETED"}
+                          </span>
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", fontSize: "0.85rem" }}>
                           <div>
