@@ -1,9 +1,22 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { LuArrowLeft, LuChevronDown, LuChevronRight, LuTerminal } from "react-icons/lu";
-import { siteApi, type SiteDay, type SiteReport, type SiteRun } from "../api";
+import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX } from "react-icons/lu";
+import {
+  api,
+  gateApi,
+  siteApi,
+  type Contract,
+  type Movement,
+  type Permit,
+  type SiteCheat,
+  type SiteDay,
+  type SiteReport,
+  type SiteRun,
+  type SiteScenario,
+} from "../api";
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
+import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -24,9 +37,28 @@ const CHEAT_LABEL: Record<string, string> = {
   weigh_bypass: "Weigh pad skipped",
 };
 
-function Tile({ label, value, sub, tone }: { label: string; value: string | number; sub?: string; tone?: "ok" | "warn" | "bad" }) {
+/** What each cheat is, in one line: the setup a viewer needs before the gate events make sense. */
+const CHEAT_STORY: Record<string, string> = {
+  quota_push: "The trip limit is used up, so the GB stops issuing passes; the Vendor's truck tries to keep working anyway.",
+  side_track_both: "Comes in and leaves by side tracks, never touching a GB gate.",
+  side_track_out: "Gets a pass at the entry gate, then leaves loaded by a side track instead of the exit gate.",
+  side_track_in_gate_out: "Comes in by a side track (skipping the entry gate, so it never gets a pass), then leaves through a GB exit.",
+  unregistered: "A truck that is not in the GB registry tries to work on the site.",
+  clone: "The real truck is inside on a pass; a copy wearing its plate, FASTag and a copied sticker arrives at the entry.",
+  pass_reuse: "Leaves legally on its pass, comes back in by a side track, reloads, and shows the same QR again.",
+  pass_handover: "A truck with a pass hands its QR to another truck that came in by a side track.",
+  forged_qr: "Comes in by a side track and shows an edited copy of a real QR at the exit.",
+  night_trip: "Tries to work outside the permitted hours.",
+  overload: "A legal trip, but loaded well above the truck's rated capacity.",
+  arrive_loaded: "Brings material in from outside, so it would leave with more than it loaded here.",
+  weigh_bypass: "A legal trip that drives round the exit weigh pad, so the load is never weighed.",
+};
+
+function Tile({ label, value, sub, tone, onClick }: { label: string; value: string | number; sub?: string;
+                tone?: "ok" | "warn" | "bad"; onClick?: () => void }) {
   return (
-    <div className="stat">
+    <div className={`stat${onClick ? " sr-tile-click" : ""}`} onClick={onClick} role={onClick ? "button" : undefined}
+         title={onClick ? "Show the list behind this number" : undefined}>
       <div className={`stat-num ${tone ? `${tone}-text` : ""}`}>{value}</div>
       <div className="stat-label">{label}</div>
       {sub && <div className="small muted">{sub}</div>}
@@ -112,13 +144,54 @@ function DailyChart({ days }: { days: SiteDay[] }) {
 }
 
 // ---------------------------------------------------------------- list
+const POLL_MS = 2000;
+
 function RunList() {
   const [runs, setRuns] = useState<SiteRun[]>([]);
+  const [scenarios, setScenarios] = useState<SiteScenario[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  const load = () => siteApi.runs().then(setRuns).catch((e) => setError(e.message));
   useEffect(() => {
-    siteApi.runs().then(setRuns).catch((e) => setError(e.message));
+    load();
+    siteApi.scenarios().then(setScenarios).catch((e) => setError(e.message));
   }, []);
+  const running = runs.find((r) => r.finished_at == null);
+  useEffect(() => {  // follow a run while it is going
+    if (!running && !starting) return;
+    const t = setInterval(load, POLL_MS);
+    return () => clearInterval(t);
+  }, [running?.id, starting]);
+  useEffect(() => {
+    if (starting && running) setStarting(null);
+  }, [running?.id]);
+
+  const start = async (scenario: string) => {
+    setError(null);
+    setStarting(scenario);
+    try {
+      await siteApi.start(scenario);
+      load();
+    } catch (e) {
+      setStarting(null);
+      setError((e as Error).message);
+    }
+  };
+  const clear = async () => {
+    if (!window.confirm("Delete every site run and its gate events, passes, holds, alerts, Vendor reports and logs? " +
+                        "Gate console sessions, scenario runs and real gate data are kept.")) return;
+    setError(null);
+    try {
+      await siteApi.clear();
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const busy = !!running || !!starting;
+
   return (
     <>
       <div className="page-head">
@@ -129,10 +202,32 @@ function RunList() {
             compares what the permit allowed, what the Vendor reported, what the GB recorded, and what really happened.
           </p>
         </div>
+        <button className="btn sr-clear" onClick={clear} disabled={busy || runs.length === 0}>
+          <LuTrash2 /> Clear runs
+        </button>
       </div>
-      <div className="hint">
-        <LuTerminal /> Run one: <code>docker compose run --rm simulator site brief_case</code> (also <code>clean_week</code>,{" "}
-        <code>mixed_week</code>)
+      <div className="sr-suites">
+        {scenarios.map((sc) => {
+          const mine = running?.scenario === sc.scenario ? running : undefined;
+          return (
+            <div key={sc.scenario} className="card sr-suite">
+              <div>
+                <h3>{sc.scenario.replace(/_/g, " ")}</h3>
+                <p className="muted small">{sc.description}</p>
+                <span className="small muted">
+                  {sc.days} days · {sc.fleet} trucks{sc.trip_limit != null ? ` · permit ${fmt(sc.trip_limit)} trips` : ""}
+                </span>
+              </div>
+              <button className="btn primary" disabled={busy} onClick={() => start(sc.scenario)}>
+                {mine || starting === sc.scenario ? <LuLoader2 className="spin" /> : <LuPlay />}
+                {mine ? `Running, ${fmt(mine.gate_events_so_far ?? 0)} gate events` : starting === sc.scenario ? "Starting" : "Run"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="hint small">
+        <LuTerminal /> Also from a terminal: <code>docker compose run --rm simulator site brief_case</code>
       </div>
       <ErrorNote error={error} />
       <table className="table">
@@ -164,20 +259,194 @@ function RunList() {
                     <td className={rep.false_alarms.count === 0 ? "ok-text" : "bad-text"}>{rep.false_alarms.count}</td>
                   </>
                 ) : (
-                  <td colSpan={6} className="muted">{r.finished_at ? "No report" : "Running or interrupted"}</td>
+                  <td colSpan={6} className="muted">
+                    {r.finished_at ? "No report" : <><LuLoader2 className="spin" /> running, {fmt(r.gate_events_so_far ?? 0)} gate events so far</>}
+                  </td>
                 )}
                 <td className="muted"><LuChevronRight /></td>
               </tr>
             );
           })}
-          {runs.length === 0 && <tr><td colSpan={10} className="muted center">No site runs yet.</td></tr>}
+          {runs.length === 0 && <tr><td colSpan={10} className="muted center">No site runs yet. Run a scenario above.</td></tr>}
         </tbody>
       </table>
     </>
   );
 }
 
+// ---------------------------------------------------------------- drill-down from a tile
+type Group = "all" | "prevented" | "detected" | "missed" | "unseen" | "false";
+
+const GROUP_TITLE: Record<Group, string> = {
+  all: "Every cheat staged",
+  prevented: "Prevented: stopped before material left",
+  detected: "Detected: material left, alert raised",
+  missed: "Missed",
+  unseen: "Trips never at a GB gate",
+  false: "False alarms on honest trucks",
+};
+
+/** One attempt: the cheat in one line, then its timeline (legs the GB can't see greyed, gate events opening into
+ * the full gate-event detail). */
+function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, Movement> }) {
+  const [open, setOpen] = useState(false);
+  const steps: TimelineStep[] = c.timeline?.length
+    ? [...c.timeline].sort((a, b) => a.at.localeCompare(b.at)).map((t) => ({
+        at: t.at, kind: t.seen ? "gate" : "unseen", text: t.text, movement: t.movement, alerts: t.alerts }))
+    : (c.movements ?? []).map((id) => ({ at: "", kind: "gate", text: `Gate event #${id}`, movement: id }));
+  return (
+    <>
+      <tr className="clickable" onClick={() => setOpen((o) => !o)}>
+        <td className="muted">{open ? <LuChevronDown /> : <LuChevronRight />}</td>
+        <td className="nowrap">{dayLabel(c.day)} {c.at}</td>
+        <td>{CHEAT_LABEL[c.type] ?? c.type}</td>
+        <td className="small">{c.vehicle}</td>
+        <td className="small">{c.on_refusal?.replace("_", " ") ?? "—"}</td>
+        <td className={`sr-outcome-${c.outcome}`}>{c.outcome}</td>
+        <td className="small mono">{c.alerts.join(", ") || "—"}</td>
+        <td className="small muted">{c.note}</td>
+      </tr>
+      {open && (
+        <tr className="detail-row">
+          <td />
+          <td colSpan={7}>
+            {CHEAT_STORY[c.type] && <p className="sr-cheat-story">{CHEAT_STORY[c.type]}</p>}
+            <StoryTimeline steps={steps} movements={movements} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClose: () => void }) {
+  const [movements, setMovements] = useState<Record<number, Movement>>({});
+  useEffect(() => {  // this run's gate events (its own permit), to open under each attempt
+    gateApi
+      .movements({ permit_id: String(r.permit_id), limit: "1000" })
+      .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
+      .catch(() => {});
+  }, [r.permit_id]);
+  const cheats = group === "all" ? r.cheats : r.cheats.filter((c) => c.outcome === group);
+  const unseen = r.accuracy.never_at_a_gate;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal td-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="td-top">
+          <h3>{GROUP_TITLE[group]}</h3>
+          <button className="btn small" onClick={onClose} title="Close"><LuX /></button>
+        </div>
+        {group === "unseen" ? (
+          unseen == null ? (
+            <p className="muted">This run was saved before the list was recorded. Run the scenario again to see it.</p>
+          ) : unseen.length === 0 ? (
+            <p>Every trip passed a GB gate.</p>
+          ) : (
+            <>
+              <p className="small muted">
+                These trips really happened (simulation ground truth) but never crossed a GB gate, so no gate event
+                exists for them.
+              </p>
+              <table className="table table-inner">
+                <thead><tr><th>When</th><th>Vehicle</th><th>Tonnes</th><th>Why</th></tr></thead>
+                <tbody>
+                  {unseen.map((t, i) => (
+                    <tr key={i}>
+                      <td className="nowrap">{dayLabel(t.day)} {t.at}</td>
+                      <td className="small">{t.vehicle}</td>
+                      <td>{fmt(t.tonnes, 1)}</td>
+                      <td className="small">{t.cheat ? CHEAT_LABEL[t.cheat] ?? t.cheat : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )
+        ) : group === "false" ? (
+          r.false_alarms.items.length === 0 ? (
+            <p>No serious alert was raised on any of the {fmt(r.false_alarms.honest_events)} honest gate events.</p>
+          ) : (
+            <ul className="small">
+              {r.false_alarms.items.map((f, i) => <li key={i}>{f.at} {f.vehicle}: {f.code} {f.message}</li>)}
+            </ul>
+          )
+        ) : cheats.length === 0 ? (
+          <p className="muted">None in this run.</p>
+        ) : (
+          <>
+            <p className="small muted">Click an attempt to see what happened, step by step. Click a gate event to see what the pole read and what the GB decided.</p>
+            <table className="table table-inner">
+              <thead>
+                <tr><th /><th>When</th><th>Cheat</th><th>Vehicle</th><th>If refused</th><th>Outcome</th><th>Alerts</th><th>What happened</th></tr>
+              </thead>
+              <tbody>
+                {cheats.map((c, i) => <AttemptRow key={i} c={c} movements={movements} />)}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- report
+/** The contract this run was played under: the agreement and the permit terms the GB enforces at the gates.
+ * Collapsible; the ledger below is what happened during the run. */
+function ContractSection({ permitId }: { permitId: number }) {
+  const [permit, setPermit] = useState<Permit | null>(null);
+  const [contract, setContract] = useState<Contract | null>(null);
+  useEffect(() => {
+    gateApi.permit(permitId).then((p) => {
+      setPermit(p);
+      api.contracts().then((cs) => setContract(cs.find((c) => c.id === p.contract_id) ?? null)).catch(() => {});
+    }).catch(() => {});
+  }, [permitId]);
+  if (!permit) return null;
+  const hhmm = (t: string) => t.slice(0, 5);
+  const terms: [string, string][] = [
+    ["Period", `${dayLabel(permit.valid_from)} to ${dayLabel(permit.valid_to)}`],
+    ["Trips allowed", fmt(permit.trip_limit)],
+    ["Tonnes allowed", `${fmt(permit.tonne_limit)} t`],
+    ["Vehicles allowed", fmt(permit.vehicle_limit)],
+    ["Trips per vehicle", permit.per_vehicle_trips ? fmt(permit.per_vehicle_trips) : "no per-vehicle allocation"],
+    ["Working hours", `${hhmm(permit.hours_start)} to ${hhmm(permit.hours_end)}`],
+    ["Exit grace after hours", `${permit.exit_grace_min} min`],
+    ["Pass valid for", `${permit.pass_expiry_min} min from entry`],
+  ];
+  return (
+    <details className="card sr-contract">
+      <summary>
+        <strong>Contract</strong>
+        <span className="muted">
+          {contract ? `${contract.code} · ` : ""}{fmt(permit.trip_limit)} trips · {fmt(permit.tonne_limit)} t ·{" "}
+          {dayLabel(permit.valid_from)} to {dayLabel(permit.valid_to)}
+        </span>
+      </summary>
+      <div className="sr-contract-grid">
+        {contract && (
+          <div>
+            <div className="field-label">Agreement</div>
+            <div className="sr-kv"><span className="muted">Contract</span><span>{contract.code}</span></div>
+            <div className="sr-kv"><span className="muted">Vendor</span><span>{contract.vendor_name}</span></div>
+            <div className="sr-kv"><span className="muted">Site</span><span>{contract.site_name}</span></div>
+            <div className="sr-kv"><span className="muted">Mineral</span><span>{contract.mineral ?? "—"}</span></div>
+          </div>
+        )}
+        <div>
+          <div className="field-label">Permit terms the GB enforces at the gates</div>
+          {terms.map(([k, v]) => (
+            <div key={k} className="sr-kv"><span className="muted">{k}</span><span>{v}</span></div>
+          ))}
+        </div>
+      </div>
+      <p className="small muted">
+        This run uses its own copy of the permit (#{permit.id}), so it never touches the real permit.
+      </p>
+    </details>
+  );
+}
+
 function Headline({ r }: { r: SiteReport }) {
   const rows: { label: string; key: "trips" | "tonnes"; digits: number }[] = [
     { label: "Trips", key: "trips", digits: 0 },
@@ -215,15 +484,38 @@ function RunDetail({ id }: { id: number }) {
   const [run, setRun] = useState<SiteRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCheats, setShowCheats] = useState(false);
+  const [group, setGroup] = useState<Group | null>(null);
   useEffect(() => {
     siteApi.run(id).then(setRun).catch((e) => setError(e.message));
   }, [id]);
+  const going = run != null && run.finished_at == null;
+  useEffect(() => {  // follow the run while it is going
+    if (!going) return;
+    const t = setInterval(() => siteApi.run(id).then(setRun).catch(() => {}), POLL_MS);
+    return () => clearInterval(t);
+  }, [going, id]);
   const r = run?.report ?? null;
   const topCodes = useMemo(() => (r ? Object.entries(r.alerts.by_code).slice(0, 12) : []), [r]);
 
-  if (error) return <ErrorNote error={error} />;
+  const back = <p><Link className="back-link" to="/site-runs"><LuArrowLeft /> Site runs</Link></p>;
+  if (error)
+    return (
+      <>
+        {back}
+        <ErrorNote error={error === "Run not found" ? `Site run #${id} no longer exists: the runs were cleared.` : error} />
+      </>
+    );
   if (!run) return <p className="muted">Loading…</p>;
-  if (!r) return <p className="muted">This run has no report (still running or interrupted).</p>;
+  if (!r)
+    return (
+      <>
+        {back}
+        <p className="muted">
+          {going ? <><LuLoader2 className="spin" /> Running: {fmt(run.gate_events_so_far ?? 0)} gate events so far. The report appears when the period is done.</>
+            : "This run has no report (it was interrupted)."}
+        </p>
+      </>
+    );
 
   const cs = r.cheats_summary;
   const acc = r.accuracy;
@@ -241,6 +533,8 @@ function RunDetail({ id }: { id: number }) {
         </div>
       </div>
 
+      {(run.permit_id ?? r.permit_id) != null && <ContractSection permitId={(run.permit_id ?? r.permit_id) as number} />}
+
       <div className="card">
         <header className="card-head"><h3>The ledger: what was allowed, claimed, recorded, and real</h3></header>
         <Headline r={r} />
@@ -253,16 +547,18 @@ function RunDetail({ id }: { id: number }) {
       </div>
 
       <div className="stats stats-6">
-        <Tile label="Cheats staged" value={cs.injected} />
-        <Tile label="Prevented" value={cs.prevented} tone="ok" sub="stopped before material left" />
-        <Tile label="Detected" value={cs.detected} tone="warn" sub="material left, alert raised" />
-        <Tile label="Missed" value={cs.missed} tone={cs.missed ? "bad" : "ok"}
+        <Tile label="Cheats staged" value={cs.injected} onClick={() => setGroup("all")} />
+        <Tile label="Prevented" value={cs.prevented} tone="ok" sub="stopped before material left" onClick={() => setGroup("prevented")} />
+        <Tile label="Detected" value={cs.detected} tone="warn" sub="material left, alert raised" onClick={() => setGroup("detected")} />
+        <Tile label="Missed" value={cs.missed} tone={cs.missed ? "bad" : "ok"} onClick={() => setGroup("missed")}
               sub={cs.missed_attempt_flagged ? `${cs.missed_attempt_flagged} with the attempt on record` : undefined} />
-        <Tile label="Trips seen by GB gates" value={`${acc.trips_seen_pct}%`}
+        <Tile label="Trips seen by GB gates" value={`${acc.trips_seen_pct}%`} onClick={() => setGroup("unseen")}
               sub={`${fmt(acc.gb_actual_trips)} of ${fmt(acc.true_trips)}; ${acc.trips_never_at_a_gate} never at a gate`} />
-        <Tile label="False alarms" value={r.false_alarms.count} tone={r.false_alarms.count ? "bad" : "ok"}
+        <Tile label="False alarms" value={r.false_alarms.count} tone={r.false_alarms.count ? "bad" : "ok"} onClick={() => setGroup("false")}
               sub={`on ${fmt(r.false_alarms.honest_events)} honest gate events`} />
       </div>
+
+      {group && <GroupPopup group={group} r={r} onClose={() => setGroup(null)} />}
 
       <div className="card">
         <header className="card-head"><h3>Trips per day</h3></header>

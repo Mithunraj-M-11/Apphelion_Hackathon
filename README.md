@@ -66,11 +66,14 @@ happens (fake plate, stolen FASTag, removed identifiers, an old QR shown again, 
 reports faithful sensor readings to the backend like a real pole, and checks whether the system caught the trick.
 Each scenario runs under its own small permit, so scenarios never affect each other or the real permit.
 
+Run a suite from the **Scenario runs** page (Run button, with progress and a scorecard by threat), or from a terminal:
+
 ```bash
-docker compose run --rm simulator trip_basic       # 29 full-trip stories: entry, pass, exit, GB sticker, weight, quota, hours
-docker compose run --rm simulator trip_auth_full   # 16 GB RFID sticker / trip-session / edge-recovery cases
-docker compose run --rm simulator identify_basic   # 5 Identify-only cases
+docker compose run --rm simulator gate_cheats       # 34 stories: identity, GB sticker, pass misuse, weight, limits, bypass, officer actions
+docker compose run --rm simulator edge_resilience   # 7 cases: WAN loss, failover, disaster recovery, snapshots, emergency, reconcile
 ```
+
+"Clear runs" on that page deletes only scenario-run data; Gate console sessions and site runs are cleared separately.
 
 ### Site-level runs (a whole contract period)
 

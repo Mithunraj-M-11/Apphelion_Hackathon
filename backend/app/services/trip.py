@@ -351,7 +351,6 @@ def process_entry(t: Trip) -> None:
         return t.finish(allowed=False, forced_note=forced)
 
     s = t.step("Eligibility")
-    s.add("Identity", "passed", f"{truck.plate} identified (plate + FASTag + length + GB sticker) and authorised")
 
     def refuse(label: str, code: str, severity: str, message: str) -> None:
         s.add(label, "failed", message)
@@ -508,14 +507,15 @@ def _find_pass(t: Trip, s: Step, truck: Truck) -> tuple[TripSession | None, str 
     # P9: no QR or code. Close by plate + FASTag + length + sticker against the truck's open pass, limited per day.
     sess = _session_of(db, p.id, truck.id, (OPEN, *UNRESOLVED_STATUSES))
     if sess is None:
-        s.add("Pass presented", "failed", "No pass presented and no open pass: no entry through a GB gate")
+        s.add("Pass for this trip", "failed", f"None: {truck.plate} did not come through a GB entry gate, so it has "
+                                              "no pass to close (passes are issued only at entry)")
         t.alert("NO_PASS", "HIGH", f"{truck.plate} at exit with no open pass (did not enter through a GB gate, "
                                    "or entered without a pass)", truck=truck)
         return None, None
     hold = _active_hold(db, p.id, truck.id)
     if hold is not None:  # a held identity may be cloned: only the QR / SMS code can close its pass
-        s.add("Pass presented", "failed", f"No QR / code, and {truck.plate} is on hold ({hold.reason_code}): "
-                                          "the no-QR close is not allowed")
+        s.add("Pass for this trip", "failed", f"No QR or SMS code shown, and {truck.plate} is on hold "
+                                              f"({hold.reason_code}): only the QR or code can close its pass")
         t.alert("NO_QR_ON_HOLD", "HIGH", f"{truck.plate} at exit without QR while on hold ({hold.reason_code}); "
                                          "possible clone trying to close the real truck's pass", truck=truck, pass_=sess)
         return None, None
@@ -524,13 +524,13 @@ def _find_pass(t: Trip, s: Step, truck: Truck) -> tuple[TripSession | None, str 
         TripSession.permit_id == p.id, TripSession.truck_id == truck.id, TripSession.close_mode == "no_qr",
         TripSession.completed_at >= day_start)) or 0
     if used_today >= NO_QR_CLOSES_PER_DAY:
-        s.add("Pass presented", "failed", f"No QR / code, and the no-QR close was already used today "
-                                          f"({used_today} of {NO_QR_CLOSES_PER_DAY})")
+        s.add("Pass for this trip", "failed", f"No QR or SMS code shown, and the close without QR was already used "
+                                              f"today ({used_today} of {NO_QR_CLOSES_PER_DAY})")
         t.alert("NO_QR_LIMIT", "MEDIUM", f"{truck.plate} at exit without QR again today; barrier stays down until "
                                          "an officer approves", truck=truck, pass_=sess)
         return None, None
-    s.add("Pass presented", "warning", f"No QR / code: matched open pass {sess.trip_code} by plate + FASTag + "
-                                       "length + GB sticker")
+    s.add("Pass for this trip", "warning", f"No QR or SMS code shown: its open pass {sess.trip_code} matched by "
+                                           "plate + FASTag + length + GB sticker")
     return sess, "no_qr"
 
 
@@ -551,7 +551,6 @@ def process_exit(t: Trip) -> None:
         _refuse_sticker(t, ids, kind, truck)
         return _exit_refused(t, forced)
     s = t.step("Pass check")
-    s.add("Identity", "passed", f"{truck.plate} identified (plate + FASTag + length + GB sticker)")
     if d.result == "NOT_AUTHORISED":  # lapsed mid-trip: don't trap the truck, but record it
         t.alert("AUTHORISATION_LAPSED", "INFO", f"{truck.plate} is no longer authorised ({'; '.join(d.reasons)}); "
                                                 "exit allowed for the trip in progress", truck=truck)

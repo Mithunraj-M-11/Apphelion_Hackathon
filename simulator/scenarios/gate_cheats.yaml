@@ -1,4 +1,4 @@
-# Trip: full-trip check-level stories (entry -> pass -> exit), one trick per story.
+# Gate cheats: full-trip stories (entry -> pass -> exit), one trick per story.
 #
 # Each story is a short sequence of timed gate events under its OWN small permit. Sensors report faithfully what
 # is physically there (see identify_basic.yaml); the question is whether the GB's rules catch the trick.
@@ -19,12 +19,21 @@
 #   forces:      true = the vehicle breaks through a closed barrier
 #   expect:      barrier (up|down), pass_issued (bool), trip (LEGAL|ILLEGAL), result (Identify),
 #                alerts (must be raised), not_alerts (must not be raised)
+#
+# Officer events (instead of a gate event), sent as the first active GB officer with a reason:
+#   { at, officer: release_hold, vehicle: <plate> }   release the truck's active hold
+#   { at, officer: late_close, vehicle: <plate> }     late-close the truck's open / unresolved trip
+#   { at, officer: let_out, event: N, expect: ... }   let out the truck refused at exit event N
+#
+# kind: honest | tamper | officer. category: control | identity | sticker | pass | measure | limits | evasion |
+# officer (the threat a story belongs to, for the scorecard).
 # A story passes when every event's expectations hold; an honest story also must raise no HIGH/CRITICAL alert.
 # Rules are the IDs in docs/implementation/rules_spec.md.
 
-suite: trip_basic
+suite: gate_cheats
+title: Gate cheats
 format: trip
-description: Full-trip stories. Entry identify (plate, FASTag, length, GB sticker) + weigh + pass, exit identify + weigh + pass check, barrier, quota.
+description: Every known cheat at the gates as a short story (entry, pass, exit), plus honest controls and the officer actions that clear a refusal.
 gate: G1
 permit: { trip_limit: 50, tonne_limit: 1500, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00",
           exit_grace_min: 30, pass_expiry_min: 120 }
@@ -39,6 +48,7 @@ scenarios:
   - id: T1
     name: Honest trip (control)
     kind: honest
+    category: control
     rules: P1, P5, M1
     why: A genuine truck gets a pass at entry and leaves with it; no alarm. False alarms make officers ignore alerts.
     events:
@@ -48,6 +58,7 @@ scenarios:
   - id: T2
     name: Honest trip, SMS code at exit
     kind: honest
+    category: control
     rules: P3, P5
     why: Drivers with basic phones use the 8-character SMS code; it must work exactly like the QR.
     events:
@@ -57,6 +68,7 @@ scenarios:
   - id: T3
     name: Light vehicle passes (site jeep)
     kind: honest
+    category: control
     rules: C2
     why: Vehicles under 6 m are logged but are not trips, so they don't need a pass and don't use quota.
     events:
@@ -68,6 +80,7 @@ scenarios:
   - id: T4
     name: Unregistered truck refused at entry
     kind: tamper
+    category: identity
     rules: G3, P1, A1
     real_case: B3 unregistered vehicles carrying material
     why: Refused while still empty, so nothing is at stake and nobody is pressured to let a loaded truck out.
@@ -78,6 +91,7 @@ scenarios:
   - id: T5
     name: Registered truck with expired fitness refused
     kind: tamper
+    category: identity
     rules: I8, P1
     why: Authorisation is computed at the gate, so an expired certificate stops the truck automatically.
     events:
@@ -87,6 +101,7 @@ scenarios:
   - id: T6
     name: Clone attempt puts both trucks on hold
     kind: tamper
+    category: identity
     rules: I5, I7, A4
     real_case: A2 cloned plate + swapped tag
     why: The plate says one truck and the tag another; both are frozen, so the genuine truck whose tag was stolen is
@@ -100,6 +115,7 @@ scenarios:
   - id: T7
     name: Perfect clone enters while the real truck is inside
     kind: tamper
+    category: sticker
     rules: I-RFID, P2, A4
     real_case: A1 cloned plate (and cloned tag) on a same-size truck
     why: Plate, tag and length all match, so plate + FASTag + length can't tell them apart; the copied GB sticker
@@ -113,6 +129,7 @@ scenarios:
   - id: T8
     name: Trip quota reached, no more passes
     kind: tamper
+    category: limits
     rules: CP5, P13
     real_case: Permit 100 trips vs 200 actual (brief)
     why: Issuing stops at 100%, at the entry barrier, before any extra material is loaded.
@@ -126,6 +143,7 @@ scenarios:
   - id: T9
     name: Entry outside permitted hours
     kind: tamper
+    category: limits
     rules: P15
     why: Night trips are a classic way to move unrecorded material; no pass is issued outside hours.
     events:
@@ -136,44 +154,49 @@ scenarios:
   - id: T10
     name: Arrives already loaded
     kind: tamper
+    category: measure
     rules: M2
     why: Material brought in from outside (or a different truck) to be dispatched as if mined here.
     events:
-      - { at: "08:00", dir: IN,  vehicle: OD09AK6402, load: 8, expect: { barrier: up, pass_issued: true, alerts: [ARRIVED_LOADED] } }
+      - { at: "08:00", dir: IN,  vehicle: OD09AK6402, load: 8, note: picked up material outside the site, expect: { barrier: up, pass_issued: true, alerts: [ARRIVED_LOADED] } }
       - { at: "08:50", dir: OUT, vehicle: OD09AK6402, load: 24, expect: { barrier: up, trip: LEGAL } }
 
   - id: T11
     name: Overloaded truck
     kind: tamper
+    category: measure
     rules: M3
     real_case: Overloading to move more tonnes per recorded trip
     why: The GB pad measures real net tonnes; the quota counts what actually left, and the overload is flagged.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AL9015, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:50", dir: OUT, vehicle: OD09AL9015, load: "125%", expect: { barrier: up, trip: LEGAL, alerts: [OVERLOAD] } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AL9015, load: "125%", note: loaded well above its rated capacity, expect: { barrier: up, trip: LEGAL, alerts: [OVERLOAD] } }
 
   - id: T12
     name: Leaves empty
     kind: tamper
+    category: measure
     rules: M5, P13
     why: An empty exit doesn't give the reserved trip back, so passes can't be cycled to game the quota.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AJ3579, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:30", dir: OUT, vehicle: OD09AJ3579, load: 0.2, expect: { barrier: up, trip: LEGAL, alerts: [EMPTY_EXIT] } }
+      - { at: "08:30", dir: OUT, vehicle: OD09AJ3579, load: 0.2, note: left almost empty, expect: { barrier: up, trip: LEGAL, alerts: [EMPTY_EXIT] } }
 
   - id: T13
     name: Weigh pad skipped at exit
     kind: tamper
+    category: measure
     rules: M4, G5
     why: Silence is suspicious; a missing weight is an alert, never an assumed normal load.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD02BR7120, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:50", dir: OUT, vehicle: OD02BR7120, load: none, expect: { barrier: up, alerts: [WEIGH_BYPASS] } }
+      - { at: "08:50", dir: OUT, vehicle: OD02BR7120, load: none, note: drove round the exit weigh pad, expect: { barrier: up, alerts: [WEIGH_BYPASS] } }
 
   # ------------------------------------------------------------------ pass at exit
   - id: T14
     name: Old QR reused (screenshot)
     kind: tamper
+    category: pass
     rules: P6, A4
     real_case: UP CAG, same pass used for multiple trips
     why: A pass closes once; showing it again (here after sneaking back in by a side track) is rejected.
@@ -186,25 +209,28 @@ scenarios:
   - id: T15
     name: Pass handed to another truck
     kind: tamper
+    category: pass
     rules: P7, A4
     why: The pass is bound to one truck's plate and FASTag; a different truck can't leave on it.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD14DF8821, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:40", dir: OUT, vehicle: JH05CK2290, pass: { qr_from: 1 }, note: entered by a side track,
+      - { at: "08:40", dir: OUT, vehicle: JH05CK2290, pass: { qr_from: 1 }, note: came in by a side track and was handed the QR of OD14DF8821,
           expect: { barrier: down, alerts: [PASS_MISMATCH] } }
 
   - id: T16
     name: Forged / edited QR
     kind: tamper
+    category: pass
     rules: P8, P3
     why: Every pass is signed by the GB key; changing a single character breaks the signature.
     events:
       - { at: "08:00", dir: IN,  vehicle: JH05CL6614, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:50", dir: OUT, vehicle: JH05CL6614, pass: { tampered_qr_from: 1 }, expect: { barrier: down, alerts: [INVALID_PASS] } }
+      - { at: "08:50", dir: OUT, vehicle: JH05CL6614, pass: { tampered_qr_from: 1 }, note: edited its QR (e.g. the expiry) before showing it, expect: { barrier: down, alerts: [INVALID_PASS] } }
 
   - id: T17
     name: Dead phone twice in a day
     kind: tamper
+    category: pass
     rules: P9
     why: One close without QR per day is allowed (plate + FASTag + length); a second needs an officer, so it can't
       become routine.
@@ -212,11 +238,12 @@ scenarios:
       - { at: "07:00", dir: IN,  vehicle: CG04MN5507, expect: { barrier: up, pass_issued: true } }
       - { at: "07:45", dir: OUT, vehicle: CG04MN5507, pass: none, expect: { barrier: up, trip: LEGAL, alerts: [CLOSED_WITHOUT_QR] } }
       - { at: "08:00", dir: IN,  vehicle: CG04MN5507, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:45", dir: OUT, vehicle: CG04MN5507, pass: none, expect: { barrier: down, alerts: [NO_QR_LIMIT] } }
+      - { at: "08:45", dir: OUT, vehicle: CG04MN5507, pass: none, note: says the phone is dead again, expect: { barrier: down, alerts: [NO_QR_LIMIT] } }
 
   - id: T18
     name: Pass expired at exit
     kind: tamper
+    category: pass
     rules: P4, P11
     why: A 2-hour pass limits side-route trips during an open pass; an expired pass needs an officer to close.
     events:
@@ -227,6 +254,7 @@ scenarios:
   - id: T19
     name: Side-track entry, then gate exit
     kind: tamper
+    category: evasion
     rules: P12, G5
     real_case: Untracked route in, legal-looking route out
     why: A truck that never came through a GB entry gate has no pass, so the exit barrier stays down.
@@ -237,6 +265,7 @@ scenarios:
   - id: T20
     name: Barrier forced at exit
     kind: tamper
+    category: evasion
     rules: A2, P12
     why: Breaking the barrier turns cheating into a recorded act of force, counted as an illegal trip.
     events:
@@ -247,6 +276,7 @@ scenarios:
   - id: T21
     name: Exit within the 30-minute grace
     kind: honest
+    category: control
     rules: P15
     why: The last trip of the day isn't punished for finishing a few minutes after closing.
     events:
@@ -256,6 +286,7 @@ scenarios:
   - id: T22
     name: Exit after the grace period
     kind: tamper
+    category: limits
     rules: P15
     why: The truck isn't trapped (valid pass), but a late exit is flagged as a possible night trip.
     events:
@@ -266,6 +297,7 @@ scenarios:
   - id: T23
     name: Clone with a copied sticker while the real truck is outside
     kind: tamper
+    category: sticker
     rules: I-RFID, A4
     real_case: A1 cloned plate + cloned tag; the real truck isn't on site to give it away
     why: Without the sticker a perfect copy would get a pass whenever the real truck is away. The GB sticker answers
@@ -278,6 +310,7 @@ scenarios:
   - id: T24
     name: GB sticker removed
     kind: tamper
+    category: sticker
     rules: I-RFID, G3
     why: Plate, tag and length are genuine, but the GB sticker is missing, so the truck is refused for now (relaxations later).
     events:
@@ -287,6 +320,7 @@ scenarios:
   - id: T25
     name: GB sticker swapped from another truck
     kind: tamper
+    category: sticker
     rules: I-RFID, A4
     why: A genuine sticker on the wrong truck, so both identities are frozen until an officer reviews.
     events:
@@ -296,6 +330,7 @@ scenarios:
   - id: T26
     name: Revoked GB sticker
     kind: tamper
+    category: sticker
     rules: I-RFID
     why: The GB revoked this sticker (reported tampered); the truck can't work until it gets a new one.
     events:
@@ -304,17 +339,19 @@ scenarios:
   - id: T27
     name: Different sticker at exit than at entry
     kind: tamper
+    category: sticker
     rules: I-RFID, P7
     why: The pass is bound to the sticker seen at entry; a different sticker at the exit means a different vehicle.
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AF7733, expect: { barrier: up, pass_issued: true } }
-      - { at: "08:45", dir: OUT, vehicle: OD09AF7733, sticker: { from: OD09AG1180 },
+      - { at: "08:45", dir: OUT, vehicle: OD09AF7733, sticker: { from: OD09AG1180 }, note: its own sticker swapped for another truck's inside the site,
           expect: { barrier: down, alerts: [RFID_MISMATCH] } }
 
   # ------------------------------------------------------------------ contract settings
   - id: T28
     name: Per-vehicle allocation used up
     kind: tamper
+    category: limits
     rules: CP7, P13
     why: When the contract caps trips per truck, the allocation is reserved at entry and enforced at the gate.
     permit: { per_vehicle_trips: 1 }
@@ -326,6 +363,7 @@ scenarios:
   - id: T29
     name: Left by a side route, comes back with the pass unresolved
     kind: tamper
+    category: evasion
     rules: P10, P11
     real_case: Untracked exit with an open pass
     why: An open pass past expiry becomes unresolved (the trip stays counted); the truck gets no new pass until an
@@ -334,3 +372,67 @@ scenarios:
       - { at: "08:00", dir: IN, vehicle: OD09AK6402, expect: { barrier: up, pass_issued: true } }
       - { at: "10:40", dir: IN, vehicle: OD09AK6402, note: left by a side route at about 09:00,
           expect: { barrier: down, pass_issued: false, alerts: [UNRESOLVED_TRIP] } }
+
+  # ------------------------------------------------------------------ more measure / evasion
+  - id: T30
+    name: Weigh pad skipped at entry
+    kind: tamper
+    category: measure
+    rules: M1, M4
+    why: Without an entry weight the net load can't be measured; the pass falls back to the enrolled empty weight
+      and the bypass is flagged.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AH2468, load: none, note: drove round the entry weigh pad,
+          expect: { barrier: up, pass_issued: true, alerts: [WEIGH_BYPASS] } }
+
+  - id: T31
+    name: Unregistered truck breaks through the entry barrier
+    kind: tamper
+    category: evasion
+    rules: A2
+    why: A refused truck that forces its way in is inside with no pass; the act of force is recorded as critical.
+    events:
+      - { at: "08:00", dir: IN, vehicle: { rogue: rogue_local_tipper }, fastag: none, forces: true,
+          expect: { barrier: down, pass_issued: false, alerts: [UNREGISTERED_VEHICLE, BARRIER_FORCED] } }
+
+  # ------------------------------------------------------------------ officer actions
+  - id: T32
+    name: Officer releases a clone hold for the genuine truck
+    kind: officer
+    category: officer
+    rules: A4
+    why: A cloned sticker freezes the identity; the genuine truck is refused until an officer checks it in person
+      and releases the hold. The release does not open the barrier, the truck is read again.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AD0090, rfid: cloned,
+          expect: { barrier: down, pass_issued: false, alerts: [RFID_CLONED] } }
+      - { at: "08:10", dir: IN, vehicle: OD09AD0090,
+          expect: { barrier: down, pass_issued: false, alerts: [TRUCK_ON_HOLD] } }
+      - { at: "08:15", officer: release_hold, vehicle: OD09AD0090 }
+      - { at: "08:20", dir: IN, vehicle: OD09AD0090, expect: { barrier: up, pass_issued: true } }
+
+  - id: T33
+    name: Officer lets out a truck whose pass expired in a queue
+    kind: officer
+    category: officer
+    rules: P11
+    why: The exit refuses an expired pass; the officer checks the truck and lets it out, closing its own pass. The
+      trip stays counted and is flagged for review.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: 22BH4581AB, expect: { barrier: up, pass_issued: true } }
+      - { at: "10:30", dir: OUT, vehicle: 22BH4581AB, expect: { barrier: down, alerts: [PASS_EXPIRED_AT_EXIT] } }
+      - { at: "10:35", officer: let_out, event: 2, expect: { barrier: up, trip: LEGAL, alerts: [OFFICER_EXIT] } }
+
+  - id: T34
+    name: Officer late-closes an unresolved trip so the truck can work again
+    kind: officer
+    category: officer
+    rules: P10, P11
+    why: A truck with an unresolved trip gets no new pass; once an officer late-closes it (the trip stays counted),
+      the truck is read again and given a pass.
+    events:
+      - { at: "07:00", dir: IN, vehicle: OD09AK6402, expect: { barrier: up, pass_issued: true } }
+      - { at: "09:30", dir: IN, vehicle: OD09AK6402, note: left by a side route,
+          expect: { barrier: down, pass_issued: false, alerts: [UNRESOLVED_TRIP] } }
+      - { at: "09:35", officer: late_close, vehicle: OD09AK6402 }
+      - { at: "09:40", dir: IN, vehicle: OD09AK6402, expect: { barrier: up, pass_issued: true } }

@@ -5,23 +5,77 @@ import {
   LuCheckCircle2,
   LuChevronDown,
   LuChevronRight,
+  LuLoader2,
+  LuPlay,
   LuTerminal,
+  LuTrash2,
   LuXCircle,
 } from "react-icons/lu";
 import {
   gateApi,
   isTripResult,
+  type EdgeScenarioResult,
   type Movement,
+  type ScenarioResult,
   type SimRun,
-  type SingleScenarioResult,
+  type SimSuite,
+  type StoryKind,
   type TripEventExpect,
   type TripScenarioResult,
 } from "../api";
-import { AlertList, BarrierBadge, ErrorNote, ResultBadge, TripBadge } from "../components";
-import { CHECK_LABEL, decisiveCheck, formatDateTime, formatPlate } from "../format";
-import { MovementDetail } from "./GateEvents";
+import { ErrorNote } from "../components";
+import { formatDateTime } from "../format";
+import { ScenarioSheetButton } from "./SimScenarioSheet";
+import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
 
-const label = (c: string) => CHECK_LABEL[c] ?? c;
+/** The threats a story belongs to, in the order the scorecard shows them. */
+const CATEGORIES: { key: string; title: string }[] = [
+  { key: "identity", title: "Vehicle identity" },
+  { key: "sticker", title: "GB RFID sticker" },
+  { key: "pass", title: "Pass misuse" },
+  { key: "measure", title: "Weight and load" },
+  { key: "limits", title: "Contract limits" },
+  { key: "evasion", title: "Bypass and force" },
+  { key: "officer", title: "Officer actions" },
+  { key: "edge", title: "Edge resilience" },
+  { key: "control", title: "Honest controls" },
+];
+
+const POLL_MS = 2000;
+
+function KindBadge({ kind }: { kind: StoryKind }) {
+  const [cls, text] = kind === "honest" ? ["neutral", "Honest"] : kind === "officer" ? ["ok", "Officer"] : ["warn", "Cheat"];
+  return <span className={`badge ${cls}`}>{text}</span>;
+}
+
+/** One card per threat: cheats caught, honest stories without a false alarm, officer / edge stories passed. */
+function CategoryGrid({ results }: { results: ScenarioResult[] }) {
+  const cards = CATEGORIES.map((c) => {
+    const rs = results.filter((r) => (r.category ?? "") === c.key);
+    if (rs.length === 0) return null;
+    const cheats = rs.filter((r) => r.kind === "tamper");
+    const honest = rs.filter((r) => r.kind === "honest");
+    const caught = cheats.filter((r) => (isTripResult(r) ? r.caught : r.pass)).length;
+    const passed = rs.filter((r) => r.pass).length;
+    const [value, total, what] =
+      cheats.length > 0
+        ? [caught, cheats.length, "cheats caught"]
+        : c.key === "control"
+        ? [honest.filter((r) => r.pass).length, honest.length, "passed with no false alarm"]
+        : [passed, rs.length, "stories pass"];
+    return (
+      <div key={c.key} className={`sr-cat ${value === total ? "ok" : "bad"}`}>
+        <div className="sr-cat-title">{c.title}</div>
+        <div className="sr-cat-num">
+          {value}
+          <span className="muted">/{total}</span>
+        </div>
+        <div className="small muted">{what}</div>
+      </div>
+    );
+  });
+  return <div className="sr-cats">{cards}</div>;
+}
 
 function Tile({ label, value, total, tone }: { label: string; value: number; total?: number; tone?: "ok" | "bad" }) {
   return (
@@ -46,11 +100,49 @@ function PassTag({ pass }: { pass: boolean }) {
 // ---------------------------------------------------------------- list
 function RunList() {
   const [runs, setRuns] = useState<SimRun[]>([]);
+  const [suites, setSuites] = useState<SimSuite[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  const load = () => gateApi.simRuns().then(setRuns).catch((e) => setError(e.message));
   useEffect(() => {
-    gateApi.simRuns().then(setRuns).catch((e) => setError(e.message));
+    load();
+    gateApi.simSuites().then(setSuites).catch((e) => setError(e.message));
   }, []);
+  const running = runs.find((r) => r.finished_at == null);
+  useEffect(() => {  // follow a run while it is going
+    if (!running && !starting) return;
+    const t = setInterval(load, POLL_MS);
+    return () => clearInterval(t);
+  }, [running?.id, starting]);
+  useEffect(() => {
+    if (starting && running) setStarting(null);
+  }, [running?.id]);
+
+  const start = async (suite: string) => {
+    setError(null);
+    setStarting(suite);
+    try {
+      await gateApi.startSuite(suite);
+      load();
+    } catch (e) {
+      setStarting(null);
+      setError((e as Error).message);
+    }
+  };
+  const clear = async () => {
+    if (!window.confirm("Delete every scenario run and its gate events, passes, holds, alerts and logs? " +
+                        "Gate console sessions, site runs and real gate data are kept.")) return;
+    setError(null);
+    try {
+      await gateApi.clearSimRuns();
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const busy = !!running || !!starting;
 
   return (
     <>
@@ -58,70 +150,92 @@ function RunList() {
         <div>
           <h1>Scenario runs</h1>
           <p className="muted">
-            Simulated cheating at the gates, scored against the whole system: was each trick caught, and did honest
-            trucks pass without false alarms? Click a run for its scorecard.
+            Every known cheat played against the real GB software, one short story each, scored on whether it was
+            caught and whether honest trucks passed without a false alarm.
           </p>
         </div>
+        <button className="btn sr-clear" onClick={clear} disabled={busy || runs.length === 0}>
+          <LuTrash2 /> Clear runs
+        </button>
       </div>
-      <div className="hint">
-        <LuTerminal /> Run a suite: <code>docker compose run --rm simulator trip_basic</code> (full trips) or{" "}
-        <code>identify_basic</code> (Identify only)
+      <div className="sr-suites">
+        {suites.map((s) => {
+          const mine = running?.suite === s.suite ? running : undefined;
+          return (
+            <div key={s.suite} className="card sr-suite">
+              <div>
+                <h3>{s.title}</h3>
+                <p className="muted small">{s.description}</p>
+                <span className="small muted">{s.stories} stories</span>
+              </div>
+              <button className="btn primary" disabled={busy} onClick={() => start(s.suite)}>
+                {mine || starting === s.suite ? <LuLoader2 className="spin" /> : <LuPlay />}
+                {mine ? `Running ${mine.results.length}/${s.stories}` : starting === s.suite ? "Starting" : "Run"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="hint small">
+        <LuTerminal /> Also from a terminal: <code>docker compose run --rm simulator gate_cheats</code>
       </div>
       <ErrorNote error={error} />
       <table className="table">
         <thead>
           <tr>
-            <th>Run</th><th>Suite</th><th>Mode</th><th>When</th>
-            <th>Scenarios passed</th><th>Tampering caught</th><th>False alarms</th><th />
+            <th>Run</th><th>Suite</th><th>When</th>
+            <th>Stories passed</th><th>Cheats caught</th><th>False alarms</th><th />
           </tr>
         </thead>
         <tbody>
           {runs.map((r) => (
             <tr key={r.id} className="clickable" onClick={() => navigate(`/scenario-runs/${r.id}`)}>
               <td>#{r.id}</td>
-              <td>{r.suite}</td>
-              <td>{r.identify_mode}</td>
+              <td>{suites.find((s) => s.suite === r.suite)?.title ?? r.suite}</td>
               <td className="nowrap">{formatDateTime(r.started_at)}</td>
-              <td className={r.passed === r.total ? "ok-text" : "bad-text"}>{r.passed}/{r.total}</td>
-              <td className={r.tamper_caught === r.tamper_total ? "ok-text" : "bad-text"}>{r.tamper_caught}/{r.tamper_total}</td>
-              <td className={r.false_alarms === 0 ? "ok-text" : "bad-text"}>{r.false_alarms}/{r.honest_total}</td>
+              {r.finished_at == null ? (
+                <td colSpan={3} className="muted"><LuLoader2 className="spin" /> running, {r.results.length} stories done</td>
+              ) : (
+                <>
+                  <td className={r.passed === r.total ? "ok-text" : "bad-text"}>{r.passed}/{r.total}</td>
+                  <td className={r.tamper_caught === r.tamper_total ? "ok-text" : "bad-text"}>{r.tamper_caught}/{r.tamper_total}</td>
+                  <td className={r.false_alarms === 0 ? "ok-text" : "bad-text"}>{r.false_alarms}/{r.honest_total}</td>
+                </>
+              )}
               <td className="muted"><LuChevronRight /></td>
             </tr>
           ))}
-          {runs.length === 0 && <tr><td colSpan={8} className="muted center">No runs yet.</td></tr>}
+          {runs.length === 0 && <tr><td colSpan={7} className="muted center">No runs yet. Run a suite above.</td></tr>}
         </tbody>
       </table>
     </>
   );
 }
 
-// ---------------------------------------------------------------- detail: Identify-only scenario
-function ScenarioExpanded({ s, movement }: { s: SingleScenarioResult; movement: Movement | undefined }) {
+// ---------------------------------------------------------------- detail: edge resilience case
+const show = (v: unknown) => (typeof v === "object" ? JSON.stringify(v) : String(v));
+
+function EdgeExpanded({ s }: { s: EdgeScenarioResult }) {
   return (
     <div className="scenario-expanded">
-      {s.why && <p className="why">{s.why}{s.real_case && <span className="muted"> ({s.real_case})</span>}</p>}
+      {s.why && <p className="why">{s.why}</p>}
       <div className="scenario-grid">
         <div>
-          <div className="field-label">Sensors reported</div>
-          <div>Plate: {s.readings.plate_read ? <span className="plate plate-sm">{formatPlate(s.readings.plate_read)}</span> : <span className="muted">none</span>}</div>
-          <div>FASTag: <span className="mono small">{s.readings.fastag_read ? `${s.readings.fastag_read.slice(0, 12)}…` : "none"}</span></div>
-          <div>Length: {s.readings.radar_length_m?.toFixed(2)} m</div>
+          <div className="field-label">Action</div>
+          <div className="mono small">{s.readings.scenario_type ?? "—"}</div>
         </div>
         <div>
           <div className="field-label">Expected</div>
-          <ResultBadge result={s.expected.result} />
-          <div className="small">caught by: {(s.expected.caught_by ?? []).map(label).join(", ") || "nothing (honest)"}</div>
-          {s.expected.not_caught_by && <div className="small">not by: {s.expected.not_caught_by.map(label).join(", ")}</div>}
+          {Object.entries(s.expected).map(([k, v]) => (
+            <div key={k} className="small">{k.replace(/_/g, " ")}: <strong>{show(v)}</strong></div>
+          ))}
         </div>
         <div>
-          <div className="field-label">Actual</div>
-          <ResultBadge result={s.actual.result} />
-          <div className="small">caught by: {s.actual.caught_by.map(label).join(", ") || "nothing"}</div>
+          <div className="field-label">What happened</div>
+          <div className="small"><strong>{s.actual.result ?? "—"}</strong></div>
         </div>
       </div>
       {s.problems.length > 0 && <ErrorNote error={s.problems.join("; ")} />}
-      <div className="field-label" style={{ marginTop: 14 }}>Gate event</div>
-      {movement ? <MovementDetail m={movement} /> : <p className="muted small">Gate event #{s.movement_id} not loaded.</p>}
     </div>
   );
 }
@@ -137,70 +251,56 @@ const expectText = (e: TripEventExpect) =>
     e.not_alerts?.length ? `not ${e.not_alerts.join(", ")}` : null,
   ].filter(Boolean).join(" · ") || "—";
 
+/** One gate event in plain words: where, what was read, what the driver showed, what the GB decided. */
+function gateText(e: TripScenarioResult["events"][number]) {
+  const a = e.actual;
+  const read = e.readings.plate_read ?? "no plate";
+  const really = e.vehicle && e.vehicle !== e.readings.plate_read ? `, really ${e.vehicle.replace(/_/g, " ")}` : "";
+  const shown = e.dir === "OUT" && e.readings.shown ? `, shows ${e.readings.shown}` : "";
+  let outcome: string;
+  if (a.barrier === "up") {
+    outcome = e.dir === "IN" ? (a.pass_issued ? `let in, pass ${a.pass_issued} issued` : "let through")
+      : a.trip ? `let out, ${a.trip.toLowerCase()} trip` : "let out";
+  } else {
+    outcome = "barrier stays down";
+    if (e.readings.forced) outcome += `, broke through${a.trip === "ILLEGAL" ? ": illegal trip" : ""}`;
+  }
+  return `${e.dir === "IN" ? "Entry" : "Exit"} gate: read ${read}${really}${shown}, ${outcome}`;
+}
+
+function storySteps(s: TripScenarioResult): TimelineStep[] {
+  const steps: TimelineStep[] = [];
+  for (const e of s.events) {
+    const alerts = e.actual.alerts.map((x) => x.code);
+    const hasExpect = Object.keys(e.expected ?? {}).length > 0;
+    if (e.dir === "OFFICER") {
+      steps.push({ at: e.at, kind: "officer", text: `Officer ${e.note ?? ""}`, movement: e.movement_id, alerts,
+                   expected: hasExpect ? expectText(e.expected) : undefined, pass: e.pass });
+      continue;
+    }
+    if (e.note) steps.push({ at: "", kind: "unseen", text: e.note });
+    steps.push({ at: e.at, kind: "gate", text: gateText(e), movement: e.movement_id, alerts,
+                 expected: expectText(e.expected), pass: e.pass });
+  }
+  return steps;
+}
+
 function TripExpanded({ s, movements }: { s: TripScenarioResult; movements: Record<number, Movement> }) {
-  const [openEvent, setOpenEvent] = useState<number | null>(null);
   const L = s.ledger;
   return (
     <div className="scenario-expanded">
       {s.why && (
-        <p className="why">
+        <p className="sr-cheat-story">
           {s.why}
           {s.rules && <span className="muted"> Rules {s.rules}.</span>}
           {s.real_case && <span className="muted"> ({s.real_case})</span>}
         </p>
       )}
-      <table className="table table-inner">
-        <thead>
-          <tr><th>#</th><th>Time</th><th>Gate</th><th>Vehicle</th><th>Shown / note</th><th>Expected</th><th>What happened</th><th>Check</th></tr>
-        </thead>
-        <tbody>
-          {s.events.map((e) => (
-            <Fragment key={e.n}>
-              <tr className="clickable" onClick={() => setOpenEvent(openEvent === e.n ? null : e.n)}>
-                <td>{e.n}</td>
-                <td className="nowrap">{e.at}</td>
-                <td className="nowrap">{e.dir === "IN" ? "Entry" : "Exit"}</td>
-                <td className="nowrap">
-                  {e.readings.plate_read ? <span className="plate plate-sm">{formatPlate(e.readings.plate_read)}</span> : <span className="muted">no plate</span>}
-                  <div className="small muted">
-                    {e.vehicle !== e.readings.plate_read ? `really ${e.vehicle} · ` : ""}
-                    {e.readings.weight_t != null ? `${e.readings.weight_t.toFixed(1)} t` : "no weight"}
-                  </div>
-                </td>
-                <td className="small">
-                  {e.dir === "OUT" && <div>Shows: {e.readings.shown}</div>}
-                  {e.readings.forced && <div className="bad-text">Forces the barrier</div>}
-                  {e.note && <div className="muted">{e.note}</div>}
-                </td>
-                <td className="small">{expectText(e.expected)}</td>
-                <td>
-                  <div className="badges-row">
-                    <BarrierBadge barrier={e.actual.barrier} />
-                    {e.actual.pass_issued && <span className="badge neutral">{e.actual.pass_issued} issued</span>}
-                    <TripBadge trip={e.actual.trip} />
-                  </div>
-                  <div style={{ marginTop: 6 }}><AlertList alerts={e.actual.alerts} /></div>
-                </td>
-                <td><PassTag pass={e.pass} /></td>
-              </tr>
-              {openEvent === e.n && (
-                <tr className="detail-row">
-                  <td colSpan={8}>
-                    {e.problems.length > 0 && <ErrorNote error={e.problems.join("; ")} />}
-                    {movements[e.movement_id] ? <MovementDetail m={movements[e.movement_id]} /> :
-                      <p className="muted small">Gate event #{e.movement_id} not loaded.</p>}
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
+      <StoryTimeline steps={storySteps(s)} movements={movements} />
       {s.problems.length > 0 && <ErrorNote error={s.problems.join("; ")} />}
       <div className="small muted" style={{ marginTop: 8 }}>
-        Permit ledger after the story: trips {L.trips_reserved}/{L.trip_limit} reserved, {L.legal_trips} legal,{" "}
-        {L.actual_trips} actual, {L.illegal_trips} illegal · {L.tonnes} t of {L.tonne_limit} t ·{" "}
-        {L.active_holds} truck(s) on hold
+        Permit after the story: {L.trips_reserved}/{L.trip_limit} trips reserved, {L.legal_trips} legal,{" "}
+        {L.actual_trips} actual, {L.illegal_trips} illegal · {L.tonnes} t of {L.tonne_limit} t · {L.active_holds} truck(s) on hold
       </div>
     </div>
   );
@@ -212,41 +312,45 @@ function RunDetail({ id }: { id: number }) {
   const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = () => {
     gateApi.simRun(id).then(setRun).catch((e) => setError(e.message));
     gateApi
       .movements({ source_prefix: `sim:${id}:` })
       .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
       .catch(() => {});
-  }, [id]);
+  };
+  useEffect(load, [id]);
+  const running = run != null && run.finished_at == null;
+  useEffect(() => {  // follow the run while it is going
+    if (!running) return;
+    const t = setInterval(load, POLL_MS);
+    return () => clearInterval(t);
+  }, [running, id]);
 
   const breakdown = useMemo(() => {
     const decisive: Record<string, number> = {};
-    const supporting: Record<string, number> = {};
     for (const s of run?.results ?? []) {
-      if (s.kind !== "tamper") continue;
-      if (isTripResult(s)) {
-        for (const c of s.actual.caught_by) {
-          const bucket = s.expected.alerts.includes(c) ? decisive : supporting;
-          bucket[c] = (bucket[c] ?? 0) + 1;
-        }
-        continue;
-      }
-      const main = decisiveCheck(s.actual.result, s.actual.caught_by);
-      if (main) decisive[main] = (decisive[main] ?? 0) + 1;
-      for (const c of s.actual.caught_by) if (c !== main) supporting[c] = (supporting[c] ?? 0) + 1;
+      if (s.kind !== "tamper" || !isTripResult(s)) continue;
+      for (const c of s.actual.caught_by) if (s.expected.alerts.includes(c)) decisive[c] = (decisive[c] ?? 0) + 1;
     }
-    return { decisive, supporting };
+    return decisive;
   }, [run]);
 
-  if (error) return <ErrorNote error={error} />;
+  if (error)
+    return (
+      <>
+        <p><Link className="back-link" to="/scenario-runs"><LuArrowLeft /> Scenario runs</Link></p>
+        <ErrorNote
+          error={error === "Run not found" ? `Run #${id} no longer exists: the runs were cleared. Open a current run from the list.` : error}
+        />
+      </>
+    );
   if (!run) return <p className="muted">Loading…</p>;
 
   const missed = run.tamper_total - run.tamper_caught;
-  const trips = run.results.length > 0 && isTripResult(run.results[0]);
-  const name = (c: string) => (trips ? c : label(c));
   const tripResults = run.results.filter(isTripResult);
-  const singleResults = run.results.filter((r): r is SingleScenarioResult => !isTripResult(r));
+  const edgeResults = run.results.filter((r): r is EdgeScenarioResult => !isTripResult(r));
+  const officer = run.results.filter((r) => r.kind === "officer");
 
   return (
     <>
@@ -255,45 +359,40 @@ function RunDetail({ id }: { id: number }) {
         <div>
           <h1>Run #{run.id} · {run.suite}</h1>
           <p className="muted">
-            {trips ? "Full-trip stories (entry, pass, exit)" : "Identify only"} · identify mode {run.identify_mode} ·{" "}
             {formatDateTime(run.started_at)}
+            {running && <> · <LuLoader2 className="spin" /> running, {run.results.length} stories done</>}
           </p>
         </div>
       </div>
 
       <div className="stats stats-6">
-        <Tile label={trips ? "Stories passed" : "Scenarios passed"} value={run.passed} total={run.total}
-              tone={run.passed === run.total ? "ok" : "bad"} />
-        <Tile label={trips ? "Honest stories" : "Honest trips"} value={run.honest_total} />
-        <Tile label={trips ? "Cheat stories" : "Tampering cases"} value={run.tamper_total} />
-        <Tile label="Tampering caught" value={run.tamper_caught} total={run.tamper_total}
-              tone={missed === 0 ? "ok" : "bad"} />
-        <Tile label="Tampering missed" value={missed} tone={missed === 0 ? "ok" : "bad"} />
+        <Tile label="Stories passed" value={run.passed} total={run.total} tone={run.passed === run.total ? "ok" : "bad"} />
+        <Tile label="Cheat stories" value={run.tamper_total} />
+        <Tile label="Cheats caught" value={run.tamper_caught} total={run.tamper_total} tone={missed === 0 ? "ok" : "bad"} />
+        <Tile label="Honest stories" value={run.honest_total} />
         <Tile label="False alarms" value={run.false_alarms} total={run.honest_total}
               tone={run.false_alarms === 0 ? "ok" : "bad"} />
+        <Tile label="Officer stories" value={officer.filter((r) => r.pass).length} total={officer.length}
+              tone={officer.every((r) => r.pass) ? "ok" : "bad"} />
       </div>
 
       <div className="card">
-        <header className="card-head">
-          <h3>{trips ? "Caught by: which alert exposed each trick" : "Caught by: which check did the work"}</h3>
-        </header>
-        <div className="breakdown">
-          {Object.entries(breakdown.decisive).map(([c, n]) => (
-            <span key={c} className="chip chip-main">{name(c)} <strong>{n}</strong></span>
-          ))}
-          {Object.keys(breakdown.decisive).length === 0 && <span className="muted">No tampering caught.</span>}
-        </div>
-        {Object.keys(breakdown.supporting).length > 0 && (
-          <div className="breakdown">
-            <span className="muted small">Supporting evidence:</span>
-            {Object.entries(breakdown.supporting).map(([c, n]) => (
-              <span key={c} className="chip">{name(c)} <strong>{n}</strong></span>
-            ))}
-          </div>
-        )}
+        <header className="card-head"><h3>By threat</h3></header>
+        <CategoryGrid results={run.results} />
       </div>
 
-      {trips ? (
+      {Object.keys(breakdown).length > 0 && (
+        <div className="card">
+          <header className="card-head"><h3>Which alert exposed each cheat</h3></header>
+          <div className="breakdown">
+            {Object.entries(breakdown).map(([c, n]) => (
+              <span key={c} className="chip chip-main">{c} <strong>{n}</strong></span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tripResults.length > 0 && (
         <table className="table">
           <thead>
             <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Result</th></tr>
@@ -304,8 +403,12 @@ function RunDetail({ id }: { id: number }) {
                 <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
                   <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
                   <td className="nowrap">{s.id}</td>
-                  <td>{s.name}</td>
-                  <td><span className={`badge ${s.kind === "honest" ? "neutral" : "warn"}`}>{s.kind === "honest" ? "Honest" : "Cheat"}</span></td>
+                  <td>
+                    <div className="td-name">
+                      {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
+                    </div>
+                  </td>
+                  <td><KindBadge kind={s.kind} /></td>
                   <td>{s.events.length}</td>
                   <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
                   <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
@@ -321,37 +424,36 @@ function RunDetail({ id }: { id: number }) {
             ))}
           </tbody>
         </table>
-      ) : (
+      )}
+
+      {edgeResults.length > 0 && (
         <table className="table">
           <thead>
-            <tr>
-              <th /><th>#</th><th>Scenario</th><th>Type</th><th>Expected</th><th>Actual</th><th>Caught by</th><th>Result</th>
-            </tr>
+            <tr><th /><th>#</th><th>Case</th><th>Type</th><th>What happened</th><th>Result</th></tr>
           </thead>
           <tbody>
-            {singleResults.map((s) => {
-              const main = decisiveCheck(s.actual.result, s.actual.caught_by);
-              return (
-                <Fragment key={s.id}>
-                  <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
-                    <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
-                    <td className="nowrap">{s.id}</td>
-                    <td>{s.name}</td>
-                    <td><span className={`badge ${s.kind === "honest" ? "neutral" : "warn"}`}>{s.kind === "honest" ? "Honest" : "Tamper"}</span></td>
-                    <td><ResultBadge result={s.expected.result} /></td>
-                    <td><ResultBadge result={s.actual.result} /></td>
-                    <td className="small">{main ? <strong>{label(main)}</strong> : "—"}</td>
-                    <td><PassTag pass={s.pass} /></td>
+            {edgeResults.map((s) => (
+              <Fragment key={s.id}>
+                <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
+                  <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
+                  <td className="nowrap">{s.id}</td>
+                  <td>
+                    <div className="td-name">
+                      {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
+                    </div>
+                  </td>
+                  <td><KindBadge kind={s.kind} /></td>
+                  <td className="small mono">{s.actual.result ?? "—"}</td>
+                  <td><PassTag pass={s.pass} /></td>
+                </tr>
+                {open === s.id && (
+                  <tr className="detail-row">
+                    <td />
+                    <td colSpan={5}><EdgeExpanded s={s} /></td>
                   </tr>
-                  {open === s.id && (
-                    <tr className="detail-row">
-                      <td />
-                      <td colSpan={7}><ScenarioExpanded s={s} movement={movements[s.movement_id]} /></td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
+                )}
+              </Fragment>
+            ))}
           </tbody>
         </table>
       )}
