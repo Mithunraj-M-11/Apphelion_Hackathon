@@ -8,17 +8,16 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
 from app.deps import acting_officer
-from app.models import (Alert, EmergencyMovement, EventLog, Movement, Officer, Permit, TripSession, TruckHold,
-                        VehicleQuota, VendorReport)
+from app.models import Movement, Officer, Permit
 from app.schemas import (GateDecisionOut, GateEventIn, MovementOut, OfficerActionIn, PassFull, PassSummary,
                          TripCheckOut, TripSessionOut)
-from app.services import logbus, trip
+from app.services import cleanup, logbus, trip
 from app.services.identify import Reading, describe, identify
 from app.services.logbus import LogLine
 
@@ -157,28 +156,7 @@ def officer_exit(movement_id: int, body: OfficerActionIn, db: Session = Depends(
 def clear_walkthrough_history(db: Session = Depends(get_db)):
     """Gate console only: delete every Gate console session (its permits, gate events, passes, holds, alerts and
     log lines) so a demo starts from a clean slate. Real gate data, scenario runs and site runs are not touched."""
-    like = f"{WALKTHROUGH_PREFIX}%"
-    permits = list(db.scalars(select(Permit.id).where(Permit.source.like(like))))
-    moves = select(Movement.id).where(or_(Movement.source.like(like), Movement.permit_id.in_(permits)))
-    sessions = select(TripSession.id).where(or_(TripSession.source.like(like), TripSession.permit_id.in_(permits)))
-    move_ids, session_ids = list(db.scalars(moves)), list(db.scalars(sessions))
-    db.execute(update(Movement).where(Movement.id.in_(move_ids)).values(pass_id=None))
-    db.execute(update(TripSession).where(TripSession.id.in_(session_ids))
-               .values(entry_movement_id=None, exit_movement_id=None))
-    counts = {
-        "alerts": db.execute(delete(Alert).where(or_(Alert.permit_id.in_(permits), Alert.movement_id.in_(move_ids),
-                                                     Alert.pass_id.in_(session_ids)))).rowcount,
-        "holds": db.execute(delete(TruckHold).where(or_(TruckHold.permit_id.in_(permits),
-                                                        TruckHold.movement_id.in_(move_ids)))).rowcount,
-        "logs": db.execute(delete(EventLog).where(or_(EventLog.source.like(like),
-                                                      EventLog.movement_id.in_(move_ids)))).rowcount,
-    }
-    db.execute(delete(VendorReport).where(VendorReport.permit_id.in_(permits)))
-    db.execute(delete(VehicleQuota).where(VehicleQuota.permit_id.in_(permits)))
-    db.execute(delete(EmergencyMovement).where(EmergencyMovement.movement_id.in_(move_ids)))
-    counts["passes"] = db.execute(delete(TripSession).where(TripSession.id.in_(session_ids))).rowcount
-    counts["gate_events"] = db.execute(delete(Movement).where(Movement.id.in_(move_ids))).rowcount
-    counts["permits"] = db.execute(delete(Permit).where(Permit.source.like(like))).rowcount
+    counts = cleanup.clear_source(db, WALKTHROUGH_PREFIX)
     db.commit()
     return counts
 

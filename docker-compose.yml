@@ -28,6 +28,7 @@ services:
       - ./backend/app:/app/app                 # live reload while developing
       - ./backend/migrations:/app/migrations   # new migrations appear on the host
       - ./backend/tests:/app/tests
+      - ./simulator:/simulator:ro            # scenario runs started from the dashboard
       - uploads:/app/data/uploads              # optional truck photos (persistent)
     depends_on:
       db:
@@ -46,7 +47,7 @@ services:
       - backend
 
   # Scenario simulator (fake gate pole). Not started by `up`; run on demand:
-  #   docker compose run --rm simulator identify_basic
+  #   docker compose run --rm simulator gate_cheats   (or start it from the Scenario runs page)
   simulator:
     build: ./simulator
     profiles: ["tools"]

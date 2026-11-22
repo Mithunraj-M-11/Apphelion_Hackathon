@@ -1,6 +1,6 @@
-"""GB RFID / trip-authorization / edge suite runner (trip_auth_full), called from run.py.
+"""Edge resilience suite runner (edge_resilience), called from run.py.
 
-Usage:  python run.py trip_auth_full
+Usage:  python run.py edge_resilience
 
 Runs against the unified gate pipeline. Each run uses its own permit (source sim:<run>), with working hours
 covering the whole day and events time-stamped inside them, so the suite never touches the real permit.
@@ -432,7 +432,16 @@ def execute_extended_scenario(
         "id": scn_id,
         "name": scn["name"],
         "kind": scn.get("kind", "honest"),
+        "category": scn.get("category"),
         "why": scn.get("why"),
+        "sheet": {  # the scenario sheet (dashboard popup): scenario, the one step, verdict
+            "scenario": {"suite": "edge_resilience", "id": scn_id, "name": scn["name"], "kind": scn.get("kind", "honest"),
+                         "category": scn.get("category"), "why": scn.get("why")},
+            "steps": [{"n": 1, "actor": "edge", "action": scn_type, "expected": exp,
+                       "actual": {"result": actual.get("result")}, "pass": not problems, "problems": problems}],
+            "verdict": {"story_passes": not problems, "problems": problems},
+            "as_written": scn,
+        },
         "readings": {"scenario_type": scn_type},
         "expected": exp,
         "actual": actual,
@@ -489,6 +498,11 @@ def main(suite: str) -> int:
                     "problems": problems,
                 }
             results.append(res)
+
+        # the edge state is site-wide: put it back to normal so the run leaves nothing behind for the Gate console
+        client.post("/api/edge/state", headers={"X-Officer-Id": "1"}, json={
+            "active_authority": "PRIMARY", "primary_status": "ACTIVE", "standby_status": "STANDBY",
+            "wan_connectivity": "ONLINE", "disaster_recovery_mode": False}).raise_for_status()
 
         honest = [r for r in results if r["kind"] == "honest"]
         tamper = [r for r in results if r["kind"] == "tamper"]
