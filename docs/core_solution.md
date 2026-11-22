@@ -581,7 +581,7 @@ simply driving out.
 **Practical notes:** a few seconds per truck; very busy sites need more exit lanes. Installing it needs a contract
 clause (GB's decision). Signage and an emergency release are needed for safety.
 
-**PoC (built):** simulated entry and exit barriers in the gate API, exercised by the simulator (`trip_basic`): entry lifts only when a pass
+**PoC (built):** simulated entry and exit barriers in the gate API, exercised by the simulator (`gate_cheats`): entry lifts only when a pass
 is issued, exit only on a valid pass close; otherwise the barrier stays down with the reason as an alert. A truck that
 breaks through raises a Critical `BARRIER_FORCED`; at the exit it is also counted as an `ILLEGAL_TRIP`.
 

@@ -442,6 +442,18 @@ class SimRunFinish(BaseModel):
     honest_total: int
     false_alarms: int
     results: list[dict]
+    finished: bool = True  # False = progress so far, the run is still going
+
+
+class SimRunStart(BaseModel):
+    suite: str
+
+
+class SimSuiteOut(BaseModel):
+    suite: str
+    title: str
+    description: str
+    stories: int
 
 
 class SimRunOut(ORM):

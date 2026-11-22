@@ -310,17 +310,19 @@ export type Hold = {
 };
 
 /** Identify-only scenario (identify_basic). */
-export type SingleScenarioResult = {
+export type StoryKind = "honest" | "tamper" | "officer";
+/** Edge resilience case (edge_resilience): one edge state change, checked against what it should produce. */
+export type EdgeScenarioResult = {
   id: string;
   name: string;
-  kind: "honest" | "tamper";
+  kind: StoryKind;
+  category?: string | null;
   why: string | null;
-  real_case: string | null;
-  readings: { plate_read: string | null; fastag_read: string | null; radar_length_m: number | null };
-  expected: { result: string; caught_by?: string[]; not_caught_by?: string[] };
-  actual: { result: string; caught_by: string[]; flags: string[]; reasons: string[] };
-  movement_id: number;
-  permit_id?: number;
+  sheet?: Record<string, unknown>; // the scenario sheet: scenario, step, verdict
+  readings: { scenario_type?: string };
+  expected: Record<string, unknown>;
+  actual: { result: string | null; caught_by?: string[]; reasons?: string[] };
+  movement_id: number | null;
   pass: boolean;
   problems: string[];
   format?: undefined;
@@ -336,7 +338,7 @@ export type TripEventExpect = {
 export type TripEventResult = {
   n: number;
   at: string;
-  dir: "IN" | "OUT";
+  dir: "IN" | "OUT" | "OFFICER";
   vehicle: string;
   note: string | null;
   readings: {
@@ -357,18 +359,20 @@ export type TripEventResult = {
     pass: string | null;
     alerts: { code: string; severity: Severity; message: string }[];
   };
-  movement_id: number;
+  movement_id: number | null;
   pass: boolean;
   problems: string[];
 };
-/** Full-trip story (trip_basic). */
+/** Full-trip story (gate_cheats). */
 export type TripScenarioResult = {
   id: string;
   name: string;
-  kind: "honest" | "tamper";
+  kind: StoryKind;
+  category?: string | null;
   why: string | null;
   real_case: string | null;
   format: "trip";
+  sheet?: Record<string, unknown>; // the scenario sheet: scenario, contract, vehicles, steps, verdict
   rules: string | null;
   permit_id: number;
   events: TripEventResult[];
@@ -379,7 +383,8 @@ export type TripScenarioResult = {
   pass: boolean;
   problems: string[];
 };
-export type ScenarioResult = SingleScenarioResult | TripScenarioResult;
+export type ScenarioResult = EdgeScenarioResult | TripScenarioResult;
+export type SimSuite = { suite: string; title: string; description: string; stories: number };
 export const isTripResult = (r: ScenarioResult): r is TripScenarioResult => r.format === "trip";
 
 export type SimRun = {
@@ -403,6 +408,12 @@ export const gateApi = {
     return request<Movement[]>(`/movements${qs.toString() ? `?${qs}` : ""}`);
   },
   simRuns: () => request<SimRun[]>("/sim-runs"),
+  simSuites: () => request<SimSuite[]>("/sim-runs/suites"),
+  /** Start a suite in the background (the backend runs the simulator, which posts gate events like a pole). */
+  startSuite: (suite: string) =>
+    request<{ started: string }>("/sim-runs/start", { method: "POST", body: JSON.stringify({ suite }) }, false),
+  /** Delete every scenario run and its data. Gate console and site runs are not touched. */
+  clearSimRuns: () => request<Record<string, number>>("/sim-runs", { method: "DELETE" }, false),
   simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
   /** What a gate pole sends (no officer: poles are machines). */
   postEvent: (gate: string, body: GateEventIn) =>
