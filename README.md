@@ -67,7 +67,8 @@ reports faithful sensor readings to the backend like a real pole, and checks whe
 Each scenario runs under its own small permit, so scenarios never affect each other or the real permit.
 
 ```bash
-docker compose run --rm simulator trip_basic       # 22 full-trip stories: entry, pass, exit, weight, quota, hours
+docker compose run --rm simulator trip_basic       # 29 full-trip stories: entry, pass, exit, GB sticker, weight, quota, hours
+docker compose run --rm simulator trip_auth_full   # 16 GB RFID sticker / trip-session / edge-recovery cases
 docker compose run --rm simulator identify_basic   # 5 Identify-only cases
 ```
 
@@ -93,10 +94,15 @@ edit them and re-run without rebuilding.
 - **Truck registry** (`/registry`): search and filter trucks, see who is authorised today, open any truck for its
   full detail (identity, FASTag, measurements, documents, ownership, enrollment, photos, change history).
 - **Transporters** (`/transporters`): companies and their drivers.
-- **Gate console** (`/gate-console`): live walkthrough for demos. Describe what physically arrives at the gate
-  (mocked sensors: registered or outside truck, plate shown, FASTag on the windscreen, or pick a preset), press
-  "Truck arrives at gate", and watch the real GB software decide check by check while the server log streams
-  live (Server-Sent Events from `/api/logs/stream`). Each browser tab sees only its own walkthrough.
+- **Gate console** (`/gate-console`): live walkthrough for demos, in entry and exit modes. Describe what physically
+  arrives (truck, plate, FASTag, GB RFID sticker and how its challenge-response answers, load on the weigh pad, the QR
+  shown at exit, whether it breaks through the barrier), or pick a preset; watch the real GB software decide step by
+  step (Identify incl. sticker, Eligibility / Pass check, Measure, Pass / Compare, Barrier), with the signed pass
+  (QR + SMS code), alerts, the session permit's ledger and the live server log. Each browser tab has its own permit.
+- **Trip passes** (`/trip-passes`): every trip session (pass), its status, QR, and the officer resolve (late close).
+- **RFID stickers** (`/rfid-stickers`): issue, replace and revoke the GB stickers.
+- **Trip quotas** (`/trip-quotas`): per-truck allocations, when the contract sets one, and audited top-ups.
+- **Edge & recovery** (`/edge-recovery`): edge failover, WAN state, signed snapshots, emergency movements, reconciliation.
 - **Gate events** (`/gate-events`): every vehicle the poles observed: raw readings, Identify result, barrier,
   pass, alerts, and every step with its reason.
 - **Alerts** (`/alerts`): every alert raised, by severity and source.

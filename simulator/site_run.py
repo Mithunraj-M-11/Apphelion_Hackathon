@@ -41,6 +41,7 @@ class Veh:
     length: float
     empty: float
     rated: float
+    sticker: str | None = None  # GB RFID sticker UID (registered trucks)
 
 
 @dataclass
@@ -81,12 +82,15 @@ class Ev:
     code: str | None = None
     forced: bool = False
     honest: bool = True
+    rfid: str = "genuine"  # what the GB sticker's challenge-response shows: genuine | cloned | ...
     resp: dict | None = None
 
 
 class World:
     def __init__(self, cfg: dict, client: httpx.Client, registry: dict[str, dict]):
         self.cfg = cfg
+        stickers = client.get("/api/rfid-stickers").raise_for_status().json()
+        self.stickers = {x["truck"]["plate"]: x["uid"] for x in stickers if x.get("truck") and x["status"] == "ACTIVE"}
         self.client = client
         self.rng = random.Random(cfg.get("seed", 1))
         self.days: list[date] = []
@@ -110,7 +114,8 @@ class World:
         self.vendor_cum = 0
         self.passes_issued = 0
 
-        authorised = sorted(pl for pl, t in registry.items() if t["authorisation"]["authorised"])
+        authorised = sorted(pl for pl, t in registry.items()  # working trucks: authorised, active GB sticker
+                            if t["authorisation"]["authorised"] and pl in self.stickers)
         self.rng.shuffle(authorised)
         size = min(cfg.get("fleet", 12), len(authorised))
         self.fleet = [self.veh(registry[pl]) for pl in authorised[:size]]
@@ -119,9 +124,9 @@ class World:
         self.outsider_i = 0
 
     # ---- helpers
-    @staticmethod
-    def veh(t: dict) -> Veh:
-        return Veh(t["plate"], t["plate"], t["fastag_tag_id"], t["length_m"], t["empty_weight_t"], t["rated_capacity_t"])
+    def veh(self, t: dict) -> Veh:
+        return Veh(t["plate"], t["plate"], t["fastag_tag_id"], t["length_m"], t["empty_weight_t"], t["rated_capacity_t"],
+                   self.stickers.get(t["plate"]))
 
     def outsider(self) -> Veh:
         i = self.outsider_i
@@ -262,7 +267,7 @@ def _refused_at_entry(w: World, c: Cheat, ev: Ev, r: dict, v: Veh):
         return
     if c.on_refusal == "force":
         out = Ev(ev.at + timedelta(minutes=load_min), "OUT", v, w.w(v, load_t), forced=True, honest=False,
-                 plate_shown=ev.plate_shown, tag=ev.tag)
+                 plate_shown=ev.plate_shown, tag=ev.tag, rfid=ev.rfid)
         r2 = yield out
         c.saw(r2, out.at)
         w.trip(out.at, v, load_t, "cheat", True, c.type)
@@ -291,8 +296,10 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         if down(r):
             return w.drop(c, f"real truck refused ({[a['code'] for a in r['alerts']]})")
         p = r["issued_pass"]
-        twin = Veh(f"clone of {v.plate}", v.plate, v.tag, round(v.length + 0.1, 2), 12.0, v.rated)
-        ev = Ev(start + mins(10, 25), "IN", twin, w.w(twin, 0), forced=(on_refusal == "force"), honest=False)
+        # same plate, cloned FASTag, same size, and a copied sticker UID: it cannot answer the challenge-response
+        twin = Veh(f"clone of {v.plate}", v.plate, v.tag, round(v.length + 0.1, 2), 12.0, v.rated, v.sticker)
+        ev = Ev(start + mins(10, 25), "IN", twin, w.w(twin, 0), forced=(on_refusal == "force"), honest=False,
+                rfid="cloned")
         r = yield ev
         c.saw(r, ev.at)
         yield from _refused_at_entry(w, c, ev, r, twin)
@@ -466,7 +473,7 @@ def post(w: World, permit: dict, source: str, ev: Ev) -> dict:
     tag = v.tag if ev.tag == "own" else ev.tag
     body = {"direction": ev.dir, "plate_read": plate, "fastag_read": tag, "radar_length_m": v.length,
             "weight_t": ev.weight, "observed_at": ev.at.isoformat(), "barrier_forced": ev.forced,
-            "permit_id": permit["id"], "source": source}
+            "permit_id": permit["id"], "source": source, "rfid_sticker_uid": v.sticker, "rfid_sim_mode": ev.rfid}
     if ev.token:
         body["pass_token"] = ev.token
     if ev.code:

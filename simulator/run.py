@@ -3,6 +3,7 @@
 Usage:  python run.py <suite>        e.g. identify_basic -> scenarios/identify_basic.yaml
                                           trip_basic     -> scenarios/trip_basic.yaml
         python run.py site <scenario>  a whole contract period -> scenarios/site/<scenario>.yaml (see site_run.py)
+        python run.py trip_auth_full   GB RFID sticker / trip-session / edge-recovery suite (see auth_run.py)
 
 Two scenario formats:
 - single (identify_basic): one gate reading per scenario, judged on the Identify result.
@@ -19,6 +20,7 @@ import os
 import sys
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import httpx
 import yaml
@@ -36,10 +38,34 @@ class ScenarioError(Exception):
     pass
 
 
+STICKERS: dict[str, str] = {}  # GB RFID sticker UID by plate, loaded per run
+
+
 def load_registry(client: httpx.Client) -> dict[str, dict]:
     """Full detail of every registered truck, keyed by plate (read-only)."""
     trucks = client.get("/api/trucks").raise_for_status().json()
     return {t["plate"]: client.get(f"/api/trucks/{t['id']}").raise_for_status().json() for t in trucks}
+
+
+def load_stickers(client: httpx.Client) -> dict[str, str]:
+    """GB RFID sticker UID keyed by truck plate (read-only)."""
+    stickers = client.get("/api/rfid-stickers").raise_for_status().json()
+    return {s["truck"]["plate"]: s["uid"] for s in stickers if s.get("truck") and s.get("status") != "REPLACED"}
+
+
+def sticker_reading(ev: dict, vehicle: dict, stickers: dict[str, str], sid: str) -> dict:
+    """What the GB RFID reader reports: the vehicle's own sticker (registered trucks), none, or one taken from
+    another truck; `rfid` = genuine | cloned | revoked | unknown_damaged (what the challenge-response shows)."""
+    spec = ev.get("sticker", "own")
+    if spec == "none":
+        uid = None
+    elif spec == "own":
+        uid = stickers.get(vehicle["plate"]) if vehicle.get("registered") else None
+    else:
+        uid = stickers.get(spec["from"])
+        if uid is None:
+            raise ScenarioError(f"{sid}: no GB sticker for {spec['from']}")
+    return {"rfid_sticker_uid": uid, "rfid_sim_mode": ev.get("rfid", "genuine")}
 
 
 def create_permit(client: httpx.Client, label: str, source: str, overrides: dict | None) -> dict:
@@ -58,7 +84,7 @@ def vehicle_of(spec, sid: str, registry: dict[str, dict], rogues: dict[str, dict
         if t is None:
             raise ScenarioError(f"{sid}: registered truck {spec['registered']} not found in the registry")
         return {"label": t["plate"], "plate": t["plate"], "tag": t["fastag_tag_id"], "length": t["length_m"],
-                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"]}
+                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"], "registered": True}
     r = rogues.get(spec["rogue"])
     if r is None:
         raise ScenarioError(f"{sid}: unknown rogue vehicle {spec['rogue']}")
@@ -88,15 +114,15 @@ def judge_single(scn: dict, movement: dict) -> tuple[bool, list[str]]:
     problems = []
     if movement["result"] != exp["result"]:
         problems.append(f"result {movement['result']} != expected {exp['result']}")
-    caught = set(movement["caught_by"])
+    caught = set(movement.get("caught_by", []))
     missing = [c for c in exp.get("caught_by", []) if c not in caught]
     if missing:
         problems.append(f"expected caught_by {missing} not present")
     extra = [c for c in exp.get("not_caught_by", []) if c in caught]
     if extra:
         problems.append(f"should NOT be caught by {extra}")
-    if scn["kind"] == "honest" and (movement["caught_by"] or movement["flags"]):
-        problems.append(f"false alarm: caught_by={movement['caught_by']} flags={movement['flags']}")
+    if scn.get("kind") == "honest" and (movement.get("caught_by") or movement.get("flags")):
+        problems.append(f"false alarm: caught_by={movement.get('caught_by')} flags={movement.get('flags')}")
     return not problems, problems
 
 
@@ -110,7 +136,8 @@ def run_single(client, spec, run, registry) -> tuple[list[dict], dict]:
         vehicle = vehicle_of(scn["physical"]["vehicle"], scn["id"], registry, rogues)
         reading = identity_readings(scn["physical"], scn["id"], vehicle, registry)
         movement = client.post(f"/api/gates/{gate}/events", json={
-            "direction": direction, **reading, "source": source, "permit_id": permit["id"],
+            "direction": direction, **reading, **sticker_reading(scn["physical"], vehicle, STICKERS, scn["id"]),
+            "source": source, "permit_id": permit["id"],
             "weight_t": round(vehicle["empty"], 2),
         }).raise_for_status().json()
         ok, problems = judge_single(scn, movement)
@@ -219,7 +246,8 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             hh, mm = map(int, ev["at"].split(":"))
             observed = datetime.combine(today, time(hh, mm), tzinfo=IST)
             load = ev.get("load", 0 if ev["dir"] == "IN" else "90%")
-            body = {"direction": ev["dir"], **reading, "weight_t": weight_of(load, vehicle),
+            body = {"direction": ev["dir"], **reading, **sticker_reading(ev, vehicle, STICKERS, sid),
+                    "weight_t": weight_of(load, vehicle),
                     "observed_at": observed.isoformat(), "barrier_forced": bool(ev.get("forces")),
                     "permit_id": permit["id"], "source": source}
             shown = None
@@ -280,9 +308,14 @@ def main(suite: str) -> int:
         return 2
     spec = yaml.safe_load(path.read_text(encoding="utf-8"))
     fmt = spec.get("format", "single")
+    if any("type" in scn for scn in spec.get("scenarios", [])):  # GB RFID / edge suite (trip_auth_full)
+        import auth_run
+
+        return auth_run.main(suite)
 
     with httpx.Client(base_url=BACKEND, timeout=30) as client:
         registry = load_registry(client)
+        STICKERS.update(load_stickers(client))
         run = client.post("/api/sim-runs", json={"suite": suite}).raise_for_status().json()
         print(f"\nSiteWatch simulator | suite: {suite} ({fmt}) | run #{run['id']} | "
               f"identify mode: {run['identify_mode']}")
@@ -302,9 +335,11 @@ def main(suite: str) -> int:
         for p in r["problems"]:
             print(f"       ! {p}")
     print("-" * (width + 60))
-    print(f" Scenarios passed {summary['passed']}/{summary['total']}   |   "
-          f"Tampering caught {summary['tamper_caught']}/{summary['tamper_total']}   |   "
-          f"False alarms {summary['false_alarms']}/{summary['honest_total']}\n")
+    print(
+        f" Scenarios passed {summary['passed']}/{summary['total']}   |   "
+        f"Tampering caught {summary['tamper_caught']}/{summary['tamper_total']}   |   "
+        f"False alarms {summary['false_alarms']}/{summary['honest_total']}\n"
+    )
     return 0 if summary["passed"] == summary["total"] else 1
 
 
@@ -324,5 +359,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv[1]))
     except ScenarioError as exc:
-        print(f"Scenario error: {exc}")
-        sys.exit(2)
+        print(f"Scenario error: {exc}", file=sys.stderr)
+        sys.exit(1)

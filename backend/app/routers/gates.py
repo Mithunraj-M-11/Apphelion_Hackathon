@@ -1,4 +1,8 @@
-"""Gate pole API: poles (real or simulated) post what they observe; the GB server decides."""
+"""Gate pole API: poles (real or simulated) post what they observe; the GB server decides.
+
+One pipeline for every gate event (and for the officer's exit verification): Identify (plate + FASTag + length +
+GB RFID sticker), then the entry or exit trip pipeline in services/trip.py.
+"""
 
 from datetime import datetime, timezone
 from typing import Literal
@@ -10,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Movement, Permit
-from app.schemas import GateDecisionOut, GateEventIn, MovementOut, PassFull, PassSummary
+from app.schemas import GateDecisionOut, GateEventIn, MovementOut, PassFull, PassSummary, TripCheckOut, TripSessionOut
 from app.services import logbus, trip
 from app.services.identify import Reading, describe, identify
 from app.services.logbus import LogLine
@@ -27,14 +31,16 @@ def _pole_line(gate: str, body: GateEventIn) -> LogLine:
     tag_txt = f"{tag[:8]}…{tag[-4:]}" if tag and len(tag) > 12 else (tag or "none")
     length = f"{body.radar_length_m:.2f} m" if body.radar_length_m is not None else "no length"
     weight = f"{body.weight_t:.2f} t" if body.weight_t is not None else "no weight"
-    shown = " · QR shown" if body.pass_token else " · SMS code given" if body.pass_code else ""
+    rfid = body.rfid_sticker_uid or "none"
+    rfid_mode = f" ({body.rfid_sim_mode})" if body.rfid_sticker_uid and body.rfid_sim_mode not in (None, "genuine") else ""
+    shown = " · QR shown" if (body.pass_token or body.qr_token) else " · SMS code given" if body.pass_code else ""
     forced = " · BARRIER IMPACT" if body.barrier_forced else ""
     return LogLine(
         "POLE", "INFO",
         f"{gate} {body.direction}: vehicle at the barrier. Plate {body.plate_read or 'none'} · FASTag {tag_txt} · "
-        f"radar {length} · weigh pad {weight}{shown}{forced}",
+        f"GB sticker {rfid}{rfid_mode} · radar {length} · weigh pad {weight}{shown}{forced}",
         {"plate_read": body.plate_read, "fastag_read": body.fastag_read, "radar_length_m": body.radar_length_m,
-         "weight_t": body.weight_t},
+         "weight_t": body.weight_t, "rfid_sticker_uid": body.rfid_sticker_uid, "rfid_sim_mode": body.rfid_sim_mode},
     )
 
 
@@ -52,25 +58,26 @@ def resolve_permit(db: Session, permit_id: int | None) -> Permit:
     return permit
 
 
-@router.post("/gates/{gate}/events", response_model=GateDecisionOut, status_code=201)
-def gate_event(gate: str, body: GateEventIn, db: Session = Depends(get_db)):
-    """A vehicle arrived at a gate. Identify it, then run the entry or exit pipeline (pass, weight, quota,
-    barrier), store the movement, alerts and log lines, and stream the log lines live."""
+def process_gate_event(db: Session, gate: str, body: GateEventIn) -> GateDecisionOut:
+    """Identify the vehicle, run the entry or exit pipeline, store movement + alerts + log lines, stream the logs."""
     gate = gate.upper()
     permit = resolve_permit(db, body.permit_id)
+    observed = body.observed_at or datetime.now(timezone.utc)
     reading = Reading(body.plate_read, body.fastag_read, body.radar_length_m)
     try:
         decision = identify(db, reading, mode=settings.identify_mode)
     except ValueError as exc:
         raise HTTPException(500, str(exc)) from exc
+    trip.sweep_expired(db, permit, observed)  # P10 at the pole's event time
     movement = Movement(
         gate=gate,
         direction=body.direction,
-        observed_at=body.observed_at or datetime.now(timezone.utc),
+        observed_at=observed,
         plate_read=body.plate_read,
         plate_normalised=decision.plate_normalised,
         fastag_read=body.fastag_read,
         radar_length_m=body.radar_length_m,
+        rfid_sticker_uid=body.rfid_sticker_uid,
         result=decision.result,
         truck_id=decision.truck.id if decision.truck else None,
         identify_mode=settings.identify_mode,
@@ -85,8 +92,9 @@ def gate_event(gate: str, body: GateEventIn, db: Session = Depends(get_db)):
     )
     db.add(movement)
     db.flush()
-    t = trip.Trip(db, permit, movement, decision, decision.involved, pass_token=body.pass_token,
-                  pass_code=body.pass_code)
+    t = trip.Trip(db, permit, movement, decision, decision.involved, pass_token=body.pass_token or body.qr_token,
+                  pass_code=body.pass_code, sticker_uid=body.rfid_sticker_uid,
+                  rfid_mode=body.rfid_sim_mode or "genuine")
     trip.process(t)
     db.flush()
     rows = logbus.save(db, [_pole_line(gate, body), *describe(decision), *t.lines], source=body.source,
@@ -94,12 +102,27 @@ def gate_event(gate: str, body: GateEventIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(movement)
     logbus.publish(rows)
+
     out = GateDecisionOut.model_validate(movement)
+    out.trip_checks = [TripCheckOut(**c) for c in t.trip_checks()]
+    out.trip_decision = t.trip_decision
+    if t.session is not None:
+        db.refresh(t.session)
+        out.trip_session = TripSessionOut.model_validate(t.session)
+    if t.quota is not None:
+        out.quota_remaining, out.quota_max = t.quota.remaining_trips, t.quota.max_trips
     if t.issued is not None:
-        p = t.issued
-        out.issued_pass = PassFull.model_validate({**PassSummary.model_validate(p).model_dump(), "token": p.token,
-                                                   "sms_code": p.sms_code, "plate": p.truck.plate})
+        s = t.issued
+        out.issued_pass = PassFull.model_validate({**PassSummary.model_validate(s).model_dump(), "token": s.token,
+                                                   "sms_code": s.sms_code, "plate": s.truck.plate})
     return out
+
+
+@router.post("/gates/{gate}/events", response_model=GateDecisionOut, status_code=201)
+def gate_event(gate: str, body: GateEventIn, db: Session = Depends(get_db)):
+    """A vehicle arrived at a gate barrier: identify it (plate + FASTag + length + GB RFID sticker), then run the
+    entry or exit pipeline (pass, weight, quota, barrier)."""
+    return process_gate_event(db, gate, body)
 
 
 @router.get("/movements", response_model=list[MovementOut])

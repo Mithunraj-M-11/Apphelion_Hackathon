@@ -305,6 +305,12 @@ For a clone of the **same size and model** (length check can't tell them apart):
 → The pass catches **every clone that produces extra trips**. Axle and chassis checks (S3) become **nice-to-have**
 (confirming it's the exact physical truck), not required for limit enforcement.
 
+**GB RFID sticker (added 2026-11-22, built):** every truck also carries a GB-issued RFID sticker that answers a
+**challenge-response** with a secret key. A copied plate and a cloned FASTag can't answer it, so the "taking turns"
+row above is closed too: a perfect clone is refused at the entry barrier even while the real truck is away. The
+sticker must belong to the truck identified by plate + FASTag + length, be active (the GB can revoke it), and be the
+same sticker at exit as at entry. A missing or damaged sticker is refused for now (relaxations later).
+
 ### 2.8 Independence
 Registry: GB-built + VAHAN check · Camera, radar: GB pole · Reading and matching: GB server.
 
@@ -415,6 +421,12 @@ pass. All good → **barrier lifts**, pass **CLOSED** with **net tonnes**, trip 
 ### Offline mode
 If the pole loses its server link, it issues and checks passes itself from a small **pre-allocated quota**
 (e.g. 5 passes) and syncs later, so it can't over-issue.
+
+**Built (2026-11-22):** a primary and a standby edge computer at the site with failover, local operation when the
+uplink is down (events queued in a sync outbox), signed recovery snapshots, officer-authorised emergency movements
+when both are down, and reconciliation afterwards. Every one of these raises an alert (silence is suspicious), and
+emergency movements stay provisional in the ledger until reconciled. Passes are Ed25519-signed, so a pole can check
+them offline with only the public key.
 
 ### PoC
 - **Backend pass service** with the rules above; QR codes **really generated and signed** (Python `qrcode` + Ed25519).

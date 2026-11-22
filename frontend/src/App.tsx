@@ -1,18 +1,38 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
-import { LuBellRing, LuBuilding2, LuCalendarClock, LuFlaskConical, LuLayoutDashboard, LuMenu, LuMonitorPlay, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
+import {
+  LuBellRing,
+  LuBuilding2,
+  LuCalendarClock,
+  LuFlaskConical,
+  LuGauge,
+  LuLayers,
+  LuLayoutDashboard,
+  LuMenu,
+  LuMonitorPlay,
+  LuRadar,
+  LuScanLine,
+  LuShieldCheck,
+  LuTag,
+  LuTruck,
+  LuWorkflow,
+} from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
 import Alerts from "./pages/Alerts";
+import EdgeRecovery from "./pages/EdgeRecovery";
 import GateConsole from "./pages/GateConsole";
 import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
+import RfidStickers from "./pages/RfidStickers";
 import SimRuns from "./pages/SimRuns";
 import SiteRuns from "./pages/SiteRuns";
 import SolutionFlow from "./pages/SolutionFlow";
+import Transporters from "./pages/Transporters";
+import TripPasses from "./pages/TripPasses";
+import TripQuotas from "./pages/TripQuotas";
 import TruckDetail from "./pages/TruckDetail";
 import TruckForm from "./pages/TruckForm";
-import Transporters from "./pages/Transporters";
 
 const COLLAPSE_KEY = "sitewatch.navCollapsed";
 
@@ -21,6 +41,10 @@ const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/registry", label: "Truck registry", Icon: LuTruck },
   { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
   { to: "/gate-console", label: "Gate console", Icon: LuMonitorPlay },
+  { to: "/trip-passes", label: "Trip passes", Icon: LuLayers },
+  { to: "/rfid-stickers", label: "RFID stickers", Icon: LuTag },
+  { to: "/trip-quotas", label: "Trip quotas", Icon: LuGauge },
+  { to: "/edge-recovery", label: "Edge & recovery", Icon: LuShieldCheck },
   { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
   { to: "/alerts", label: "Alerts", Icon: LuBellRing },
   { to: "/scenario-runs", label: "Scenario runs", Icon: LuFlaskConical },
@@ -76,12 +100,18 @@ function Layout() {
   return (
     <div className={`shell${collapsed ? " nav-collapsed" : ""}`}>
       <header className="topbar">
-        <button className="nav-toggle" onClick={toggle} aria-label={collapsed ? "Expand menu" : "Collapse menu"}
-                title={collapsed ? "Expand menu" : "Collapse menu"}>
+        <button
+          className="nav-toggle"
+          onClick={toggle}
+          aria-label={collapsed ? "Expand menu" : "Collapse menu"}
+          title={collapsed ? "Expand menu" : "Collapse menu"}
+        >
           <LuMenu />
         </button>
         <div className="brand">
-          <span className="brand-mark"><LuRadar /></span>
+          <span className="brand-mark">
+            <LuRadar />
+          </span>
           <div>
             <div className="brand-title">SiteWatch</div>
             <div className="brand-sub">Independent site monitoring · Governing Body</div>
@@ -112,6 +142,10 @@ function Layout() {
           <Route path="/transporters" element={<Transporters />} />
           <Route path="/solution" element={<SolutionFlow />} />
           <Route path="/gate-console" element={<GateConsole />} />
+          <Route path="/trip-passes" element={<TripPasses />} />
+          <Route path="/rfid-stickers" element={<RfidStickers />} />
+          <Route path="/trip-quotas" element={<TripQuotas />} />
+          <Route path="/edge-recovery" element={<EdgeRecovery />} />
           <Route path="/gate-events" element={<GateEvents />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/scenario-runs" element={<SimRuns />} />

@@ -28,6 +28,7 @@ class Movement(Base):
     plate_normalised: Mapped[str | None] = mapped_column(String(30))
     fastag_read: Mapped[str | None] = mapped_column(String(40))
     radar_length_m: Mapped[float | None] = mapped_column(Float)
+    rfid_sticker_uid: Mapped[str | None] = mapped_column(String(50))  # GB RFID sticker read
 
     # Identify decision
     result: Mapped[str] = mapped_column(String(20), index=True)
@@ -43,7 +44,9 @@ class Movement(Base):
     # Trip decision (entry: pass issued or refused; exit: pass closed or refused)
     permit_id: Mapped[int | None] = mapped_column(ForeignKey("permits.id"), index=True)
     weight_t: Mapped[float | None] = mapped_column(Float)  # GB weigh pad reading
-    pass_id: Mapped[int | None] = mapped_column(ForeignKey("passes.id", use_alter=True, name="fk_movements_pass_id"))
+    pass_id: Mapped[int | None] = mapped_column(
+        ForeignKey("trip_sessions.id", use_alter=True, name="fk_movements_pass_id")
+    )  # the trip session (pass) issued or closed by this movement
     decision: Mapped[str | None] = mapped_column(String(10))  # ALLOWED | REFUSED
     barrier: Mapped[str | None] = mapped_column(String(5))  # up | down
     barrier_forced: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -52,7 +55,7 @@ class Movement(Base):
     steps: Mapped[list | None] = mapped_column(JSONB)  # [{name, status, items: [{label, status, detail}]}]
 
     truck: Mapped[Truck | None] = relationship()
-    pass_: Mapped["Pass | None"] = relationship(foreign_keys=[pass_id])  # noqa: F821
+    pass_: Mapped["TripSession | None"] = relationship(foreign_keys=[pass_id])  # noqa: F821
     alerts: Mapped[list["Alert"]] = relationship(  # noqa: F821
         primaryjoin="Movement.id == Alert.movement_id", foreign_keys="Alert.movement_id", order_by="Alert.id",
         viewonly=True,

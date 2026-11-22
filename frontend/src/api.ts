@@ -143,10 +143,58 @@ export const api = {
     form.append("file", file);
     return request<Truck>(`/trucks/${id}/photos`, { method: "POST", body: form });
   },
+
+  // ---------- RFID Stickers ----------
+  rfidStickers: (params: { status?: string; truck_id?: number } = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v != null) as [string, string][]
+    );
+    return request<RfidSticker[]>(`/rfid-stickers${qs.toString() ? `?${qs}` : ""}`);
+  },
+  rfidSticker: (id: number) => request<RfidSticker>(`/rfid-stickers/${id}`),
+  issueSticker: (data: { truck_id: number; uid: string; validity_days?: number }) =>
+    request<RfidSticker>("/rfid-stickers/issue", { method: "POST", body: JSON.stringify(data) }),
+  replaceSticker: (id: number, data: { new_uid: string; reason: string }) =>
+    request<RfidSticker>(`/rfid-stickers/${id}/replace`, { method: "POST", body: JSON.stringify(data) }),
+  revokeSticker: (id: number, data: { reason: string }) =>
+    request<RfidSticker>(`/rfid-stickers/${id}/revoke`, { method: "POST", body: JSON.stringify(data) }),
+
+  // ---------- Trip Sessions & Quotas ----------
+  trips: (params: { status?: string; plate?: string; trip_code?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v != null) as [string, string][]
+    );
+    return request<TripSession[]>(`/trips${qs.toString() ? `?${qs}` : ""}`);
+  },
+  trip: (idOrCode: string | number) => request<TripSession>(`/trips/${idOrCode}`),
+  resolveTrip: (sessionId: string, action: "RESOLVE" | "FLAG" | "CANCEL", reason: string) => {
+    const qs = new URLSearchParams({ action, reason });
+    return request<TripSession>(`/trips/${sessionId}/resolve?${qs}`, { method: "POST" });
+  },
+  quotas: (status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<VehicleQuota[]>(`/quotas${qs}`);
+  },
+  quota: (truckId: number) => request<VehicleQuota>(`/quotas/${truckId}`),
+  adjustQuota: (truckId: number, data: { new_max: number; reason: string }) =>
+    request<VehicleQuota>(`/quotas/${truckId}/adjust`, { method: "POST", body: JSON.stringify(data) }),
+  quotaAdjustments: (truckId: number) => request<QuotaAdjustment[]>(`/quotas/${truckId}/adjustments`),
+
+  // ---------- Edge Infrastructure & Disaster Recovery ----------
+  edgeState: () => request<EdgeSystemState>("/edge/state"),
+  updateEdgeState: (data: Partial<EdgeSystemState>) =>
+    request<EdgeSystemState>("/edge/state", { method: "POST", body: JSON.stringify(data) }),
+  generateSnapshot: () => request<RecoverySnapshotEnvelope>("/edge/snapshot", { method: "POST" }),
+  restoreSnapshot: (data: { snapshot_envelope: Record<string, unknown>; approval_reason: string }) =>
+    request<Record<string, unknown>>("/edge/restore", { method: "POST", body: JSON.stringify(data) }),
+  emergencyMovements: () => request<EmergencyMovement[]>("/edge/emergency-movements"),
+  recordEmergencyMovement: (data: { truck_plate: string; direction: "IN" | "OUT"; gate: string; reason: string }) =>
+    request<EmergencyMovement>("/edge/emergency-movement", { method: "POST", body: JSON.stringify(data) }),
+  reconcile: () => request<{ reconciled_count: number; discrepancy_count: number; discrepancies: unknown[] }>("/edge/reconcile", { method: "POST" }),
 };
 
 // ---------- Gate events & simulator runs ----------
-export type Check = { name: string; status: "passed" | "failed" | "not_applicable"; detail: string };
+export type Check = { name: string; status: "passed" | "failed" | "warning" | "not_applicable"; detail: string };
 export type Movement = {
   id: number;
   gate: string;
@@ -175,6 +223,12 @@ export type Movement = {
   steps: Step[] | null;
   pass: PassSummary | null;
   alerts: Alert[];
+  rfid_sticker_uid?: string | null;
+  trip_checks?: Check[] | null;
+  trip_decision?: string | null;
+  trip_session?: TripSession | null;
+  quota_remaining?: number | null;
+  quota_max?: number | null;
 };
 export type GateDecision = Movement & { issued_pass: PassFull | null };
 
@@ -198,7 +252,7 @@ export type PassSummary = {
   id: number;
   code: string;
   truck_id: number;
-  status: "open" | "closed";
+  status: TripSession["status"];
   issued_at: string;
   expires_at: string;
   closed_at: string | null;
@@ -220,6 +274,7 @@ export type Permit = {
   hours_end: string;
   exit_grace_min: number;
   pass_expiry_min: number;
+  per_vehicle_trips?: number | null;
   source: string | null;
 };
 export type PermitIn = Omit<Permit, "id">;
@@ -236,6 +291,9 @@ export type Ledger = {
   tonnes: number;
   vehicles: number;
   active_holds: number;
+  unresolved_passes?: number;
+  per_vehicle_trips?: number | null;
+  provisional_emergency_movements?: number;
   alerts: Record<Severity, number>;
 };
 export type Hold = {
@@ -361,6 +419,8 @@ export const gateApi = {
   holds: (permitId?: number) => request<Hold[]>(`/holds${permitId != null ? `?permit_id=${permitId}` : ""}`),
   releaseHold: (id: number, reason: string) =>
     request<Hold>(`/holds/${id}/release`, { method: "POST", body: JSON.stringify({ reason }) }),
+  exitVerify: (body: ExitVerifyIn) =>
+    request<ExitVerifyOut>("/trips/exit-verify", { method: "POST", body: JSON.stringify(body) }),
   logs: (source: string, limit = 300) =>
     request<LogEntry[]>(`/logs?${new URLSearchParams({ source, limit: String(limit) })}`),
 };
@@ -377,6 +437,145 @@ export type GateEventIn = {
   permit_id?: number;
   observed_at?: string;
   source: string;
+  rfid_sticker_uid?: string | null;
+  rfid_sim_mode?: "genuine" | "cloned" | "revoked" | "unknown_damaged";
+  qr_token?: string | null;
+};
+
+export type RfidSticker = {
+  id: number;
+  uid: string;
+  truck_id: number;
+  status: "ACTIVE" | "DAMAGED" | "REVOKED" | "EXPIRED" | "REPLACED";
+  issued_at: string;
+  expires_at: string;
+  issued_by: number;
+  revoked_at: string | null;
+  revoked_by: number | null;
+  revocation_reason: string | null;
+  replaced_by_sticker_id: number | null;
+  truck?: { id: number; plate: string; plate_type: string } | null;
+};
+
+export type VehicleQuota = {
+  id: number;
+  truck_id: number;
+  max_trips: number;
+  completed_trips: number;
+  remaining_trips: number;
+  valid_from: string;
+  valid_to: string;
+  status: "AVAILABLE" | "LOW" | "EXHAUSTED" | "EXPIRED";
+  created_at: string;
+  updated_at: string;
+  truck?: { id: number; plate: string; plate_type: string } | null;
+};
+
+export type QuotaAdjustment = {
+  id: number;
+  truck_id: number;
+  officer_id: number;
+  previous_max: number;
+  new_max: number;
+  delta: number;
+  reason: string;
+  created_at: string;
+};
+
+export type TripSession = {
+  id: number;
+  session_id: string;
+  trip_code: string;
+  truck_id: number;
+  sticker_id: number;
+  signed_token: string;
+  token_hash: string;
+  entry_gate: string;
+  exit_gate: string | null;
+  entry_movement_id: number | null;
+  exit_movement_id: number | null;
+  status: "AWAITING_ENTRY_CONFIRMATION" | "ACTIVE" | "COMPLETED" | "EXPIRED_UNRESOLVED" | "FLAGGED" | "CANCELLED";
+  entry_at: string;
+  expires_at: string;
+  completed_at: string | null;
+  created_by: number | null;
+  closed_by: number | null;
+  notes: string | null;
+  permit_id?: number | null;
+  entry_weight_t?: number | null;
+  exit_weight_t?: number | null;
+  net_t?: number | null;
+  sms_code?: string | null;
+  close_mode?: string | null;
+  flags?: string[];
+  source?: string | null;
+  truck?: { id: number; plate: string; plate_type: string } | null;
+  sticker?: RfidSticker | null;
+};
+
+export type EdgeSystemState = {
+  id: number;
+  active_authority: "PRIMARY" | "STANDBY" | "EMERGENCY";
+  primary_status: "ACTIVE" | "FAILED" | "OFFLINE";
+  standby_status: "STANDBY" | "ACTIVE" | "OFFLINE";
+  wan_connectivity: "ONLINE" | "WAN_OFFLINE_LOCAL_OPERATIONAL" | "LOCAL_DATA_STALE" | "LOCAL_AUTHORITY_UNAVAILABLE";
+  disaster_recovery_mode: boolean;
+  last_heartbeat: string;
+  last_replication: string;
+  last_snapshot_at: string | null;
+  last_snapshot_version: string | null;
+  updated_at: string;
+};
+
+export type EmergencyMovement = {
+  id: number;
+  movement_id: number | null;
+  truck_plate: string;
+  direction: "IN" | "OUT";
+  gate: string;
+  officer_id: number;
+  reason: string;
+  reconciled: boolean;
+  reconciled_at: string | null;
+  reconciliation_notes: string | null;
+  created_at: string;
+};
+
+export type RecoverySnapshotEnvelope = {
+  format: string;
+  digest: string;
+  signature: string;
+  algorithm: string;
+  data: {
+    version: string;
+    created_at: string;
+    site_code: string;
+    trucks: unknown[];
+    rfid_stickers: unknown[];
+    quotas: unknown[];
+    active_and_unresolved_sessions: unknown[];
+  };
+};
+
+export type ExitVerifyIn = {
+  gate: string;
+  truck_plate?: string | null;
+  rfid_sticker_uid?: string | null;
+  qr_token?: string | null;
+  sim_auth_mode?: string;
+  source?: string | null;
+  permit_id?: number;
+};
+
+export type ExitVerifyOut = {
+  decision: string;
+  passed: boolean;
+  reasons: string[];
+  checks: Check[];
+  session: TripSession | null;
+  quota_before: number | null;
+  quota_after: number | null;
+  exit_movement_id: number | null;
 };
 
 export type LogEntry = {

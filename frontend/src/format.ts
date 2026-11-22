@@ -48,6 +48,11 @@ export const RESULT_LABEL: Record<string, string> = {
   UNREGISTERED: "Unregistered",
   UNIDENTIFIED: "Unidentified",
   MISMATCH: "Mismatch",
+  "ENTRY AUTHORIZED": "Entry Authorized",
+  "ENTRY REJECTED": "Entry Rejected",
+  "MANUAL REVIEW REQUIRED": "Manual Review Required",
+  "EXIT AUTHORIZED": "Exit Authorized",
+  "EXIT REJECTED": "Exit Rejected",
 };
 
 export const CHECK_LABEL: Record<string, string> = {
@@ -60,6 +65,20 @@ export const CHECK_LABEL: Record<string, string> = {
   length: "Radar length",
   authorisation: "Authorisation",
   default_deny: "Default deny",
+  // GB Trip Authorization checks
+  rfid_authentication: "GB RFID sticker authentication",
+  sticker_association: "Sticker-to-vehicle association",
+  sticker_status: "Sticker status validation",
+  vehicle_status: "Vehicle authorization status",
+  trip_quota: "Trip quota availability",
+  active_trip: "Active trip detection",
+  unresolved_trip: "Unresolved trip detection",
+  final_trip_decision: "Trip authorization decision",
+  // Exit checks
+  sticker_match: "Entry & exit sticker identity match",
+  session_status: "Trip session status verification",
+  qr_token_validity: "Internal QR token validity",
+  final_exit_decision: "Exit authorization decision",
 };
 
 /** 'sim:12:S3' -> { runId: 12, scenario: 'S3' }; null for real pole events. */

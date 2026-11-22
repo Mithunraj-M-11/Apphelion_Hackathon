@@ -239,6 +239,9 @@ class GateEventIn(BaseModel):
     pass_code: str | None = Field(default=None, max_length=20)  # SMS code given at exit
     barrier_forced: bool = False  # barrier impact sensor: vehicle broke through
     permit_id: int | None = None  # PoC: real poles resolve the permit from gate config
+    rfid_sticker_uid: str | None = Field(default=None, max_length=50)  # GB RFID sticker read by the pole
+    rfid_sim_mode: str | None = "genuine"  # PoC sensor truth: genuine | cloned | revoked | unknown_damaged
+    qr_token: str | None = Field(default=None, max_length=2000)  # same as pass_token (Gate console name)
     source: str | None = Field(default=None, max_length=100)
 
 
@@ -288,7 +291,7 @@ class PassSummary(ORM):
     issued_at: datetime
     expires_at: datetime
     closed_at: datetime | None
-    entry_weight_t: float
+    entry_weight_t: float | None
     exit_weight_t: float | None
     net_t: float | None
     close_mode: str | None
@@ -320,6 +323,7 @@ class MovementOut(ORM):
     reasons: list[str]
     flags: list[str]
     source: str | None
+    rfid_sticker_uid: str | None = None
     permit_id: int | None = None
     weight_t: float | None = None
     decision: str | None = None
@@ -332,8 +336,6 @@ class MovementOut(ORM):
     alerts: list[AlertOut] = []
 
 
-class GateDecisionOut(MovementOut):
-    issued_pass: PassFull | None = None
 
 
 # ---------- Permits / holds ----------
@@ -348,6 +350,7 @@ class PermitIn(BaseModel):
     hours_end: time
     exit_grace_min: int = Field(default=30, ge=0, le=240)
     pass_expiry_min: int = Field(default=120, ge=5, le=24 * 60)
+    per_vehicle_trips: int | None = Field(default=None, ge=1)  # contract cap per truck, if any
     source: str | None = Field(default=None, max_length=100)
 
 
@@ -364,6 +367,7 @@ class PermitOut(ORM):
     hours_end: time
     exit_grace_min: int
     pass_expiry_min: int
+    per_vehicle_trips: int | None = None
     source: str | None
     created_at: datetime
 
@@ -446,3 +450,189 @@ class SimRunOut(ORM):
     honest_total: int
     false_alarms: int
     results: list[dict]
+
+
+# ---------- RFID Stickers ----------
+class RfidStickerOut(ORM):
+    id: int
+    uid: str
+    truck_id: int
+    status: str
+    issued_at: datetime
+    expires_at: datetime
+    issued_by: int
+    revoked_at: datetime | None = None
+    revoked_by: int | None = None
+    revocation_reason: str | None = None
+    replaced_by_sticker_id: int | None = None
+    truck: TruckSummary | None = None
+
+
+class RfidIssueIn(BaseModel):
+    truck_id: int
+    uid: str = Field(min_length=3, max_length=50)
+    validity_days: int = Field(default=365, ge=1, le=3650)
+
+
+class RfidReplaceIn(BaseModel):
+    new_uid: str = Field(min_length=3, max_length=50)
+    reason: str = Field(min_length=3)
+
+
+class RfidRevokeIn(BaseModel):
+    reason: str = Field(min_length=3)
+
+
+# ---------- Quotas ----------
+class VehicleQuotaOut(ORM):
+    id: int
+    permit_id: int | None = None
+    truck_id: int
+    max_trips: int
+    completed_trips: int
+    remaining_trips: int
+    valid_from: date
+    valid_to: date
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    truck: TruckSummary | None = None
+
+
+class QuotaAdjustIn(BaseModel):
+    new_max: int = Field(ge=0, le=100000)
+    reason: str = Field(min_length=3)
+
+
+class QuotaAdjustmentOut(ORM):
+    id: int
+    truck_id: int
+    officer_id: int
+    previous_max: int
+    new_max: int
+    delta: int
+    reason: str
+    created_at: datetime
+
+
+# ---------- Trip Sessions ----------
+class TripSessionOut(ORM):
+    id: int
+    session_id: str
+    trip_code: str
+    truck_id: int
+    sticker_id: int
+    signed_token: str
+    token_hash: str
+    entry_gate: str
+    exit_gate: str | None = None
+    entry_movement_id: int | None = None
+    exit_movement_id: int | None = None
+    status: str
+    entry_at: datetime
+    expires_at: datetime
+    completed_at: datetime | None = None
+    created_by: int | None = None
+    closed_by: int | None = None
+    notes: str | None = None
+    permit_id: int | None = None
+    entry_weight_t: float | None = None
+    exit_weight_t: float | None = None
+    net_t: float | None = None
+    sms_code: str | None = None
+    close_mode: str | None = None
+    flags: list[str] = []
+    source: str | None = None
+    truck: TruckSummary | None = None
+    sticker: RfidStickerOut | None = None
+
+
+class TripCheckOut(BaseModel):
+    name: str
+    status: str
+    detail: str
+
+
+class GateDecisionOut(MovementOut):
+    """Answer to a gate event: the movement, our steps / barrier / alerts, and the trip-authorization view."""
+
+    issued_pass: PassFull | None = None
+    trip_checks: list[TripCheckOut] | None = None
+    trip_decision: str | None = None  # ENTRY AUTHORIZED | ENTRY REJECTED | EXIT AUTHORIZED | EXIT REJECTED
+    trip_session: TripSessionOut | None = None
+    quota_remaining: int | None = None
+    quota_max: int | None = None
+
+
+GateEventExtendedIn = GateEventIn  # one gate event schema (kept name for existing imports)
+MovementExtendedOut = GateDecisionOut
+
+
+class ExitVerifyIn(BaseModel):
+    gate: str
+    truck_plate: str | None = None
+    rfid_sticker_uid: str | None = None
+    qr_token: str | None = None
+    sim_auth_mode: str = "genuine"
+    source: str | None = None
+    permit_id: int | None = None  # defaults to the real permit
+
+
+class ExitVerifyOut(BaseModel):
+    decision: str
+    passed: bool
+    reasons: list[str]
+    checks: list[TripCheckOut]
+    session: TripSessionOut | None = None
+    quota_before: int | None = None
+    quota_after: int | None = None
+    exit_movement_id: int | None = None
+
+
+# ---------- Edge & Disaster Recovery ----------
+class EdgeStateOut(ORM):
+    id: int
+    active_authority: str
+    primary_status: str
+    standby_status: str
+    wan_connectivity: str
+    disaster_recovery_mode: bool
+    last_heartbeat: datetime
+    last_replication: datetime
+    last_snapshot_at: datetime | None = None
+    last_snapshot_version: str | None = None
+    updated_at: datetime
+
+
+class EdgeStateUpdate(BaseModel):
+    active_authority: str | None = None
+    primary_status: str | None = None
+    standby_status: str | None = None
+    wan_connectivity: str | None = None
+    disaster_recovery_mode: bool | None = None
+
+
+class EmergencyMovementIn(BaseModel):
+    truck_plate: str = Field(min_length=3)
+    direction: Literal["IN", "OUT"]
+    gate: str = Field(min_length=1)
+    reason: str = Field(min_length=3)
+
+
+class EmergencyMovementOut(ORM):
+    id: int
+    movement_id: int | None = None
+    truck_plate: str
+    direction: str
+    gate: str
+    officer_id: int
+    reason: str
+    reconciled: bool
+    reconciled_at: datetime | None = None
+    reconciliation_notes: str | None = None
+    created_at: datetime
+
+
+class SnapshotRestoreIn(BaseModel):
+    snapshot_envelope: dict
+    approval_reason: str = Field(min_length=3)
