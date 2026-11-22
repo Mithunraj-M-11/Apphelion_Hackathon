@@ -339,7 +339,7 @@ export type TripEventExpect = {
 export type TripEventResult = {
   n: number;
   at: string;
-  dir: "IN" | "OUT" | "OFFICER";
+  dir: "IN" | "OUT" | "OFFICER" | "UNSEEN" | "INSIDER" | "VENDOR";
   vehicle: string;
   note: string | null;
   readings: {
@@ -383,6 +383,12 @@ export type TripScenarioResult = {
   ledger: Ledger;
   pass: boolean;
   problems: string[];
+  // threat_coverage stories: judged against the ideal GB response
+  coverage?: "covered" | "partial" | "gap" | "silent";
+  threat?: string | null;
+  priority?: string | null;
+  really_moved?: { trips: number; tonnes: number };
+  gb_recorded?: { trips: number; tonnes: number };
 };
 export type ScenarioResult = EdgeScenarioResult | TripScenarioResult;
 export type SimSuite = { suite: string; title: string; description: string; stories: number };
@@ -672,6 +678,17 @@ export type SiteReport = {
   daily: SiteDay[];
   unexpected: string[];
   skipped: string[];
+  /** threat_week: what really moved but the GB doesn't have, by why (side track, pole down, rigged pad, ...). */
+  missed_by_cause?: Record<string, { trips: number; tonnes: number | null }>;
+  /** threat_week: the staged faults and attacks (assumptions stated in the report). */
+  staging?: {
+    outages: [string, string][];
+    weigh_drift: { from_day: number; offset_t: number } | null;
+    sensor_noise: { plate_miss?: number; fastag_miss?: number } | null;
+    bribed_officer: boolean | null;
+    honest_refused_by_misreads: number;
+    events_held_by_outages: number;
+  };
 };
 export type SiteRun = {
   id: number;

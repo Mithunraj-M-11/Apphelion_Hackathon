@@ -573,3 +573,4 @@ ul.plain li { padding: 3px 0; }
 .sr-tl-alerts { color: var(--bad); }
 .sr-timeline li.officer::before { background: var(--warn); }
 .sr-tl-expect { margin: 0 0 2px 54px; }
+.ss-step-unseen { border-style: dashed; opacity: 0.85; }

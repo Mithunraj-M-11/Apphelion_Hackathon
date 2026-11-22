@@ -122,6 +122,7 @@ class Ev:
     honest: bool = True
     rfid: str = "genuine"  # what the GB sticker's challenge-response shows: genuine | cloned | ...
     resp: dict | None = None
+    misread: bool = False  # staging: a sensor missed this read
 
 
 class World:
@@ -161,6 +162,20 @@ class World:
         self.pool_free: dict[str, datetime] = {v.label: datetime.min.replace(tzinfo=IST) for v in self.pool}
         self.outsider_i = 0
 
+        # staging: pole outages (fixed by the seed), weigh pad drift, sensor misses on honest trucks
+        self.outages: list[tuple[datetime, datetime]] = []
+        oc = cfg.get("outages")
+        if oc:
+            n = int(oc.get("per_week", 2) * len(self.days) / 7 + 0.5)
+            for d in self.rng.sample(self.days, min(n, len(self.days))):
+                start = self.at(d, self.hours_start, self.u(60, 480))
+                self.outages.append((start, start + timedelta(minutes=self.u(*oc.get("minutes", [30, 90])))))
+            self.outages.sort()
+        self.drift = cfg.get("weigh_drift")  # {from_day: 4, offset_t: -3}: loaded readings off from that day
+        self.noise_cfg = cfg.get("sensor_noise", {})  # {plate_miss: 0.03, fastag_miss: 0.02} on honest reads
+        self.misread_refusals = 0
+        self.waits_for_outage = 0
+
     # ---- helpers
     def veh(self, t: dict) -> Veh:
         return Veh(t["plate"], t["plate"], t["fastag_tag_id"], t["length_m"], t["empty_weight_t"], t["rated_capacity_t"],
@@ -195,9 +210,20 @@ class World:
                 return k
         return list(spec)[-1]
 
-    def trip(self, at: datetime, v: Veh, tonnes: float, kind: str, crossed_gate: bool, cheat: str | None = None):
+    def trip(self, at: datetime, v: Veh, tonnes: float, kind: str, crossed_gate: bool, cheat: str | None = None,
+             cause: str | None = None):
+        """A trip that really happened. `crossed_gate` = a GB pole saw it leave; `cause` says why it went unseen
+        (side track, pole down, light vehicle)."""
+        if cause is None and not crossed_gate:
+            cause = "side track"
         self.truth.append({"day": at.date().isoformat(), "at": at.strftime("%H:%M"), "vehicle": v.label,
-                           "tonnes": round(tonnes, 2), "kind": kind, "cheat": cheat, "crossed_gate": crossed_gate})
+                           "tonnes": round(tonnes, 2), "kind": kind, "cheat": cheat, "crossed_gate": crossed_gate,
+                           "cause": cause})
+
+    # ---- staging (threat_week): faults and attacks that are not a truck at a gate
+    def down(self, t: datetime) -> tuple[datetime, datetime] | None:
+        """The pole outage window covering t, if any (power cut, smashed pole)."""
+        return next(((a, b) for a, b in self.outages if a <= t < b), None)
 
     def drop(self, c: Cheat, why: str) -> None:
         """The trick could not be staged (e.g. its test truck was refused for an unrelated reason): not scored."""
@@ -257,6 +283,10 @@ def honest_truck(w: World, v: Veh):
                         c.note = "refused at entry, then went round by a side track"
                         t = out_at + timedelta(minutes=w.u(*hc["haul_min"]))
                     continue
+                if ev.misread:  # a sensor missed it: the honest truck is refused, waits, and tries again
+                    w.misread_refusals += 1
+                    t += timedelta(minutes=10)
+                    continue
                 ev.honest = False
                 w.unexpected.append(f"{t:%d %b %H:%M} {v.label} refused at entry: {codes}")
                 t += timedelta(minutes=60)
@@ -270,7 +300,15 @@ def honest_truck(w: World, v: Veh):
                 exit_at = t + timedelta(minutes=110)  # last load of the day runs late
             dead = not dead_phone_used and w.rng.random() < hc["dead_phone_rate"]
             dead_phone_used = dead_phone_used or dead
-            r2 = yield Ev(exit_at, "OUT", v, w.w(v, load_t), token=None if dead else p["token"])
+            out = Ev(exit_at, "OUT", v, w.w(v, load_t), token=None if dead else p["token"])
+            r2 = yield out
+            tries = 0
+            while down(r2) and out.misread and tries < 3:  # misread at the exit: re-read a few minutes later
+                w.misread_refusals += 1
+                tries += 1
+                exit_at = out.at + timedelta(minutes=5)
+                out = Ev(exit_at, "OUT", v, w.w(v, load_t), token=None if dead else p["token"])
+                r2 = yield out
             if down(r2):
                 w.unexpected.append(f"{exit_at:%d %b %H:%M} {v.label} refused at exit: {[a['code'] for a in r2['alerts']]}")
             else:
@@ -464,12 +502,87 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         c.outcome = "detected" if expected in c.alerts else "missed"
         c.note = {"overload": "load above rated capacity", "arrive_loaded": "brought material in from outside",
                   "weigh_bypass": "drove round the weigh pad"}[type_]
+    elif type_ == "transplant":  # X's real plate, FASTag and GB sticker moved onto the Vendor's extra truck
+        body = Veh(f"extra truck wearing {v.label}'s identity", v.plate, v.tag, round(v.length + 0.04, 2),
+                   round(v.empty + w.u(0.4, 0.8), 2), v.rated, v.sticker)
+        c.off(start - timedelta(minutes=30), f"{v.label}'s plate, FASTag and GB sticker moved onto an extra truck")
+        r = yield Ev(start, "IN", body, w.w(body, 0), honest=False)
+        c.saw(r, start, "the extra truck")
+        if down(r):
+            c.outcome, c.note = "prevented", "refused at entry"
+            return
+        p = r["issued_pass"]
+        out_at, load_t = start + mins(30, 60), load(body)
+        r = yield Ev(out_at, "OUT", body, w.w(body, load_t), token=p["token"], honest=False)
+        c.saw(r, out_at, "the extra truck")
+        if not down(r):
+            w.trip(out_at, body, load_t, "cheat", True, type_)
+        c.outcome = "detected" if c.alerts else "missed"
+        c.note = "worked as " + v.label + (": flagged" if c.alerts else ", nothing noticed")
+
+    elif type_ == "officer_cover":  # a bribed officer hides a side-route trip
+        r = yield Ev(start, "IN", v, w.w(v, 0))
+        c.gate(r, start)
+        if down(r):
+            return w.drop(c, f"refused at entry ({[a['code'] for a in r['alerts']]})")
+        load_t = load(v)
+        side = start + mins(30, 50)
+        c.off(side, "left loaded by a side track; its pass stays open")
+        w.trip(side, v, load_t, "cheat", False, type_)
+        back = start + mins(170, 230)  # past the pass expiry: the next entry is refused
+        ev = Ev(back, "IN", v, w.w(v, 0), honest=False)
+        r = yield ev
+        c.saw(r, back)
+        if down(r) and w.bribed_officer:
+            trips = w.client.get("/api/trips", params={"permit_id": w.permit_id,
+                                                       "status": "ACTIVE,EXPIRED_UNRESOLVED,FLAGGED"}).json()
+            mine = [x for x in trips if (x.get("truck") or {}).get("plate") == v.plate]
+            if mine:
+                w.client.post(f"/api/trips/{mine[0]['session_id']}/resolve",
+                              headers={"X-Officer-Id": str(w.bribed_officer)},
+                              params={"action": "RESOLVE", "reason": "Truck left by the gate; sensor fault"})
+                c.off(back + timedelta(minutes=5), "a bribed officer late-closes the open trip as 'sensor fault'")
+                c.attempt_flagged = True
+                r = yield Ev(back + timedelta(minutes=10), "IN", v, w.w(v, 0))
+                c.gate(r, back + timedelta(minutes=10))
+                if not down(r):
+                    out_at, lt = back + mins(40, 60), load(v)
+                    r2 = yield Ev(out_at, "OUT", v, w.w(v, lt), token=r["issued_pass"]["token"])
+                    c.gate(r2, out_at)
+                    if not down(r2):
+                        w.trip(out_at, v, lt, "legal", True)
+        c.outcome = "missed"
+        c.note = "side-route trip covered up by a bribed officer's late close"
+
+    elif type_ == "light_vehicle":  # a pickup under 6 m carries about a tonne, logged but not counted
+        pickup = Veh(f"pickup {v.plate}", v.plate, None, 4.6, 1.8, 1.5)
+        r = yield Ev(start, "IN", pickup, w.w(pickup, 0), tag=None, honest=False)
+        c.saw(r, start)
+        load_t = w.u(1.0, 1.4)
+        out_at = start + mins(20, 40)
+        r = yield Ev(out_at, "OUT", pickup, w.w(pickup, load_t), tag=None, honest=False)
+        c.saw(r, out_at)
+        w.trip(out_at, pickup, load_t, "cheat", True, type_, cause="light vehicle")
+        c.outcome, c.note = "missed", "let through as a light vehicle; the load is not counted"
+
+    elif type_ == "outage_trip":  # an extra truck moves while the pole is down; the barrier is lifted by hand
+        window = w.down(start)
+        if window is None:
+            return w.drop(c, "no outage at that time")
+        c.off(start, "pole down: barrier lifted by hand, extra truck comes in")
+        out_at = min(start + mins(25, 40), window[1] - timedelta(minutes=1))
+        c.off(out_at, "leaves loaded while the pole is still down")
+        w.trip(out_at, v, load(v), "cheat", True, type_, cause="pole down")
+        c.outcome, c.note = "missed", "moved while the pole was down; nothing reached the GB"
+        return
+        yield  # noqa: unreachable; makes this a generator
+
     else:
         raise ValueError(f"unknown cheat type {type_}")
 
 
 # ================================================================ scheduling
-RESERVE_H = {"side_track_out": 5}
+RESERVE_H = {"side_track_out": 5, "officer_cover": 6}
 HOLDS_TRUCK = ("clone", "pass_reuse", "pass_handover")  # truck stays on hold until the end-of-day review
 
 
@@ -480,6 +593,18 @@ def plan_cheats(w: World) -> list[tuple[datetime, object]]:
             type_, per_day = spec["type"], float(spec.get("per_day", 1))
             n = int(per_day) + (1 if w.rng.random() < per_day - int(per_day) else 0)
             for _ in range(n):
+                if type_ == "outage_trip":
+                    wins = [o for o in w.outages if o[0].date() == d]
+                    if not wins:
+                        continue
+                    a, b = wins[0]
+                    t = a + timedelta(minutes=w.u(0, max(1, (b - a).seconds / 60 - 30)))
+                    starts.append((t, cheat_actor(w, type_, t, w.outsider(), "turn_back", None)))
+                    continue
+                if type_ == "light_vehicle":
+                    t = w.at(d, w.hours_start, w.u(30, 600))
+                    starts.append((t, cheat_actor(w, type_, t, w.outsider(), "turn_back", None)))
+                    continue
                 if type_ == "night_trip":
                     t = w.at(d, w.hours_end, w.u(60, 240))
                 else:
@@ -538,8 +663,17 @@ def post(w: World, permit: dict, source: str, ev: Ev) -> dict:
     v = ev.veh
     plate = v.plate if ev.plate_shown == "own" else ev.plate_shown
     tag = v.tag if ev.tag == "own" else ev.tag
+    weight = ev.weight
+    if w.drift and ev.dir == "OUT" and weight is not None and (ev.at.date() - w.days[0]).days + 1 >= w.drift["from_day"]:
+        weight = round(weight + w.drift["offset_t"], 2)  # staging: the pad is rigged to read low when loaded
+    ev.misread = False
+    if ev.honest and w.noise_cfg:  # staging: camera / FASTag reader miss on an honest truck
+        if w.rng.random() < w.noise_cfg.get("plate_miss", 0):
+            plate, ev.misread = None, True
+        elif w.rng.random() < w.noise_cfg.get("fastag_miss", 0):
+            tag, ev.misread = None, True
     body = {"direction": ev.dir, "plate_read": plate, "fastag_read": tag, "radar_length_m": v.length,
-            "weight_t": ev.weight, "observed_at": ev.at.isoformat(), "barrier_forced": ev.forced,
+            "weight_t": weight, "observed_at": ev.at.isoformat(), "barrier_forced": ev.forced,
             "permit_id": permit["id"], "source": source, "rfid_sticker_uid": v.sticker, "rfid_sim_mode": ev.rfid}
     if ev.token:
         body["pass_token"] = ev.token
@@ -563,6 +697,9 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
     }).raise_for_status().json()
     officers = client.get("/api/officers").raise_for_status().json()
     officer_id = next((o["id"] for o in officers if o["role"] == "approver"), officers[0]["id"])
+    w.permit_id = permit["id"]
+    w.bribed_officer = next((o["id"] for o in officers if o["id"] != officer_id and o.get("active")), officer_id) \
+        if cfg.get("bribed_officer") else None
 
     print(f"\nSiteWatch site run #{run['id']} | {name} | {len(w.days)} days {w.days[0]} to {w.days[-1]} | "
           f"fleet {len(w.fleet)} trucks, {len(w.pool)} test trucks for cheats | seed {cfg.get('seed', 1)}")
@@ -580,8 +717,21 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
 
     day_i = 0
     posted = 0
+    beat_at = w.at(w.days[0], time(0, 0))
+    heartbeats = bool(cfg.get("heartbeats"))
     while heap:
         at, _, actor, ev = heapq.heappop(heap)
+        if ev is not None and w.down(at):  # pole down: the barrier doesn't work, trucks at the gate wait
+            w.waits_for_outage += 1
+            ev.at = w.down(at)[1]
+            seq += 1
+            heapq.heappush(heap, (ev.at, seq, actor, ev))
+            continue
+        while heartbeats and beat_at + timedelta(minutes=15) <= at:  # the pole's 'I'm alive' signal (staging)
+            beat_at += timedelta(minutes=15)
+            if not w.down(beat_at):
+                client.post(f"/api/poles/{GATE}/heartbeat", json={"at": beat_at.isoformat(), "permit_id": permit["id"],
+                                                                 "source": source})
         while day_i < len(w.days) - 1 and at.date() > w.days[day_i]:
             end_of_day(w, permit, w.days[day_i], officer_id)
             day_i += 1
@@ -611,6 +761,28 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
 
 
 # ================================================================ report
+def missed_by_cause(w: World, ledger: dict) -> dict:
+    """Trips and tonnes that really moved but the GB doesn't have, grouped by why."""
+    out: dict[str, dict] = {}
+    for t in w.truth:
+        cause = t.get("cause")
+        if cause:  # unseen at a gate (side track, pole down) or seen but not counted (light vehicle)
+            row = out.setdefault(cause, {"trips": 0, "tonnes": 0.0})
+            row["trips"] += 1
+            row["tonnes"] = round(row["tonnes"] + t["tonnes"], 2)
+    # exits the gates saw and counted as legal, but recorded lighter than the real load (rigged pad), or not weighed
+    short = sum((e.weight or 0) - (e.resp.get("weight_t") or 0) for e in w.events
+                if e.dir == "OUT" and e.resp and e.resp.get("trip") == "LEGAL" and e.weight is not None
+                and e.resp.get("weight_t") is not None)
+    if short > 1:
+        out["weighed short (rigged pad)"] = {"trips": 0, "tonnes": round(short, 2)}
+    unweighed = [e for e in w.events if e.dir == "OUT" and e.resp and e.resp.get("trip") == "LEGAL"
+                 and e.resp.get("weight_t") is None]
+    if unweighed:
+        out["not weighed (pad bypassed)"] = {"trips": len(unweighed), "tonnes": None}
+    return out
+
+
 def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> dict:
     ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
     daily = client.get(f"/api/permits/{permit['id']}/ledger/daily").raise_for_status().json()
@@ -712,6 +884,11 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         },
         "cheats_by_type": by_type,
         "cheats": [c.as_dict() for c in w.cheats],
+        "missed_by_cause": missed_by_cause(w, ledger),
+        "staging": {"outages": [[a.strftime("%Y-%m-%d %H:%M"), b.strftime("%H:%M")] for a, b in w.outages],
+                    "weigh_drift": w.drift, "sensor_noise": w.noise_cfg or None,
+                    "bribed_officer": w.cfg.get("bribed_officer"), "honest_refused_by_misreads": w.misread_refusals,
+                    "events_held_by_outages": w.waits_for_outage},
         "alerts": {"by_severity": {s: sev.get(s, 0) for s in ("CRITICAL", "HIGH", "MEDIUM", "INFO")},
                    "by_code": dict(sorted(codes.items(), key=lambda kv: -kv[1]))},
         "false_alarms": {"count": len(false_alarms), "honest_events": honest_events, "items": false_alarms[:50]},

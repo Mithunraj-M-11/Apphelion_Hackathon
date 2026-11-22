@@ -35,6 +35,10 @@ const CHEAT_LABEL: Record<string, string> = {
   overload: "Overload",
   arrive_loaded: "Arrived already loaded",
   weigh_bypass: "Weigh pad skipped",
+  transplant: "Full transplant (real identifiers on another truck)",
+  officer_cover: "Bribed officer covers a side-route trip",
+  light_vehicle: "Light vehicle carrying material",
+  outage_trip: "Moves while the pole is down",
 };
 
 /** What each cheat is, in one line: the setup a viewer needs before the gate events make sense. */
@@ -52,6 +56,10 @@ const CHEAT_STORY: Record<string, string> = {
   overload: "A legal trip, but loaded well above the truck's rated capacity.",
   arrive_loaded: "Brings material in from outside, so it would leave with more than it loaded here.",
   weigh_bypass: "A legal trip that drives round the exit weigh pad, so the load is never weighed.",
+  transplant: "A parked truck's real plate, FASTag and GB sticker are moved onto the Vendor's extra truck, which then works as it.",
+  officer_cover: "Leaves loaded by a side track; when it comes back with its pass still open, a bribed officer late-closes the trip as a sensor fault.",
+  light_vehicle: "A pickup under 6 m carries about a tonne; light vehicles are logged but not counted.",
+  outage_trip: "While the pole is down, an extra truck comes in and leaves loaded with the barrier lifted by hand.",
 };
 
 function Tile({ label, value, sub, tone, onClick }: { label: string; value: string | number; sub?: string;
@@ -390,6 +398,54 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
   );
 }
 
+// ---------------------------------------------------------------- threat week: what the GB missed, and why
+const CAUSE_TEXT: Record<string, string> = {
+  "side track": "Never passed a GB gate (side tracks)",
+  "pole down": "Moved while a GB pole was down",
+  "light vehicle": "Light vehicle: let through, load not counted",
+  "weighed short (rigged pad)": "Weighed short: the GB weigh pad was rigged",
+  "not weighed (pad bypassed)": "Not weighed: drove round the weigh pad",
+};
+
+function MissedByCause({ r }: { r: SiteReport }) {
+  const rows = Object.entries(r.missed_by_cause ?? {});
+  const st = r.staging;
+  const trips = rows.reduce((n, [, v]) => n + (v.trips || 0), 0);
+  return (
+    <div className="card">
+      <header className="card-head"><h3>What the GB missed, and why</h3></header>
+      <table className="table table-inner">
+        <thead><tr><th>Why</th><th>Trips</th><th>Tonnes</th></tr></thead>
+        <tbody>
+          {rows.map(([cause, v]) => (
+            <tr key={cause}>
+              <td>{CAUSE_TEXT[cause] ?? cause}</td>
+              <td>{v.trips ? fmt(v.trips) : "—"}</td>
+              <td>{v.tonnes != null ? fmt(v.tonnes, 1) : "unknown"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="sr-note">
+        {fmt(trips)} trips really moved that the GB doesn't count. Tonnes include trips the gates counted but weighed
+        short. Read with the ledger above: ground truth minus GB actual.
+      </p>
+      {st && (
+        <p className="small muted">
+          Staged in this run (assumptions):{" "}
+          {st.outages.length > 0 && <>pole down {st.outages.map(([a, b]) => `${dayLabel(a.slice(0, 10))} ${a.slice(11)} to ${b}`).join(", ")}; </>}
+          {st.weigh_drift && <>weigh pad reads {st.weigh_drift.offset_t} t when loaded from day {st.weigh_drift.from_day}; </>}
+          {st.sensor_noise && <>plate missed on {Math.round((st.sensor_noise.plate_miss ?? 0) * 100)}% and FASTag on{" "}
+            {Math.round((st.sensor_noise.fastag_miss ?? 0) * 100)}% of honest reads ({st.honest_refused_by_misreads} honest
+            refusals as a result); </>}
+          {st.bribed_officer && <>one bribed officer; </>}
+          {st.events_held_by_outages} gate arrivals waited for a pole to come back.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- report
 /** The contract this run was played under: the agreement and the permit terms the GB enforces at the gates.
  * Collapsible; the ledger below is what happened during the run. */
@@ -545,6 +601,8 @@ function RunDetail({ id }: { id: number }) {
           {h.vendor_reported < h.gb_actual && ` The Vendor reported ${fmt(h.gb_actual - h.vendor_reported)} fewer trips than the GB recorded.`}
         </p>
       </div>
+
+      {r.missed_by_cause && Object.keys(r.missed_by_cause).length > 0 && <MissedByCause r={r} />}
 
       <div className="stats stats-6">
         <Tile label="Cheats staged" value={cs.injected} onClick={() => setGroup("all")} />

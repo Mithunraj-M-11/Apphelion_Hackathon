@@ -38,10 +38,19 @@ const CATEGORIES: { key: string; title: string }[] = [
   { key: "evasion", title: "Bypass and force" },
   { key: "officer", title: "Officer actions" },
   { key: "edge", title: "Edge resilience" },
+  { key: "infrastructure", title: "Poles, network, sensors" },
+  { key: "records", title: "Records and reports" },
   { key: "control", title: "Honest controls" },
 ];
 
 const POLL_MS = 2000;
+
+function CoverageBadge({ c }: { c?: string }) {
+  const [cls, text] =
+    c === "covered" ? ["ok", "Covered"] : c === "partial" ? ["warn", "Partial"] : c === "gap" ? ["bad", "Gap"]
+      : c === "silent" ? ["bad", "Silent gap"] : ["neutral", "—"];
+  return <span className={`badge ${cls}`}>{text}</span>;
+}
 
 function KindBadge({ kind }: { kind: StoryKind }) {
   const [cls, text] = kind === "honest" ? ["neutral", "Honest"] : kind === "officer" ? ["ok", "Officer"] : ["warn", "Cheat"];
@@ -248,6 +257,7 @@ const expectText = (e: TripEventExpect) =>
     e.trip && `${e.trip.toLowerCase()} trip`,
     e.result,
     e.alerts?.length ? `alerts ${e.alerts.join(", ")}` : null,
+    (e as { rejected?: boolean }).rejected ? "rejected (no pole sent it)" : null,
     e.not_alerts?.length ? `not ${e.not_alerts.join(", ")}` : null,
   ].filter(Boolean).join(" · ") || "—";
 
@@ -276,6 +286,19 @@ function storySteps(s: TripScenarioResult): TimelineStep[] {
     if (e.dir === "OFFICER") {
       steps.push({ at: e.at, kind: "officer", text: `Officer ${e.note ?? ""}`, movement: e.movement_id, alerts,
                    expected: hasExpect ? expectText(e.expected) : undefined, pass: e.pass });
+      continue;
+    }
+    if (e.dir === "UNSEEN") {
+      steps.push({ at: e.at, kind: "unseen", text: e.note ?? "" });
+      continue;
+    }
+    if (e.dir === "INSIDER" || e.dir === "VENDOR") {
+      steps.push({ at: e.at, kind: "officer", text: e.dir === "INSIDER" ? `Insider: ${e.note ?? ""}` : `Vendor: ${e.note ?? ""}`,
+                   alerts, expected: hasExpect ? expectText(e.expected) : undefined, pass: e.pass });
+      continue;
+    }
+    if ((e.actual as { not_delivered?: boolean }).not_delivered) {
+      steps.push({ at: e.at, kind: "unseen", text: `${e.dir === "IN" ? "Entry" : "Exit"} gate, ${e.note ?? "pole offline"}` });
       continue;
     }
     if (e.note) steps.push({ at: "", kind: "unseen", text: e.note });
@@ -349,6 +372,15 @@ function RunDetail({ id }: { id: number }) {
 
   const missed = run.tamper_total - run.tamper_caught;
   const tripResults = run.results.filter(isTripResult);
+  const threatRun = tripResults.some((r) => r.coverage && r.threat);
+  const cov = (c: string) => tripResults.filter((r) => r.coverage === c).length;
+  const lost = tripResults.reduce(
+    (a, r) => ({
+      trips: a.trips + Math.max(0, (r.really_moved?.trips ?? 0) - (r.gb_recorded?.trips ?? 0)),
+      tonnes: a.tonnes + Math.max(0, (r.really_moved?.tonnes ?? 0) - (r.gb_recorded?.tonnes ?? 0)),
+    }),
+    { trips: 0, tonnes: 0 },
+  );
   const edgeResults = run.results.filter((r): r is EdgeScenarioResult => !isTripResult(r));
   const officer = run.results.filter((r) => r.kind === "officer");
 
@@ -365,6 +397,24 @@ function RunDetail({ id }: { id: number }) {
         </div>
       </div>
 
+      {threatRun && (
+        <>
+          <p className="muted small">
+            Each story is judged against what the GB <em>should</em> do, built or not. Covered = the ideal response
+            happened; partial = some of it; gap = mostly not; silent = the GB doesn't know (nothing raised, or its records
+            differ from what really moved and nothing says so).
+          </p>
+          <div className="stats stats-6">
+            <Tile label="Covered" value={cov("covered")} total={tripResults.length} tone="ok" />
+            <Tile label="Partial" value={cov("partial")} />
+            <Tile label="Gap" value={cov("gap")} tone={cov("gap") ? "bad" : "ok"} />
+            <Tile label="Silent gap" value={cov("silent")} tone={cov("silent") ? "bad" : "ok"} />
+            <Tile label="Trips the GB missed" value={lost.trips} tone={lost.trips ? "bad" : "ok"} />
+            <Tile label="Tonnes the GB missed" value={Math.round(lost.tonnes)} tone={lost.tonnes >= 1 ? "bad" : "ok"} />
+          </div>
+        </>
+      )}
+      {!threatRun && (
       <div className="stats stats-6">
         <Tile label="Stories passed" value={run.passed} total={run.total} tone={run.passed === run.total ? "ok" : "bad"} />
         <Tile label="Cheat stories" value={run.tamper_total} />
@@ -375,11 +425,14 @@ function RunDetail({ id }: { id: number }) {
         <Tile label="Officer stories" value={officer.filter((r) => r.pass).length} total={officer.length}
               tone={officer.every((r) => r.pass) ? "ok" : "bad"} />
       </div>
+      )}
 
-      <div className="card">
-        <header className="card-head"><h3>By threat</h3></header>
-        <CategoryGrid results={run.results} />
-      </div>
+      {!threatRun && (
+        <div className="card">
+          <header className="card-head"><h3>By threat</h3></header>
+          <CategoryGrid results={run.results} />
+        </div>
+      )}
 
       {Object.keys(breakdown).length > 0 && (
         <div className="card">
@@ -395,7 +448,11 @@ function RunDetail({ id }: { id: number }) {
       {tripResults.length > 0 && (
         <table className="table">
           <thead>
-            <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Result</th></tr>
+            {threatRun ? (
+              <tr><th /><th>Case</th><th>Story</th><th>Priority</th><th>Ideal alerts</th><th>Alerts raised</th><th>Really moved / GB recorded</th><th>Coverage</th></tr>
+            ) : (
+              <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Result</th></tr>
+            )}
           </thead>
           <tbody>
             {tripResults.map((s) => (
@@ -408,11 +465,26 @@ function RunDetail({ id }: { id: number }) {
                       {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
                     </div>
                   </td>
-                  <td><KindBadge kind={s.kind} /></td>
-                  <td>{s.events.length}</td>
-                  <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
-                  <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
-                  <td><PassTag pass={s.pass} /></td>
+                  {threatRun ? (
+                    <>
+                      <td className="nowrap">{s.priority ?? "—"} · {s.threat}</td>
+                      <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
+                      <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
+                      <td className="nowrap">
+                        {s.really_moved?.trips ?? 0} / {s.gb_recorded?.trips ?? 0} trips
+                        <div className="small muted">{s.really_moved?.tonnes ?? 0} / {s.gb_recorded?.tonnes ?? 0} t</div>
+                      </td>
+                      <td><CoverageBadge c={s.coverage} /></td>
+                    </>
+                  ) : (
+                    <>
+                      <td><KindBadge kind={s.kind} /></td>
+                      <td>{s.events.length}</td>
+                      <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
+                      <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
+                      <td><PassTag pass={s.pass} /></td>
+                    </>
+                  )}
                 </tr>
                 {open === s.id && (
                   <tr className="detail-row">
