@@ -446,3 +446,6 @@ ul.plain li { padding: 3px 0; }
 @media (max-width: 900px) {
   .gc-trip-grid { grid-template-columns: 1fr; }
 }
+.gc-continue { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px;
+  padding: 8px 12px; border-radius: 8px; background: var(--ok-bg); border: 1px solid var(--ok); font-size: 0.85rem; }
+.gc-continue .btn { padding: 3px 10px; font-size: 0.8rem; }

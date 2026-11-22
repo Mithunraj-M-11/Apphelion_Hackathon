@@ -255,399 +255,40 @@ function stepsFor(m: Movement): StepView[] {
   return steps;
 }
 
-export default function GateConsole() {
-  const session = useMemo(sessionId, []);
-  const source = `walkthrough:${session}`;
+/** Sensor readings a faithful pole reports for a physical setup (plate, FASTag, radar length). */
+function readingsFor(s: Setup, details: Record<string, Truck>) {
+  const reg = s.vehicle === "registered" ? details[s.registeredPlate] : undefined;
+  const ownPlate = s.vehicle === "registered" ? s.registeredPlate : s.outsidePlate;
+  const ownTag = s.vehicle === "registered" ? reg?.fastag_tag_id ?? null : OUTSIDE_TAG;
+  const length = s.vehicle === "registered" ? reg?.length_m ?? null : s.outsideLength;
+  const plateRead = s.plate === "own" ? ownPlate || null : s.plate === "none" ? null : s.customPlate.trim() || null;
+  const tagRead = s.tag === "own" ? ownTag : s.tag === "none" ? null : details[s.tagFrom]?.fastag_tag_id ?? null;
+  const ready = s.vehicle === "outside" || !!reg;
+  return { reg, ownPlate, plateRead, tagRead, length, ready };
+}
 
-  // Operating mode: ENTRY vs EXIT
-  const [mode, setMode] = useState<"ENTRY" | "EXIT">("ENTRY");
-
-  // Edge infrastructure status
-  const [edge, setEdge] = useState<EdgeSystemState | null>(null);
-
-  const [trucks, setTrucks] = useState<TruckListItem[]>([]);
-  const [details, setDetails] = useState<Record<string, Truck>>({});
-  const [stickers, setStickers] = useState<Record<string, RfidSticker>>({});
-  const [quotas, setQuotas] = useState<Record<string, VehicleQuota>>({});
-  const [activeSessions, setActiveSessions] = useState<TripSession[]>([]);
-
-  // Entry setup
-  const [setup, setSetup] = useState<Setup>(PRESETS[0].setup);
-  const [preset, setPreset] = useState(0);
-
-  // Exit setup
-  const [exitGate, setExitGate] = useState("G1");
-  const [exitPlate, setExitPlate] = useState("");
-  const [exitRfidUid, setExitRfidUid] = useState("");
-  const [exitSimMode, setExitSimMode] = useState<RfidSimMode>("genuine");
-  const [exitQrToken, setExitQrToken] = useState("");
-  const [exitResult, setExitResult] = useState<ExitVerifyOut | null>(null);
-
-  const [movement, setMovement] = useState<GateDecision | null>(null);
-  const [exitMovement, setExitMovement] = useState<GateDecision | null>(null);
-  const [revealed, setRevealed] = useState(0);
-
-  // Session permit (this demo's own contract limits, so it never uses up the real permit) and its ledger
-  const [permit, setPermit] = useState<Permit | null>(null);
-  const [ledger, setLedger] = useState<Ledger | null>(null);
-  // Weigh pad and barrier impact (mocked sensors)
-  const [entryLoad, setEntryLoad] = useState("0");
-  const [exitLoad, setExitLoad] = useState("90%");
-  const [noWeight, setNoWeight] = useState(false);
-  const [forceBarrier, setForceBarrier] = useState(false);
-  const [instant, setInstant] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [live, setLive] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
-  const [copiedToken, setCopiedToken] = useState(false);
-
-  // Load edge infrastructure state
-  useEffect(() => {
-    api.edgeState().then(setEdge).catch(() => {});
-  }, []);
-
-  // This walkthrough session's own permit (kept for the browser tab), so the demo never touches the real permit
-  useEffect(() => {
-    const key = `sitewatch.walkPermit.${session}`;
-    let saved: number | null = null;
-    try {
-      saved = Number(window.sessionStorage.getItem(key)) || null;
-    } catch {
-      saved = null;
-    }
-    const load = saved
-      ? gateApi.permit(saved)
-      : gateApi.createPermit({
-          label: `Gate console session ${session}`,
-          valid_from: todayIST(),
-          valid_to: todayIST(),
-          trip_limit: 10,
-          tonne_limit: 300,
-          vehicle_limit: 8,
-          hours_start: "00:00:00",
-          hours_end: "23:59:00",
-          exit_grace_min: 30,
-          pass_expiry_min: 120,
-          per_vehicle_trips: null,
-          source,
-        });
-    load
-      .then((p) => {
-        setPermit(p);
-        try {
-          window.sessionStorage.setItem(key, String(p.id));
-        } catch {
-          /* not remembered; fine */
-        }
-        gateApi.ledger(p.id).then(setLedger).catch(() => {});
-      })
-      .catch((e) => setError(e.message));
-  }, [session, source]);
-
-  // Registry (read-only) and active sessions
-  const reloadData = () => {
-    api.trucks().then(setTrucks).catch((e) => setError(e.message));
-    api.rfidStickers().then((list) => {
-      const map: Record<string, RfidSticker> = {};
-      list.forEach((s) => {
-        if (s.truck?.plate) map[s.truck.plate] = s;
-      });
-      setStickers(map);
-    }).catch(() => {});
-    api
-      .trips({ status: "ACTIVE" })
-      .then((list) => setActiveSessions(list.filter((s) => s.source === source)))
-      .catch(() => {});
-    if (permit) gateApi.ledger(permit.id).then(setLedger).catch(() => {});
-  };
-
-  useEffect(() => {
-    reloadData();
-  }, []);
-
-  useEffect(() => {
-    const needed = [
-      setup.vehicle === "registered" ? setup.registeredPlate : "",
-      setup.tag === "from" ? setup.tagFrom : "",
-      exitPlate,
-    ].filter((p) => p && !details[p]);
-    for (const plate of needed) {
-      const t = trucks.find((x) => x.plate === plate);
-      if (t) {
-        api.truck(t.id).then((d) => setDetails((cur) => ({ ...cur, [plate]: d })));
-        api.quota(t.id).then((q) => setQuotas((cur) => ({ ...cur, [plate]: q }))).catch(() => {});
-      }
-    }
-  }, [setup, exitPlate, trucks, details]);
-
-  // When registered truck changes in Entry mode, automatically sync its GB RFID sticker UID
-  useEffect(() => {
-    if (setup.vehicle === "registered" && setup.registeredPlate) {
-      const s = stickers[setup.registeredPlate];
-      if (s) {
-        setSetup((cur) => ({ ...cur, rfidUid: s.uid }));
-      }
-    }
-  }, [setup.vehicle, setup.registeredPlate, stickers]);
-
-  // When exit plate changes, auto-fill active session token and sticker
-  useEffect(() => {
-    if (exitPlate) {
-      const sess = activeSessions.find((s) => s.truck?.plate === exitPlate);
-      if (sess) {
-        setExitQrToken(sess.signed_token);
-        if (sess.sticker?.uid) setExitRfidUid(sess.sticker.uid);
-      } else {
-        const s = stickers[exitPlate];
-        if (s) setExitRfidUid(s.uid);
-        setExitQrToken("");
-      }
-    }
-  }, [exitPlate, activeSessions, stickers]);
-
-  // Live log stream for this tab's walkthrough
-  useEffect(() => {
-    gateApi.logs(source, 200).then(setLogs).catch(() => {});
-    const es = new EventSource(`/api/logs/stream?source=${encodeURIComponent(source)}`);
-    es.onopen = () => setLive(true);
-    es.onerror = () => setLive(false);
-    es.onmessage = (ev) => {
-      const entry = JSON.parse(ev.data) as LogEntry;
-      setLogs((cur) => (cur.some((l) => l.id === entry.id) ? cur : [...cur, entry]));
-    };
-    return () => es.close();
-  }, [source]);
-
-  useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-  }, [logs]);
-
-  // Reveal checks one by one for audience
-  const totalChecks =
-    mode === "ENTRY"
-      ? movement
-        ? stepsFor(movement).reduce((n, s) => n + s.checks.length, 0)
-        : 0
-      : exitResult
-      ? exitResult.checks.length
-      : 0;
-
-  useEffect(() => {
-    if ((mode === "ENTRY" && !movement) || (mode === "EXIT" && !exitResult)) return;
-    if (revealed >= totalChecks) return;
-    const t = setTimeout(() => setRevealed((r) => r + 1), instant ? 0 : 250);
-    return () => clearTimeout(t);
-  }, [movement, exitResult, revealed, totalChecks, instant, mode]);
-
-  // What the sensors will report for physical setup
-  const reg = setup.vehicle === "registered" ? details[setup.registeredPlate] : undefined;
-  const ownPlate = setup.vehicle === "registered" ? setup.registeredPlate : setup.outsidePlate;
-  const ownTag = setup.vehicle === "registered" ? reg?.fastag_tag_id ?? null : OUTSIDE_TAG;
-  const length = setup.vehicle === "registered" ? reg?.length_m ?? null : setup.outsideLength;
-  const plateRead =
-    setup.plate === "own" ? ownPlate || null : setup.plate === "none" ? null : setup.customPlate.trim() || null;
-  const tagRead = setup.tag === "own" ? ownTag : setup.tag === "none" ? null : details[setup.tagFrom]?.fastag_tag_id ?? null;
-  const ready = setup.vehicle === "outside" || !!reg;
-
-  const update = (patch: Partial<Setup>) => setSetup((s) => ({ ...s, ...patch }));
-
-  /** Weigh pad reading: the truck's empty weight + what is in the body ("t" or "NN%" of rated capacity). */
-  const weighPad = (t: Truck | undefined, load: string, outsideEmpty = 12, outsideRated = 25): number | null => {
-    if (noWeight) return null;
-    const empty = t ? t.empty_weight_t : outsideEmpty;
-    const rated = t ? t.rated_capacity_t : outsideRated;
-    const raw = load.trim();
-    const tonnes = raw.endsWith("%") ? (rated * Number(raw.slice(0, -1))) / 100 : Number(raw);
-    return Number.isFinite(tonnes) ? Math.round((empty + tonnes) * 100) / 100 : null;
-  };
-  const entryWeight = weighPad(reg, entryLoad);
-
-  // Arrive at Entry Gate
-  const arriveEntry = async () => {
-    setBusy(true);
-    setError(null);
-    setExitResult(null);
-    try {
-      const m = await gateApi.postEvent("G1", {
-        direction: "IN",
-        plate_read: plateRead,
-        fastag_read: tagRead,
-        radar_length_m: length,
-        weight_t: entryWeight,
-        barrier_forced: forceBarrier,
-        permit_id: permit?.id,
-        source,
-        rfid_sticker_uid: setup.rfidUid.trim() || null,
-        rfid_sim_mode: setup.rfidSimMode,
-      });
-      setRevealed(0);
-      setMovement(m);
-      reloadData();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Arrive at Exit Gate
-  const arriveExit = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      // The exit pole sees the truck itself: plate, FASTag, radar length, weigh pad, GB sticker, the QR shown
-      const t = details[exitPlate];
-      const m = await gateApi.postEvent(exitGate, {
-        direction: "OUT",
-        plate_read: exitPlate || null,
-        fastag_read: t?.fastag_tag_id ?? null,
-        radar_length_m: t?.length_m ?? null,
-        weight_t: weighPad(t, exitLoad),
-        barrier_forced: forceBarrier,
-        permit_id: permit?.id,
-        source,
-        rfid_sticker_uid: exitRfidUid.trim() || null,
-        rfid_sim_mode: exitSimMode,
-        qr_token: exitQrToken.trim() || null,
-      });
-      const checks = (m.trip_checks ?? []) as Check[];
-      setRevealed(0);
-      setExitMovement(m);
-      setExitResult({
-        decision: m.trip_decision ?? (m.barrier === "up" ? "EXIT AUTHORIZED" : "EXIT REJECTED"),
-        passed: m.barrier === "up",
-        reasons: checks.filter((c) => c.status === "failed").map((c) => c.detail),
-        checks,
-        session: m.trip_session ?? null,
-        quota_before: null,
-        quota_after: m.quota_remaining ?? null,
-        exit_movement_id: m.id,
-      });
-      reloadData();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copyToken = (tok: string) => {
-    navigator.clipboard.writeText(tok);
-    setCopiedToken(true);
-    setTimeout(() => setCopiedToken(false), 2000);
-  };
-
-  const done =
-    mode === "ENTRY" ? movement != null && revealed >= totalChecks : exitResult != null && revealed >= totalChecks;
-  let shown = 0;
-
-  // Edge status pill formatting
-  const edgeIsOnline = edge?.wan_connectivity === "ONLINE";
-  const edgeIsPrimary = edge?.active_authority === "PRIMARY" && edge?.primary_status === "ACTIVE";
-  const edgeStatusCls = !edgeIsOnline || !edgeIsPrimary ? (edge?.disaster_recovery_mode ? "bad" : "warn") : "";
-  const edgeStatusText = edge?.disaster_recovery_mode
-    ? "EMERGENCY / DISASTER RECOVERY"
-    : edge?.primary_status === "FAILED"
-    ? "STANDBY ACTIVE · FAILOVER"
-    : edge?.wan_connectivity === "WAN_OFFLINE_LOCAL_OPERATIONAL"
-    ? "PRIMARY ACTIVE · WAN OFFLINE (LOCAL)"
-    : "PRIMARY ACTIVE · ONLINE";
-
+/** What physically arrives at a barrier: the vehicle, the plate on it, the FASTag, the GB RFID sticker.
+ * Used by both entry and exit: the exit identifies the vehicle again from scratch. */
+function IdentityInputs({
+  setup,
+  update,
+  trucks,
+  title = "What physically arrives",
+  activePlates,
+}: {
+  setup: Setup;
+  update: (patch: Partial<Setup>) => void;
+  trucks: TruckListItem[];
+  title?: string;
+  activePlates?: Set<string>;
+}) {
+  // trucks with an open trip in this session first (exit), newest registry order otherwise
+  const ordered = activePlates
+    ? [...trucks].sort((a, b) => Number(activePlates.has(b.plate)) - Number(activePlates.has(a.plate)))
+    : trucks;
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1>Gate console</h1>
-          <p className="muted">
-            Unified vehicle entry and exit gate terminal with GB RFID authentication, internal signed QR trip
-            authorization, and offline edge resilience.
-          </p>
-        </div>
-      </div>
-
-      {/* Mode bar & Edge Infrastructure compact indicator */}
-      <div className="gc-mode-bar">
-        <div className="gc-mode-tabs">
-          <button
-            className={`gc-mode-tab ${mode === "ENTRY" ? "active" : ""}`}
-            onClick={() => {
-              setMode("ENTRY");
-              setRevealed(0);
-            }}
-          >
-            <LuLogIn /> ENTRY MODE
-          </button>
-          <button
-            className={`gc-mode-tab ${mode === "EXIT" ? "active" : ""}`}
-            onClick={() => {
-              setMode("EXIT");
-              setRevealed(0);
-            }}
-          >
-            <LuLogOut /> EXIT MODE
-          </button>
-        </div>
-
-        <div className="gc-edge-status-wrap" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div className={`gc-edge-status ${edgeStatusCls}`}>
-            <span className="dot" />
-            <strong>{edgeStatusText}</strong>
-          </div>
-          <Link to="/edge-recovery" className="gc-edge-link small">
-            <LuShieldAlert /> Infrastructure
-          </Link>
-        </div>
-      </div>
-
-      {/* Session permit ledger: what this demo's contract allows vs what the gates recorded */}
-      {ledger && (
-        <div className="card gc-ledger">
-          <LuBarChart3 />
-          <span>Session permit #{ledger.permit_id}</span>
-          <span>Trips reserved <strong>{ledger.trips_reserved}/{ledger.trip_limit}</strong></span>
-          <span>Legal <strong>{ledger.legal_trips}</strong></span>
-          <span>Actual <strong>{ledger.actual_trips}</strong></span>
-          <span className={ledger.illegal_trips ? "bad-text" : ""}>Illegal <strong>{ledger.illegal_trips}</strong></span>
-          <span>Tonnes <strong>{ledger.tonnes}/{ledger.tonne_limit}</strong></span>
-          <span className={ledger.active_holds ? "warn-text" : ""}>On hold <strong>{ledger.active_holds}</strong></span>
-          <span>
-            Alerts <strong>{ledger.alerts.CRITICAL}</strong> critical, <strong>{ledger.alerts.HIGH}</strong> high
-          </span>
-        </div>
-      )}
-
-      {mode === "ENTRY" ? (
-        /* ================================================= ENTRY MODE ================================================= */
-        <div className="gc-grid">
-          {/* Left panel: Entry Gate Inputs */}
-          <section className="card gc-panel">
-            <header className="gc-panel-head">
-              <LuRadioTower /> <h3>Gate G1 · Entry</h3>
-              <span className="gc-tag gc-tag-mock">Mocked sensors</span>
-            </header>
-
-            <label className="gc-field">
-              Preset scenario
-              <select
-                value={preset}
-                onChange={(e) => {
-                  const i = Number(e.target.value);
-                  setPreset(i);
-                  setSetup(PRESETS[i].setup);
-                }}
-              >
-                {PRESETS.map((p, i) => (
-                  <option key={p.name} value={i}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div className="gc-sep">What physically arrives</div>
+            <div className="gc-sep">{title}</div>
             <div className="gc-radio">
               <label>
                 <input
@@ -675,9 +316,10 @@ export default function GateConsole() {
                   onChange={(e) => update({ registeredPlate: e.target.value })}
                 >
                   <option value="">Choose…</option>
-                  {trucks.map((t) => (
+                  {ordered.map((t) => (
                     <option key={t.id} value={t.plate}>
                       {formatPlate(t.plate, t.plate_type)} · {t.make} {t.model}
+                      {activePlates?.has(t.plate) ? " (open trip)" : ""}
                     </option>
                   ))}
                 </select>
@@ -778,6 +420,437 @@ export default function GateConsole() {
                 <option value="unknown_damaged">Damaged or unknown sticker (unregistered / unreadable)</option>
               </select>
             </label>
+
+    </>
+  );
+}
+
+const BLANK_EXIT: Setup = {
+  vehicle: "registered",
+  registeredPlate: "",
+  outsidePlate: "",
+  outsideLength: 8.2,
+  plate: "own",
+  customPlate: "",
+  tag: "own",
+  tagFrom: "",
+  rfidUid: "",
+  rfidSimMode: "genuine",
+};
+
+export default function GateConsole() {
+  const session = useMemo(sessionId, []);
+  const source = `walkthrough:${session}`;
+
+  // Operating mode: ENTRY vs EXIT
+  const [mode, setMode] = useState<"ENTRY" | "EXIT">("ENTRY");
+
+  // Edge infrastructure status
+  const [edge, setEdge] = useState<EdgeSystemState | null>(null);
+
+  const [trucks, setTrucks] = useState<TruckListItem[]>([]);
+  const [details, setDetails] = useState<Record<string, Truck>>({});
+  const [stickers, setStickers] = useState<Record<string, RfidSticker>>({});
+  const [quotas, setQuotas] = useState<Record<string, VehicleQuota>>({});
+  const [activeSessions, setActiveSessions] = useState<TripSession[]>([]);
+
+  // Entry setup
+  const [setup, setSetup] = useState<Setup>(PRESETS[0].setup);
+  const [preset, setPreset] = useState(0);
+
+  // Exit setup
+  const [exitGate, setExitGate] = useState("G1");
+  const [exitSetup, setExitSetup] = useState<Setup>(BLANK_EXIT);
+  const [prefilledFrom, setPrefilledFrom] = useState<number | null>(null); // entry movement the exit continues
+  const [exitQrToken, setExitQrToken] = useState("");
+  const [exitResult, setExitResult] = useState<ExitVerifyOut | null>(null);
+
+  const [movement, setMovement] = useState<GateDecision | null>(null);
+  const [exitMovement, setExitMovement] = useState<GateDecision | null>(null);
+  const [revealed, setRevealed] = useState(0);
+
+  // Session permit (this demo's own contract limits, so it never uses up the real permit) and its ledger
+  const [permit, setPermit] = useState<Permit | null>(null);
+  const [ledger, setLedger] = useState<Ledger | null>(null);
+  // Weigh pad and barrier impact (mocked sensors)
+  const [entryLoad, setEntryLoad] = useState("0");
+  const [exitLoad, setExitLoad] = useState("90%");
+  const [noWeight, setNoWeight] = useState(false);
+  const [forceBarrier, setForceBarrier] = useState(false);
+  const [instant, setInstant] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [live, setLive] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+  const [copiedToken, setCopiedToken] = useState(false);
+
+  // Load edge infrastructure state
+  useEffect(() => {
+    api.edgeState().then(setEdge).catch(() => {});
+  }, []);
+
+  // This walkthrough session's own permit (kept for the browser tab), so the demo never touches the real permit
+  useEffect(() => {
+    const key = `sitewatch.walkPermit.${session}`;
+    let saved: number | null = null;
+    try {
+      saved = Number(window.sessionStorage.getItem(key)) || null;
+    } catch {
+      saved = null;
+    }
+    const create = () =>
+      gateApi.createPermit({
+          label: `Gate console session ${session}`,
+          valid_from: todayIST(),
+          valid_to: todayIST(),
+          trip_limit: 10,
+          tonne_limit: 300,
+          vehicle_limit: 8,
+          hours_start: "00:00:00",
+          hours_end: "23:59:00",
+          exit_grace_min: 30,
+          pass_expiry_min: 120,
+          per_vehicle_trips: null,
+          source,
+        });
+    // a remembered permit may have been cleared from the database: start a fresh one then
+    const load = saved ? gateApi.permit(saved).catch(() => create()) : create();
+    load
+      .then((p) => {
+        setPermit(p);
+        try {
+          window.sessionStorage.setItem(key, String(p.id));
+        } catch {
+          /* not remembered; fine */
+        }
+        gateApi.ledger(p.id).then(setLedger).catch(() => {});
+      })
+      .catch((e) => setError(e.message));
+  }, [session, source]);
+
+  // Registry (read-only) and active sessions
+  const reloadData = () => {
+    api.trucks().then(setTrucks).catch((e) => setError(e.message));
+    api.rfidStickers().then((list) => {
+      const map: Record<string, RfidSticker> = {};
+      list.forEach((s) => {
+        if (s.truck?.plate) map[s.truck.plate] = s;
+      });
+      setStickers(map);
+    }).catch(() => {});
+    api
+      .trips({ status: "ACTIVE" })
+      .then((list) => setActiveSessions(list.filter((s) => s.source === source)))
+      .catch(() => {});
+    if (permit) gateApi.ledger(permit.id).then(setLedger).catch(() => {});
+  };
+
+  useEffect(() => {
+    reloadData();
+  }, []);
+
+  useEffect(() => {
+    const needed = [
+      setup.vehicle === "registered" ? setup.registeredPlate : "",
+      setup.tag === "from" ? setup.tagFrom : "",
+      exitSetup.vehicle === "registered" ? exitSetup.registeredPlate : "",
+      exitSetup.tag === "from" ? exitSetup.tagFrom : "",
+    ].filter((p) => p && !details[p]);
+    for (const plate of needed) {
+      const t = trucks.find((x) => x.plate === plate);
+      if (t) {
+        api.truck(t.id).then((d) => setDetails((cur) => ({ ...cur, [plate]: d })));
+        api.quota(t.id).then((q) => setQuotas((cur) => ({ ...cur, [plate]: q }))).catch(() => {});
+      }
+    }
+  }, [setup, exitSetup, trucks, details]);
+
+  // When registered truck changes in Entry mode, automatically sync its GB RFID sticker UID
+  useEffect(() => {
+    if (setup.vehicle === "registered" && setup.registeredPlate) {
+      const s = stickers[setup.registeredPlate];
+      if (s) {
+        setSetup((cur) => ({ ...cur, rfidUid: s.uid }));
+      }
+    }
+  }, [setup.vehicle, setup.registeredPlate, stickers]);
+
+
+  // Live log stream for this tab's walkthrough
+  useEffect(() => {
+    gateApi.logs(source, 200).then(setLogs).catch(() => {});
+    const es = new EventSource(`/api/logs/stream?source=${encodeURIComponent(source)}`);
+    es.onopen = () => setLive(true);
+    es.onerror = () => setLive(false);
+    es.onmessage = (ev) => {
+      const entry = JSON.parse(ev.data) as LogEntry;
+      setLogs((cur) => (cur.some((l) => l.id === entry.id) ? cur : [...cur, entry]));
+    };
+    return () => es.close();
+  }, [source]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
+  }, [logs]);
+
+  // Reveal checks one by one for audience
+  const totalChecks =
+    mode === "ENTRY"
+      ? movement
+        ? stepsFor(movement).reduce((n, s) => n + s.checks.length, 0)
+        : 0
+      : exitResult
+      ? exitResult.checks.length
+      : 0;
+
+  useEffect(() => {
+    if ((mode === "ENTRY" && !movement) || (mode === "EXIT" && !exitResult)) return;
+    if (revealed >= totalChecks) return;
+    const t = setTimeout(() => setRevealed((r) => r + 1), instant ? 0 : 250);
+    return () => clearTimeout(t);
+  }, [movement, exitResult, revealed, totalChecks, instant, mode]);
+
+  // What the sensors will report for physical setup
+  const { reg, plateRead, tagRead, length, ready } = readingsFor(setup, details);
+  const exitR = readingsFor(exitSetup, details);
+  const activePlates = new Set(activeSessions.map((s) => s.truck?.plate).filter((p): p is string => !!p));
+  const exitActive = activeSessions.find((s) => s.truck?.plate === exitR.plateRead);
+
+  const update = (patch: Partial<Setup>) => setSetup((s) => ({ ...s, ...patch }));
+
+  /** Exit form edits. Picking a registered truck by hand fills in its own sticker and its open trip's QR. */
+  const updateExit = (patch: Partial<Setup>) => {
+    setExitSetup((s) => {
+      const next = { ...s, ...patch };
+      if (patch.registeredPlate !== undefined && next.vehicle === "registered") {
+        next.rfidUid = stickers[next.registeredPlate]?.uid ?? "";
+      }
+      return next;
+    });
+    if (patch.registeredPlate !== undefined) {
+      const sess = activeSessions.find((x) => x.truck?.plate === patch.registeredPlate);
+      setExitQrToken(sess?.signed_token ?? "");
+      setPrefilledFrom(null);
+    }
+  };
+
+  /** Switching to Exit continues the latest entry: the same physical vehicle arrives at the exit barrier,
+   * showing the pass it was given (if any). Only once per entry, so edits made for a demo are kept. */
+  const openExit = () => {
+    setMode("EXIT");
+    setRevealed(0);
+    if (movement && movement.id !== prefilledFrom) {
+      setExitSetup({ ...setup });
+      setExitQrToken(movement.trip_session?.signed_token ?? "");
+      setExitLoad("90%");
+      setForceBarrier(false);
+      setExitResult(null);
+      setExitMovement(null);
+      setPrefilledFrom(movement.id);
+    }
+  };
+
+  const clearExit = () => {
+    setExitSetup(BLANK_EXIT);
+    setExitQrToken("");
+    setExitResult(null);
+    setExitMovement(null);
+    setPrefilledFrom(movement?.id ?? null); // don't re-fill from the same entry
+  };
+
+  /** Weigh pad reading: the truck's empty weight + what is in the body ("t" or "NN%" of rated capacity). */
+  const weighPad = (t: Truck | undefined, load: string, outsideEmpty = 12, outsideRated = 25): number | null => {
+    if (noWeight) return null;
+    const empty = t ? t.empty_weight_t : outsideEmpty;
+    const rated = t ? t.rated_capacity_t : outsideRated;
+    const raw = load.trim();
+    const tonnes = raw.endsWith("%") ? (rated * Number(raw.slice(0, -1))) / 100 : Number(raw);
+    return Number.isFinite(tonnes) ? Math.round((empty + tonnes) * 100) / 100 : null;
+  };
+  const entryWeight = weighPad(reg, entryLoad);
+
+  // Arrive at Entry Gate
+  const arriveEntry = async () => {
+    setBusy(true);
+    setError(null);
+    setExitResult(null);
+    try {
+      const m = await gateApi.postEvent("G1", {
+        direction: "IN",
+        plate_read: plateRead,
+        fastag_read: tagRead,
+        radar_length_m: length,
+        weight_t: entryWeight,
+        barrier_forced: forceBarrier,
+        permit_id: permit?.id,
+        source,
+        rfid_sticker_uid: setup.rfidUid.trim() || null,
+        rfid_sim_mode: setup.rfidSimMode,
+      });
+      setRevealed(0);
+      setMovement(m);
+      reloadData();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Arrive at Exit Gate
+  const arriveExit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      // The exit pole identifies the vehicle again from scratch: plate, FASTag, radar length, GB sticker,
+      // plus the weigh pad and the QR shown
+      const m = await gateApi.postEvent(exitGate, {
+        direction: "OUT",
+        plate_read: exitR.plateRead,
+        fastag_read: exitR.tagRead,
+        radar_length_m: exitR.length,
+        weight_t: weighPad(exitR.reg, exitLoad),
+        barrier_forced: forceBarrier,
+        permit_id: permit?.id,
+        source,
+        rfid_sticker_uid: exitSetup.rfidUid.trim() || null,
+        rfid_sim_mode: exitSetup.rfidSimMode,
+        qr_token: exitQrToken.trim() || null,
+      });
+      const checks = (m.trip_checks ?? []) as Check[];
+      setRevealed(0);
+      setExitMovement(m);
+      setExitResult({
+        decision: m.trip_decision ?? (m.barrier === "up" ? "EXIT AUTHORIZED" : "EXIT REJECTED"),
+        passed: m.barrier === "up",
+        reasons: checks.filter((c) => c.status === "failed").map((c) => c.detail),
+        checks,
+        session: m.trip_session ?? null,
+        quota_before: null,
+        quota_after: m.quota_remaining ?? null,
+        exit_movement_id: m.id,
+      });
+      reloadData();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyToken = (tok: string) => {
+    navigator.clipboard.writeText(tok);
+    setCopiedToken(true);
+    setTimeout(() => setCopiedToken(false), 2000);
+  };
+
+  const done =
+    mode === "ENTRY" ? movement != null && revealed >= totalChecks : exitResult != null && revealed >= totalChecks;
+  let shown = 0;
+
+  // Edge status pill formatting
+  const edgeIsOnline = edge?.wan_connectivity === "ONLINE";
+  const edgeIsPrimary = edge?.active_authority === "PRIMARY" && edge?.primary_status === "ACTIVE";
+  const edgeStatusCls = !edgeIsOnline || !edgeIsPrimary ? (edge?.disaster_recovery_mode ? "bad" : "warn") : "";
+  const edgeStatusText = edge?.disaster_recovery_mode
+    ? "EMERGENCY / DISASTER RECOVERY"
+    : edge?.primary_status === "FAILED"
+    ? "STANDBY ACTIVE · FAILOVER"
+    : edge?.wan_connectivity === "WAN_OFFLINE_LOCAL_OPERATIONAL"
+    ? "PRIMARY ACTIVE · WAN OFFLINE (LOCAL)"
+    : "PRIMARY ACTIVE · ONLINE";
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Gate console</h1>
+          <p className="muted">
+            Unified vehicle entry and exit gate terminal with GB RFID authentication, internal signed QR trip
+            authorization, and offline edge resilience.
+          </p>
+        </div>
+      </div>
+
+      {/* Mode bar & Edge Infrastructure compact indicator */}
+      <div className="gc-mode-bar">
+        <div className="gc-mode-tabs">
+          <button
+            className={`gc-mode-tab ${mode === "ENTRY" ? "active" : ""}`}
+            onClick={() => {
+              setMode("ENTRY");
+              setRevealed(0);
+            }}
+          >
+            <LuLogIn /> ENTRY MODE
+          </button>
+          <button
+            className={`gc-mode-tab ${mode === "EXIT" ? "active" : ""}`}
+            onClick={openExit}
+          >
+            <LuLogOut /> EXIT MODE
+          </button>
+        </div>
+
+        <div className="gc-edge-status-wrap" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className={`gc-edge-status ${edgeStatusCls}`}>
+            <span className="dot" />
+            <strong>{edgeStatusText}</strong>
+          </div>
+          <Link to="/edge-recovery" className="gc-edge-link small">
+            <LuShieldAlert /> Infrastructure
+          </Link>
+        </div>
+      </div>
+
+      {/* Session permit ledger: what this demo's contract allows vs what the gates recorded */}
+      {ledger && (
+        <div className="card gc-ledger">
+          <LuBarChart3 />
+          <span>Session permit #{ledger.permit_id}</span>
+          <span>Trips reserved <strong>{ledger.trips_reserved}/{ledger.trip_limit}</strong></span>
+          <span>Legal <strong>{ledger.legal_trips}</strong></span>
+          <span>Actual <strong>{ledger.actual_trips}</strong></span>
+          <span className={ledger.illegal_trips ? "bad-text" : ""}>Illegal <strong>{ledger.illegal_trips}</strong></span>
+          <span>Tonnes <strong>{ledger.tonnes}/{ledger.tonne_limit}</strong></span>
+          <span className={ledger.active_holds ? "warn-text" : ""}>On hold <strong>{ledger.active_holds}</strong></span>
+          <span>
+            Alerts <strong>{ledger.alerts.CRITICAL}</strong> critical, <strong>{ledger.alerts.HIGH}</strong> high
+          </span>
+        </div>
+      )}
+
+      {mode === "ENTRY" ? (
+        /* ================================================= ENTRY MODE ================================================= */
+        <div className="gc-grid">
+          {/* Left panel: Entry Gate Inputs */}
+          <section className="card gc-panel">
+            <header className="gc-panel-head">
+              <LuRadioTower /> <h3>Gate G1 · Entry</h3>
+              <span className="gc-tag gc-tag-mock">Mocked sensors</span>
+            </header>
+
+            <label className="gc-field">
+              Preset scenario
+              <select
+                value={preset}
+                onChange={(e) => {
+                  const i = Number(e.target.value);
+                  setPreset(i);
+                  setSetup(PRESETS[i].setup);
+                }}
+              >
+                {PRESETS.map((p, i) => (
+                  <option key={p.name} value={i}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <IdentityInputs setup={setup} update={update} trucks={trucks} />
 
             <div className="gc-sep" style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <LuScale /> WEIGH PAD AND BARRIER
@@ -1044,42 +1117,28 @@ export default function GateConsole() {
               </select>
             </label>
 
-            <label className="gc-field">
-              Vehicle arriving at exit
-              <select value={exitPlate} onChange={(e) => setExitPlate(e.target.value)}>
-                <option value="">Choose vehicle…</option>
-                {trucks.map((t) => {
-                  const hasActive = activeSessions.some((s) => s.truck?.plate === t.plate);
-                  return (
-                    <option key={t.id} value={t.plate}>
-                      {formatPlate(t.plate, t.plate_type)} {hasActive ? "(active trip)" : ""}
-                    </option>
-                  );
-                })}
-              </select>
-            </label>
+            {movement && prefilledFrom === movement.id && (
+              <div className="gc-continue">
+                <div>
+                  <strong>Continuing from entry #{movement.id}</strong>{" "}
+                  <span className="muted small">
+                    {movement.plate_read ? formatPlate(movement.plate_read) : "no plate"} ·{" "}
+                    {movement.trip_session
+                      ? `pass ${movement.trip_session.trip_code}`
+                      : "no pass issued (refused at entry)"}
+                  </span>
+                </div>
+                <button className="btn small" onClick={clearExit}>Clear</button>
+              </div>
+            )}
 
-            <label className="gc-field">
-              Scanned GB RFID Sticker UID
-              <input
-                value={exitRfidUid}
-                onChange={(e) => setExitRfidUid(e.target.value)}
-                placeholder="GB-RFID-00001"
-              />
-            </label>
-
-            <label className="gc-field">
-              RFID Chip Authentication Simulation
-              <select
-                value={exitSimMode}
-                onChange={(e) => setExitSimMode(e.target.value as RfidSimMode)}
-              >
-                <option value="genuine">Genuine sticker (crypto challenge verified)</option>
-                <option value="cloned">Cloned sticker (signature mismatch)</option>
-                <option value="revoked">Revoked sticker (flagged in registry)</option>
-                <option value="unknown_damaged">Unknown or damaged sticker</option>
-              </select>
-            </label>
+            <IdentityInputs
+              setup={exitSetup}
+              update={updateExit}
+              trucks={trucks}
+              title="What physically arrives at the exit"
+              activePlates={activePlates}
+            />
 
             <label className="gc-field">
               Presented Internal Trip QR Token
@@ -1088,7 +1147,7 @@ export default function GateConsole() {
                 style={{ font: "inherit", fontSize: "0.8rem", width: "100%", padding: 6, borderRadius: 6, border: "1px solid var(--border)" }}
                 value={exitQrToken}
                 onChange={(e) => setExitQrToken(e.target.value)}
-                placeholder="Paste signed token or choose truck with active trip above"
+                placeholder="The pass shown at the exit (filled from the entry, or paste another one)"
               />
             </label>
 
@@ -1111,35 +1170,46 @@ export default function GateConsole() {
             </label>
 
             <div className="gc-preview">
-              <div className="field-label">Exit Pole Scan Preview</div>
+              <div className="field-label">Exit pole will report</div>
               <div>
-                Vehicle: <strong>{exitPlate ? formatPlate(exitPlate) : "none"}</strong>
-              </div>
-              <div>
-                Active trip detected:{" "}
-                {activeSessions.find((s) => s.truck?.plate === exitPlate) ? (
-                  <span className="ok-text font-bold">
-                    {activeSessions.find((s) => s.truck?.plate === exitPlate)?.trip_code}
-                  </span>
+                Plate:{" "}
+                {exitR.plateRead ? (
+                  <span className="plate plate-sm">{formatPlate(exitR.plateRead)}</span>
                 ) : (
-                  <span className="muted">None found</span>
+                  <span className="muted">none</span>
                 )}
               </div>
               <div>
-                GB RFID: <span className="mono small">{exitRfidUid || "none"}</span>
+                FASTag: <span className="mono small">{shortTag(exitR.tagRead)}</span>
+              </div>
+              <div>Radar length: {exitR.length != null ? `${exitR.length.toFixed(2)} m` : "…"}</div>
+              <div>
+                GB RFID: <span className="mono small">{exitSetup.rfidUid || "none"}</span>{" "}
+                <span className="badge neutral small">{exitSetup.rfidSimMode}</span>
               </div>
               <div>
                 Weigh pad:{" "}
                 {(() => {
-                  const w = weighPad(details[exitPlate], exitLoad);
+                  const w = weighPad(exitR.reg, exitLoad);
                   return w != null ? `${w.toFixed(2)} t` : noWeight ? "no reading" : "…";
                 })()}
+              </div>
+              <div>
+                QR shown: <span className="mono small">{exitQrToken ? `${exitQrToken.slice(0, 18)}…` : "none"}</span>
+              </div>
+              <div>
+                Open trip for this plate:{" "}
+                {exitActive ? (
+                  <span className="ok-text">{exitActive.trip_code}</span>
+                ) : (
+                  <span className="muted">none found</span>
+                )}
               </div>
             </div>
 
             <button
               className="btn primary gc-go"
-              disabled={busy || !exitPlate}
+              disabled={busy || !exitR.ready}
               onClick={arriveExit}
             >
               <LuPlay /> Verify vehicle exit
@@ -1212,7 +1282,7 @@ export default function GateConsole() {
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", fontSize: "0.85rem" }}>
                           <div>
                             <span className="muted">Vehicle:</span>{" "}
-                            <strong>{formatPlate(exitPlate)}</strong>
+                            <strong>{exitR.plateRead ? formatPlate(exitR.plateRead) : "no plate"}</strong>
                           </div>
                           <div>
                             <span className="muted">Exit Gate:</span>{" "}
