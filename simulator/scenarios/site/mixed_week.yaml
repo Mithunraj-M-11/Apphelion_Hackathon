@@ -1,0 +1,23 @@
+# A normal week with every cheat type mixed into honest traffic. on_refusal: what the Vendor tells a refused truck
+# to do (turn_back = stays / goes away empty, force = breaks the barrier, side_track = goes round).
+description: Honest week with every kind of cheat mixed in; the Vendor under-reports by 15%.
+days: 7
+seed: 23
+fleet: 10
+permit: { trip_limit: 1000, tonne_limit: 30000, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00" }
+honest: { loading_min: [30, 60], haul_min: [120, 240], load_pct: [80, 95], weigh_noise_t: 0.15,
+          dead_phone_rate: 0.03, late_exit_rate: 0.3 }
+vendor_report: { mode: under_by_pct, pct: 15 }
+cheats:
+  - { type: unregistered,           per_day: 0.6, on_refusal: { turn_back: 0.5, force: 0.3, side_track: 0.2 } }
+  - { type: clone,                  per_day: 0.3, on_refusal: { turn_back: 0.4, force: 0.6 } }
+  - { type: pass_reuse,             per_day: 0.5, on_refusal: { turn_back: 0.5, force: 0.3, side_track: 0.2 } }
+  - { type: pass_handover,          per_day: 0.3, on_refusal: { turn_back: 0.6, force: 0.4 } }
+  - { type: forged_qr,              per_day: 0.3, on_refusal: { turn_back: 0.6, force: 0.4 } }
+  - { type: night_trip,             per_day: 0.5, on_refusal: { turn_back: 0.4, force: 0.2, side_track: 0.4 } }
+  - { type: side_track_in_gate_out, per_day: 0.5, on_refusal: { turn_back: 0.4, force: 0.4, side_track: 0.2 } }
+  - { type: side_track_out,         per_day: 0.3 }
+  - { type: side_track_both,        per_day: 0.5 }
+  - { type: overload,               per_day: 0.7 }
+  - { type: arrive_loaded,          per_day: 0.3 }
+  - { type: weigh_bypass,           per_day: 0.3 }

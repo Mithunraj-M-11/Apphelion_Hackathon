@@ -1,0 +1,162 @@
+suite: trip_auth_full
+description: Comprehensive verification of GB RFID authentication, trip quota lifecycle, internal QR authorization, edge failover, and disaster recovery.
+gate: G1
+direction: IN
+
+scenarios:
+  - id: TC01
+    name: Normal vehicle entry and trip creation
+    kind: honest
+    why: An authorized truck with valid GB RFID sticker and quota must be granted entry with a signed internal QR pass.
+    type: entry
+    vehicle: { registered: OD09AC5678 }
+    rfid_sim_mode: genuine
+    expected:
+      result: AUTHORISED
+      trip_decision: ENTRY AUTHORIZED
+      trip_created: true
+
+  - id: TC02
+    name: Successful vehicle exit and quota deduction
+    kind: honest
+    why: Presenting matching RFID sticker and signed internal QR token closes the active trip and deducts exactly 1 quota trip.
+    type: exit
+    vehicle: { registered: OD09AC5678 }
+    rfid_sim_mode: genuine
+    expected:
+      decision: EXIT AUTHORIZED
+      quota_deducted: 1
+
+  - id: TC03
+    name: Cloned RFID rejection
+    kind: tamper
+    why: An RFID sticker with invalid cryptographic challenge-response signature must be denied entry (anti-cloning).
+    type: entry
+    vehicle: { registered: OD09AF7733 }
+    rfid_sim_mode: cloned
+    expected:
+      trip_decision: ENTRY REJECTED
+      caught_by: [rfid_authentication]
+
+  - id: TC04
+    name: Revoked sticker rejection
+    kind: tamper
+    why: A sticker flagged as REVOKED in the GB registry must be immediately denied entry at all gates.
+    type: entry
+    vehicle: { registered: OD02BQ4410 }
+    rfid_sim_mode: revoked
+    expected:
+      trip_decision: ENTRY REJECTED
+      caught_by: [sticker_status]
+
+  - id: TC05
+    name: Unknown sticker rejection
+    kind: tamper
+    why: An unrecognized, damaged, or unrecorded sticker UID must be rejected under default-deny.
+    type: entry
+    vehicle: { registered: OD09AH2468 }
+    rfid_sim_mode: unknown_damaged
+    expected:
+      trip_decision: ENTRY REJECTED
+      caught_by: [rfid_authentication]
+
+  - id: TC06
+    name: Duplicate entry rejection
+    kind: tamper
+    why: A vehicle that already has an active, open trip session must not receive another concurrent trip authorization.
+    type: duplicate_entry
+    vehicle: { registered: OD09AJ3579 }
+    expected:
+      trip_decision: ENTRY REJECTED
+      caught_by: [active_trip]
+
+  - id: TC07
+    name: QR replay rejection
+    kind: tamper
+    why: Presenting a QR token signed for another session or truck must be caught and rejected at exit.
+    type: exit_replay
+    vehicle: { registered: OD09AJ3579 }
+    expected:
+      decision: EXIT REJECTED
+      caught_by: [qr_token_validity]
+
+  - id: TC08
+    name: Quota exhaustion rejection
+    kind: tamper
+    why: A vehicle whose trip quota has reached zero must be prevented from entering the site.
+    type: entry
+    vehicle: { registered: OD11CE3305 }
+    rfid_sim_mode: genuine
+    expected:
+      trip_decision: ENTRY REJECTED
+      caught_by: [trip_quota]
+
+  - id: TC09
+    name: Expired unresolved trip rejection
+    kind: tamper
+    why: A vehicle that failed to exit and whose trip expired unresolved must be blocked until resolved by an officer.
+    type: entry
+    vehicle: { registered: CG04MN5507 }
+    rfid_sim_mode: genuine
+    expected:
+      trip_decision: ENTRY REJECTED
+      caught_by: [unresolved_trip]
+
+  - id: TC10
+    name: WAN disconnection with local operation continuing
+    kind: honest
+    why: The local edge controller must continue authenticating RFID and issuing trip passes when WAN is offline.
+    type: wan_disconnect
+    expected:
+      wan_status: WAN_OFFLINE_LOCAL_OPERATIONAL
+      local_auth_ok: true
+
+  - id: TC11
+    name: Primary edge failure and standby takeover
+    kind: honest
+    why: Upon primary edge failure, the standby controller must take over authorization authority without split brain.
+    type: primary_failover
+    expected:
+      active_authority: STANDBY
+      standby_status: ACTIVE
+
+  - id: TC12
+    name: Primary and standby failure
+    kind: tamper
+    why: Complete infrastructure outage triggers emergency disaster recovery mode.
+    type: complete_failure
+    expected:
+      disaster_recovery_mode: true
+
+  - id: TC13
+    name: Snapshot-based recovery
+    kind: honest
+    why: Authorization state is recovered from an encrypted, HMAC-SHA256 digitally signed snapshot.
+    type: snapshot_recovery
+    expected:
+      signature_valid: true
+      restored: true
+
+  - id: TC14
+    name: Stale snapshot warning
+    kind: honest
+    why: Snapshots older than 24 hours warn officers that restored state is potentially stale.
+    type: stale_snapshot
+    expected:
+      is_stale: true
+
+  - id: TC15
+    name: Emergency authorization
+    kind: honest
+    why: In disaster recovery mode, officers can manually authorize vehicles with mandatory justification.
+    type: emergency_auth
+    expected:
+      emergency_authorized: true
+
+  - id: TC16
+    name: Recovery reconciliation
+    kind: honest
+    why: Upon infrastructure restoration, automated reconciliation compares emergency logs and reports discrepancies.
+    type: reconciliation
+    expected:
+      reconciled: true

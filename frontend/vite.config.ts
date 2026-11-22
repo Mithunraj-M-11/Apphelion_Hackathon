@@ -8,6 +8,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Docker on Windows/macOS doesn't pass file-change events into the container; poll instead.
+    watch: { usePolling: true, interval: 300 },
     proxy: {
       "/api": { target: apiTarget, changeOrigin: true },
     },

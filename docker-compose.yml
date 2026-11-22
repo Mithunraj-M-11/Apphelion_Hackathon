@@ -21,10 +21,14 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://aphelion:aphelion_dev@db:5432/aphelion}
+      WATCHFILES_FORCE_POLLING: "true"   # auto-reload works on Docker for Windows/macOS
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./backend/app:/app/app   # live reload while developing
+      - ./backend/app:/app/app                 # live reload while developing
+      - ./backend/migrations:/app/migrations   # new migrations appear on the host
+      - ./backend/tests:/app/tests
+      - uploads:/app/data/uploads              # optional truck photos (persistent)
     depends_on:
       db:
         condition: service_healthy
@@ -41,5 +45,18 @@ services:
     depends_on:
       - backend
 
+  # Scenario simulator (fake gate pole). Not started by `up`; run on demand:
+  #   docker compose run --rm simulator identify_basic
+  simulator:
+    build: ./simulator
+    profiles: ["tools"]
+    environment:
+      BACKEND_URL: http://backend:8000
+    volumes:
+      - ./simulator:/sim     # edit scenarios without rebuilding
+    depends_on:
+      - backend
+
 volumes:
   pgdata:
+  uploads:
