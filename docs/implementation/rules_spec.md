@@ -64,7 +64,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | P6 | Reuse | A closed or used pass presented again → rejected, **High** `PASS_REUSE`, barrier stays down. | Screenshots can't be reused. |
 | P7 | Wrong truck | Pass valid but plate/FASTag at exit ≠ pass → rejected, **High** `PASS_MISMATCH`, both trucks on hold. | Pass can't be handed to another truck. |
 | P8 | Tampered pass | Signature or code invalid → rejected, **High** `INVALID_PASS`. | Forgery attempt. |
-| P9 | No QR / code at exit | Close by **plate + FASTag + length** matching the truck's open pass, flag **Medium** `CLOSED_WITHOUT_QR`. Limit **1 per truck per day**; beyond that, barrier stays down until an officer approves. | Dead phones happen; the limit stops it becoming routine. |
+| P9 | No QR / code at exit | Close by **plate + FASTag + length** matching the truck's open pass, flag **Medium** `CLOSED_WITHOUT_QR`. Limit **1 per truck per day**; beyond that, barrier stays down until an officer approves. **Not allowed for a truck on hold** → **High** `NO_QR_ON_HOLD`. | Dead phones happen; the limit stops it becoming routine. A held identity may be cloned: without the hold rule a clone that forced its way in could close the real truck's pass by claiming a dead phone (found by the site-level simulation, 2026-11-21). |
 | P10 | Expired, truck still inside | At expiry → **Medium** `PASS_EXPIRED` (possible side route). The trip **stays counted** against the quota. | Can't free quota by "disappearing". |
 | P11 | Expired pass presented at exit | Barrier stays down; officer can approve a **late close** (flag `LATE_CLOSE`). Trip counted. | Keeps late trips visible without stranding trucks. |
 | P12 | Leaves with no pass | At the exit with no pass to close (e.g. came in by a side track) → barrier stays down, **High** `NO_PASS`. If it **breaks through**, the OUT is counted with no pass closure → **illegal trip**, **Critical** `ILLEGAL_TRIP` + `BARRIER_FORCED`. | The 100-vs-200 case. |
@@ -86,7 +86,7 @@ Severity scale used below: **Critical** (act now) · **High** (act today) · **M
 | CP6 | Over the limit | Any trip beyond 100% (illegal by definition) → **Critical** `LIMIT_EXCEEDED`. | |
 | CP7 | Vehicles limit | Distinct trucks with ≥ 1 pass in the period; a new truck beyond the limit → no pass, **High** `VEHICLE_LIMIT`. | Stops fleet padding. |
 | CP8 | Tonnes | Legal tonnes = sum of **measured net tonnes** on closed passes. | Royalty is per tonne. |
-| CP9 | Vendor report | Compared **daily**. Vendor trips or tonnes **below** GB legal → **Medium** `UNDER_REPORT`; **below GB actual** → **High**. | Under-reporting (E1). Vendor figures never used as the source. |
+| CP9 | Vendor report | Compared **daily**. Vendor trips **below GB actual** → **High** `UNDER_REPORT` (message says if it is even below GB legal). Vendor tonnes below GB weighed tonnes by more than **2% (min 0.5 t)** → **High** `UNDER_REPORT_TONNES`. | Under-reporting (E1). Vendor figures never used as the source. Built 2026-11-21: one High rule instead of the Medium/High split, because "below legal" is always also "below actual". |
 | CP10 | Monthly mass balance | Extracted (GB drone survey) vs dispatched (gate tonnes) + stockpile change. Gap **> 10%** → **Critical** `MASS_BALANCE_GAP`. **(verify survey + density accuracy)** | Catch-all for side routes and broken poles; 10% leaves room for survey/density error. |
 | CP11 | Offline data | Totals from an offline pole shown **provisional** until synced. | Honest numbers. |
 

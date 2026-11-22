@@ -1,4 +1,4 @@
-from app.models.gate import Movement, SimRun
+from app.models.gate import Movement, SimRun, SiteRun
 from app.models.logs import EventLog
 from app.models.registry import (
     Contract,
@@ -9,7 +9,7 @@ from app.models.registry import (
     Truck,
     TruckPhoto,
 )
-from app.models.trip import Alert, Pass, Permit, ServerKey, TruckHold
+from app.models.trip import Alert, Pass, Permit, ServerKey, TruckHold, VendorReport
 
 __all__ = [
     "Alert",
@@ -24,6 +24,8 @@ __all__ = [
     "Officer",
     "RegistryHistory",
     "SimRun",
+    "SiteRun",
+    "VendorReport",
     "Transporter",
     "Truck",
     "TruckPhoto",

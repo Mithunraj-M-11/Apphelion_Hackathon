@@ -16,12 +16,21 @@
   --plate-bg: #fffbea;
   --topbar: #0f1b2d;
   --topbar-ink: #e8edf5;
+  /* chart series (validated categorical slots 1-4, light) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
   font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--text);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
     --bg: #0e131a;
     --surface: #161d27;
     --text: #e6ebf2;
@@ -380,3 +389,27 @@ ul.plain li { padding: 3px 0; }
   .topbar { padding: 10px 16px; }
   .grid { grid-template-columns: 1fr; }
 }
+
+/* ---------- Site report ---------- */
+.sr-headline td, .sr-headline th { text-align: right; }
+.sr-headline td:first-child, .sr-headline th:first-child { text-align: left; }
+.sr-headline .sr-truth { font-weight: 700; }
+.sr-chart-wrap { position: relative; }
+.sr-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.sr-grid { stroke: var(--border); stroke-width: 1; }
+.sr-axis-text { fill: var(--muted); font-size: 11px; }
+.sr-label { fill: var(--text); font-size: 11px; font-weight: 600; }
+.sr-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.sr-dot { stroke: var(--surface); stroke-width: 2; }
+.sr-cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.sr-hit { fill: transparent; cursor: crosshair; }
+.sr-tip { position: absolute; top: 0; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 0.8rem; box-shadow: 0 4px 14px rgba(0,0,0,0.12); min-width: 170px; }
+.sr-tip-row { display: grid; grid-template-columns: 12px 1fr auto; gap: 6px; align-items: center; }
+.sr-key { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.sr-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.85rem; margin-bottom: 6px; }
+.sr-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.sr-outcome-prevented { color: var(--ok); }
+.sr-outcome-detected { color: var(--warn); }
+.sr-outcome-missed { color: var(--bad); }
+.sr-note { font-size: 0.85rem; color: var(--muted); margin-top: 8px; }

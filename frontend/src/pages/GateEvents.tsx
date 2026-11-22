@@ -3,10 +3,12 @@ import { Link } from "react-router-dom";
 import { LuChevronDown, LuChevronRight, LuRefreshCw } from "react-icons/lu";
 import { gateApi, type Movement } from "../api";
 import { AlertList, BarrierBadge, CheckList, ErrorNote, ResultBadge, SeverityBadge, StepList, TripBadge } from "../components";
-import { CHECK_LABEL, formatDateTime, formatPlate, isWalkthroughSource, parseSimSource, RESULT_LABEL } from "../format";
+import { CHECK_LABEL, formatDateTime, formatPlate, isWalkthroughSource, parseSimSource, parseSiteSource, RESULT_LABEL } from "../format";
 
 export function SourceLink({ source }: { source: string | null }) {
   const sim = parseSimSource(source);
+  const site = parseSiteSource(source);
+  if (site != null) return <Link to={`/site-runs/${site}`} onClick={(e) => e.stopPropagation()}>Site run #{site}</Link>;
   if (isWalkthroughSource(source)) return <Link to="/gate-console" onClick={(e) => e.stopPropagation()}>Walkthrough</Link>;
   if (!sim) return <span className="muted">Pole</span>;
   return (
@@ -110,6 +112,7 @@ export default function GateEvents() {
           <option value="pole">Real poles</option>
           <option value="sim">Simulator runs</option>
           <option value="walkthrough">Walkthrough</option>
+          <option value="site">Site runs</option>
         </select>
         <select value={result} onChange={(e) => setResult(e.target.value)}>
           <option value="">All results</option>

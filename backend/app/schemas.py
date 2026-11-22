@@ -381,6 +381,37 @@ class HoldOut(ORM):
     release_reason: str | None
 
 
+class VendorReportIn(BaseModel):
+    day: date
+    trips: int = Field(ge=0)
+    tonnes: float = Field(ge=0)
+
+
+class SiteRunCreate(BaseModel):
+    scenario: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    seed: int
+    days: int = Field(ge=1, le=60)
+    permit_id: int | None = None
+
+
+class SiteRunFinish(BaseModel):
+    permit_id: int | None = None
+    report: dict
+
+
+class SiteRunOut(ORM):
+    id: int
+    scenario: str
+    description: str | None
+    seed: int
+    days: int
+    permit_id: int | None
+    started_at: datetime
+    finished_at: datetime | None
+    report: dict | None
+
+
 class HoldRelease(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 

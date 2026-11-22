@@ -1,0 +1,10 @@
+# Control: a week of honest work only. Expect GB actual = ground truth = Vendor report, and no High / Critical alerts.
+description: Clean week (control). Honest traffic only; the Vendor reports truthfully.
+days: 7
+seed: 7
+fleet: 14
+permit: { trip_limit: 1000, tonne_limit: 30000, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00" }
+honest: { loading_min: [30, 60], haul_min: [120, 240], load_pct: [80, 95], weigh_noise_t: 0.15,
+          dead_phone_rate: 0.03, late_exit_rate: 0.3 }
+vendor_report: { mode: truthful }
+cheats: []

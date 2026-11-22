@@ -1,0 +1,14 @@
+# The brief's case: the permit allows 100 trips, the Vendor keeps its fleet running and aims for about double.
+# Once the GB stops issuing passes at 100%, refused trucks turn back, force the barriers, or go round by a side
+# track (after_quota). The Vendor reports only up to the permit (cap_at_permit).
+description: Permit 100 trips; the Vendor pushes on to about 200 and reports 100.
+days: 7
+seed: 11
+fleet: 10
+permit: { trip_limit: 100, tonne_limit: 3000, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00" }
+honest: { loading_min: [30, 60], haul_min: [120, 240], load_pct: [80, 95], weigh_noise_t: 0.15,
+          dead_phone_rate: 0.02, late_exit_rate: 0.2 }
+after_quota: { turn_back: 0.3, force: 0.2, side_track: 0.5 }
+vendor_report: { mode: cap_at_permit }
+cheats:
+  - { type: side_track_both, per_day: 2 }

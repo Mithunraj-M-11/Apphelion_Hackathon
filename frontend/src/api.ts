@@ -389,3 +389,81 @@ export type LogEntry = {
   source: string | null;
   context: Record<string, unknown> | null;
 };
+
+// ---------- Site-level runs ----------
+export type SiteHeadlineRow = {
+  permitted: number;
+  vendor_reported: number;
+  gb_legal: number;
+  gb_actual: number;
+  gb_illegal: number;
+  ground_truth: number;
+};
+export type SiteCheat = {
+  type: string;
+  day: string;
+  at: string;
+  vehicle: string;
+  on_refusal: string | null;
+  outcome: "prevented" | "detected" | "missed";
+  attempt_flagged: boolean;
+  alerts: string[];
+  first_alert_min: number | null;
+  note: string;
+};
+export type SiteDay = {
+  day: string;
+  gb_legal: number;
+  gb_actual: number;
+  gb_illegal: number;
+  entry_refusals: number;
+  exit_refusals: number;
+  gb_tonnes: number;
+  true_trips: number;
+  true_tonnes: number;
+  invisible_trips: number;
+  vendor_trips: number;
+  vendor_tonnes: number;
+  vendor_alerts: string[];
+  alerts: Partial<Record<Severity, number>>;
+};
+export type SiteReport = {
+  config: { days: [string, string]; fleet: number; test_trucks: number; seed: number; permit: Record<string, unknown> };
+  permit_id: number;
+  gate_events: number;
+  headline: { trips: SiteHeadlineRow; tonnes: SiteHeadlineRow };
+  accuracy: {
+    true_trips: number;
+    gb_actual_trips: number;
+    trips_never_at_a_gate: number;
+    trips_seen_pct: number;
+    true_tonnes: number;
+    gb_tonnes_weighed: number;
+    open_passes: number;
+  };
+  cheats_summary: { injected: number; prevented: number; detected: number; missed: number; missed_attempt_flagged: number };
+  cheats_by_type: Record<string, { injected: number; prevented: number; detected: number; missed: number;
+    attempt_flagged: number; avg_minutes_to_alert: number | null }>;
+  cheats: SiteCheat[];
+  alerts: { by_severity: Record<Severity, number>; by_code: Record<string, number> };
+  false_alarms: { count: number; honest_events: number; items: { at: string; vehicle: string; code: string; message: string }[] };
+  daily: SiteDay[];
+  unexpected: string[];
+  skipped: string[];
+};
+export type SiteRun = {
+  id: number;
+  scenario: string;
+  description: string | null;
+  seed: number;
+  days: number;
+  permit_id: number | null;
+  started_at: string;
+  finished_at: string | null;
+  report: SiteReport | null;
+};
+
+export const siteApi = {
+  runs: () => request<SiteRun[]>("/site-runs"),
+  run: (id: number) => request<SiteRun>(`/site-runs/${id}`),
+};

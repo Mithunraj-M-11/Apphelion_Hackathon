@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { IconType } from "react-icons";
-import { LuBellRing, LuBuilding2, LuFlaskConical, LuLayoutDashboard, LuMenu, LuMonitorPlay, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
+import { LuBellRing, LuBuilding2, LuCalendarClock, LuFlaskConical, LuLayoutDashboard, LuMenu, LuMonitorPlay, LuRadar, LuScanLine, LuTruck, LuWorkflow } from "react-icons/lu";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { OfficerProvider, useOfficer } from "./officer";
 import Alerts from "./pages/Alerts";
@@ -8,6 +8,7 @@ import GateConsole from "./pages/GateConsole";
 import GateEvents from "./pages/GateEvents";
 import RegistryList from "./pages/RegistryList";
 import SimRuns from "./pages/SimRuns";
+import SiteRuns from "./pages/SiteRuns";
 import SolutionFlow from "./pages/SolutionFlow";
 import TruckDetail from "./pages/TruckDetail";
 import TruckForm from "./pages/TruckForm";
@@ -23,6 +24,7 @@ const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/gate-events", label: "Gate events", Icon: LuScanLine },
   { to: "/alerts", label: "Alerts", Icon: LuBellRing },
   { to: "/scenario-runs", label: "Scenario runs", Icon: LuFlaskConical },
+  { to: "/site-runs", label: "Site runs", Icon: LuCalendarClock },
 ];
 
 function readCollapsed(): boolean {
@@ -114,6 +116,8 @@ function Layout() {
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/scenario-runs" element={<SimRuns />} />
           <Route path="/scenario-runs/:id" element={<SimRuns />} />
+          <Route path="/site-runs" element={<SiteRuns />} />
+          <Route path="/site-runs/:id" element={<SiteRuns />} />
           <Route path="*" element={<p>Page not found.</p>} />
         </Routes>
       </main>

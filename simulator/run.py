@@ -2,6 +2,7 @@
 
 Usage:  python run.py <suite>        e.g. identify_basic -> scenarios/identify_basic.yaml
                                           trip_basic     -> scenarios/trip_basic.yaml
+        python run.py site <scenario>  a whole contract period -> scenarios/site/<scenario>.yaml (see site_run.py)
 
 Two scenario formats:
 - single (identify_basic): one gate reading per scenario, judged on the Identify result.
@@ -307,7 +308,16 @@ def main(suite: str) -> int:
     return 0 if summary["passed"] == summary["total"] else 1
 
 
+def main_site(name: str) -> int:
+    import site_run
+
+    with httpx.Client(base_url=BACKEND, timeout=60) as client:
+        return site_run.main(name, client, load_registry(client))
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "site":
+        sys.exit(main_site(sys.argv[2]))
     if len(sys.argv) != 2:
         print(__doc__)
         sys.exit(2)

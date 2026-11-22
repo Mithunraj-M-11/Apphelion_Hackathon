@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api", tags=["gates"])
 
 SIM_PREFIX = "sim:"
 WALKTHROUGH_PREFIX = "walkthrough:"
+SITE_PREFIX = "site:"
 
 
 def _pole_line(gate: str, body: GateEventIn) -> LogLine:
@@ -107,8 +108,8 @@ def list_movements(
     gate: str | None = None,
     source_prefix: str | None = Query(None, description="e.g. 'sim:12:' for one simulator run"),
     permit_id: int | None = None,
-    origin: Literal["pole", "sim", "walkthrough"] | None = Query(
-        None, description="pole = real poles only, sim = simulator runs, walkthrough = gate console"
+    origin: Literal["pole", "sim", "walkthrough", "site"] | None = Query(
+        None, description="pole = real poles only, sim = simulator runs, walkthrough = gate console, site = site runs"
     ),
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
@@ -118,11 +119,14 @@ def list_movements(
         stmt = stmt.where(Movement.source.startswith(SIM_PREFIX))
     elif origin == "walkthrough":
         stmt = stmt.where(Movement.source.startswith(WALKTHROUGH_PREFIX))
+    elif origin == "site":
+        stmt = stmt.where(Movement.source.startswith(SITE_PREFIX))
     elif origin == "pole":
         stmt = stmt.where(
             or_(
                 Movement.source.is_(None),
-                and_(~Movement.source.startswith(SIM_PREFIX), ~Movement.source.startswith(WALKTHROUGH_PREFIX)),
+                and_(~Movement.source.startswith(SIM_PREFIX), ~Movement.source.startswith(WALKTHROUGH_PREFIX),
+                     ~Movement.source.startswith(SITE_PREFIX)),
             )
         )
     if result:

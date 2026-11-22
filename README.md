@@ -70,6 +70,20 @@ Each scenario runs under its own small permit, so scenarios never affect each ot
 docker compose run --rm simulator trip_basic       # 22 full-trip stories: entry, pass, exit, weight, quota, hours
 docker compose run --rm simulator identify_basic   # 5 Identify-only cases
 ```
+
+### Site-level runs (a whole contract period)
+
+`simulator/site_run.py` plays a whole contract period (7 days by default) through the gates: honest trucks working
+their shifts plus cheats mixed in, with a simulated Vendor filing daily reports. It keeps the **ground truth** the GB
+never sees, and saves a site report comparing Permitted / Vendor reported / GB legal / GB actual / GB illegal /
+Ground truth, with every cheat scored as prevented, detected or missed. Same seed, same result.
+
+```bash
+docker compose run --rm simulator site clean_week   # control: honest traffic only
+docker compose run --rm simulator site brief_case   # permit 100 trips, the Vendor pushes on to ~200 and reports 100
+docker compose run --rm simulator site mixed_week   # every cheat type inside a normal week
+```
+Scenarios live in `simulator/scenarios/site/`. Each run takes about a minute and appears under **Site runs**.
 Prints a scorecard (scenarios passed, tampering caught, false alarms on honest trips) and saves the run, which the
 dashboard shows under **Scenario runs**. Every reading appears under **Gate events**. Scenario files are mounted, so
 edit them and re-run without rebuilding.
@@ -87,6 +101,8 @@ edit them and re-run without rebuilding.
   pass, alerts, and every step with its reason.
 - **Alerts** (`/alerts`): every alert raised, by severity and source.
 - **Scenario runs** (`/scenario-runs`): simulator scorecards; trip stories show each event expected vs actual.
+- **Site runs** (`/site-runs`): site-level reports: the ledger table, trips per day (chart and table), cheats by
+  type, alerts, false alarms.
 - **Acting as** (top right): the GB officer making changes. There's no login in the PoC; every change is recorded
   against the selected officer.
 

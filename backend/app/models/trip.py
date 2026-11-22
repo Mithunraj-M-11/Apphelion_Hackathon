@@ -110,3 +110,17 @@ class ServerKey(Base):
 
     name: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class VendorReport(Base):
+    """What the Vendor claims it moved on one day. Compared with the GB's own figures, never used as the source."""
+
+    __tablename__ = "vendor_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    permit_id: Mapped[int] = mapped_column(ForeignKey("permits.id"), index=True)
+    day: Mapped[date] = mapped_column(Date)
+    trips: Mapped[int] = mapped_column(Integer)
+    tonnes: Mapped[float] = mapped_column(Float)
+    source: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

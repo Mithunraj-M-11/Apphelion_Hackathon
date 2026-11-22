@@ -58,6 +58,7 @@ export default function Alerts() {
           <option value="real">Real poles</option>
           <option value="sim">Simulator runs</option>
           <option value="walkthrough">Walkthrough</option>
+          <option value="site">Site runs</option>
         </select>
         <select value={severity} onChange={(e) => setSeverity(e.target.value)}>
           <option value="">All severities</option>

@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import acting_officer
-from app.models import Alert, Contract, Officer, Permit, TruckHold
-from app.schemas import AlertOut, HoldOut, HoldRelease, PermitIn, PermitOut
+from app.models import Alert, Contract, Officer, Permit, TruckHold, VendorReport
+from app.schemas import AlertOut, HoldOut, HoldRelease, PermitIn, PermitOut, VendorReportIn
 from app.services import logbus, trip
 from app.services.logbus import LogLine
 
@@ -38,12 +38,12 @@ def create_permit(body: PermitIn, db: Session = Depends(get_db),
 
 
 @router.get("/permits", response_model=list[PermitOut])
-def list_permits(origin: str | None = Query(None, description="real | sim | walkthrough"),
+def list_permits(origin: str | None = Query(None, description="real | sim | walkthrough | site"),
                  db: Session = Depends(get_db)):
     stmt = select(Permit).order_by(Permit.id.desc()).limit(200)
     if origin == "real":
         stmt = stmt.where(Permit.source.is_(None))
-    elif origin in ("sim", "walkthrough"):
+    elif origin in ("sim", "walkthrough", "site"):
         stmt = stmt.where(Permit.source.startswith(f"{origin}:"))
     return db.scalars(stmt).all()
 
@@ -66,12 +66,43 @@ def get_ledger(permit_id: int, db: Session = Depends(get_db)) -> dict:
     return trip.ledger(db, _permit(db, permit_id))
 
 
+@router.get("/permits/{permit_id}/ledger/daily")
+def get_daily_ledger(permit_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """Per site day (IST): entries, passes issued, refusals, legal / actual / illegal trips, tonnes, alerts."""
+    return trip.daily_ledger(db, _permit(db, permit_id))
+
+
+@router.post("/permits/{permit_id}/vendor-reports", status_code=201)
+def vendor_report(permit_id: int, body: VendorReportIn, db: Session = Depends(get_db)) -> dict:
+    """The Vendor's claim for one day (CP9). Stored, then checked against the GB's own figures for that day; an
+    under-report raises an alert. The Vendor's numbers are never used as the source."""
+    permit = _permit(db, permit_id)
+    db.add(VendorReport(permit_id=permit.id, day=body.day, trips=body.trips, tonnes=body.tonnes, source=permit.source))
+    gb = next((d for d in trip.daily_ledger(db, permit) if d["day"] == body.day.isoformat()),
+              {"legal_trips": 0, "actual_trips": 0, "tonnes": 0.0})
+    found = trip.compare_vendor(body.trips, body.tonnes, gb["legal_trips"], gb["actual_trips"], gb["tonnes"])
+    lines = [LogLine("COMPARE", "INFO", f"Vendor report {body.day}: {body.trips} trips, {body.tonnes:.1f} t; GB "
+                                        f"{gb['legal_trips']} legal, {gb['actual_trips']} actual, {gb['tonnes']:.1f} t")]
+    alerts = []
+    for code, severity, message in found:
+        db.add(Alert(permit_id=permit.id, code=code, severity=severity, message=f"{body.day}: {message}",
+                     status="open", source=permit.source))
+        alerts.append({"code": code, "severity": severity, "message": message})
+        lines.append(LogLine("ACT", trip.LEVEL[severity], f"{severity} {code}: {message}"))
+    rows = logbus.save(db, lines, source=permit.source)
+    db.commit()
+    logbus.publish(rows)
+    return {"day": body.day.isoformat(), "claimed": {"trips": body.trips, "tonnes": body.tonnes},
+            "gb": {"legal_trips": gb["legal_trips"], "actual_trips": gb["actual_trips"], "tonnes": gb["tonnes"]},
+            "alerts": alerts}
+
+
 @router.get("/alerts", response_model=list[AlertOut])
 def list_alerts(
     permit_id: int | None = None,
     severity: str | None = None,
-    origin: str | None = Query(None, description="real | sim | walkthrough"),
-    limit: int = Query(300, ge=1, le=2000),
+    origin: str | None = Query(None, description="real | sim | walkthrough | site"),
+    limit: int = Query(300, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
     stmt = select(Alert).order_by(Alert.id.desc()).limit(limit)
@@ -81,7 +112,7 @@ def list_alerts(
         stmt = stmt.where(Alert.severity == severity.upper())
     if origin == "real":
         stmt = stmt.where(Alert.source.is_(None))
-    elif origin in ("sim", "walkthrough"):
+    elif origin in ("sim", "walkthrough", "site"):
         stmt = stmt.where(Alert.source.startswith(f"{origin}:"))
     return db.scalars(stmt).all()
 

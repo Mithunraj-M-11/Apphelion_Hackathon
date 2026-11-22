@@ -355,6 +355,13 @@ def _find_pass(t: Trip, s: Step, truck: Truck) -> tuple[Pass | None, str | None]
         t.alert("NO_PASS", "HIGH", f"{truck.plate} at exit with no open pass (did not enter through a GB gate, "
                                    "or entered without a pass)", truck=truck)
         return None, None
+    hold = _active_hold(db, p.id, truck.id)
+    if hold is not None:  # a held identity may be cloned: only the QR / SMS code can close its pass
+        s.add("Pass presented", "failed", f"No QR / code, and {truck.plate} is on hold ({hold.reason_code}): "
+                                          "the no-QR close is not allowed")
+        t.alert("NO_QR_ON_HOLD", "HIGH", f"{truck.plate} at exit without QR while on hold ({hold.reason_code}); "
+                                         "possible clone trying to close the real truck's pass", truck=truck, pass_=pss)
+        return None, None
     day_start = t.local.replace(hour=0, minute=0, second=0, microsecond=0)
     used_today = db.scalar(select(func.count()).select_from(Pass).where(
         Pass.permit_id == p.id, Pass.truck_id == truck.id, Pass.close_mode == "no_qr",
@@ -519,3 +526,70 @@ def ledger(db: Session, permit: Permit) -> dict:
         "active_holds": holds,
         "alerts": {s: sev.get(s, 0) for s in ("INFO", "MEDIUM", "HIGH", "CRITICAL")},
     }
+
+
+# ---------------------------------------------------------------- daily ledger and Vendor report check (CP9)
+THRESHOLD_CODES = ("TRIPS_", "TONNES_")  # permit-level warnings, not about a truck
+
+
+def daily_ledger(db: Session, permit: Permit) -> list[dict]:
+    """Per IST day: entry attempts, passes issued, refusals, legal / actual / illegal trips, tonnes, alerts."""
+    days: dict = {}
+
+    def day(d) -> dict:
+        return days.setdefault(d, {"day": d.isoformat(), "entries": 0, "passes_issued": 0, "entry_refusals": 0,
+                                   "exit_refusals": 0, "legal_trips": 0, "actual_trips": 0, "illegal_trips": 0,
+                                   "tonnes": 0.0, "alerts": {s: 0 for s in ("INFO", "MEDIUM", "HIGH", "CRITICAL")}})
+
+    moves = db.scalars(select(Movement).where(Movement.permit_id == permit.id)).all()
+    for m in moves:
+        row = day(m.observed_at.astimezone(IST).date())
+        if m.direction == "IN":
+            row["entries"] += 1
+            if m.decision == "ALLOWED" and m.pass_id:
+                row["passes_issued"] += 1
+            elif m.decision == "REFUSED":
+                row["entry_refusals"] += 1
+        else:
+            if m.decision == "REFUSED":
+                row["exit_refusals"] += 1
+            if m.counted_trip:
+                row["actual_trips"] += 1
+            if m.trip == "LEGAL":
+                row["legal_trips"] += 1
+            elif m.trip == "ILLEGAL":
+                row["illegal_trips"] += 1
+    for p in db.scalars(select(Pass).where(Pass.permit_id == permit.id, Pass.status == "closed")).all():
+        if p.closed_at is not None and p.net_t is not None:
+            day(p.closed_at.astimezone(IST).date())["tonnes"] += p.net_t
+    rows = db.execute(select(Alert.severity, Movement.observed_at).join(Movement, Alert.movement_id == Movement.id)
+                      .where(Alert.permit_id == permit.id)).all()
+    for severity, observed in rows:
+        day(observed.astimezone(IST).date())["alerts"][severity] += 1
+    out = [days[k] for k in sorted(days)]
+    for r in out:
+        r["tonnes"] = round(r["tonnes"], 2)
+    return out
+
+
+TONNE_TOLERANCE_PCT = 0.02  # M6-style allowance for weighbridge differences
+TONNE_TOLERANCE_MIN_T = 0.5
+
+
+def compare_vendor(claim_trips: int, claim_tonnes: float, gb_legal: int, gb_actual: int,
+                   gb_tonnes: float) -> list[tuple[str, str, str]]:
+    """CP9: the Vendor's claim for a day vs the GB's own figures. Pure; returns (code, severity, message) alerts.
+    Vendor figures are never used as the source; they are only checked."""
+    out = []
+    if claim_trips < gb_actual:
+        hidden = gb_actual - claim_trips
+        below_legal = claim_trips < gb_legal
+        out.append(("UNDER_REPORT", "HIGH",
+                    f"Vendor reported {claim_trips} trips; GB counted {gb_actual} actual ({gb_legal} legal): "
+                    f"{hidden} trip(s) not reported" + (", below even the GB-issued legal trips" if below_legal else "")))
+    tolerance = max(gb_tonnes * TONNE_TOLERANCE_PCT, TONNE_TOLERANCE_MIN_T)
+    if claim_tonnes < gb_tonnes - tolerance:
+        out.append(("UNDER_REPORT_TONNES", "HIGH",
+                    f"Vendor reported {claim_tonnes:.1f} t; GB weighed {gb_tonnes:.1f} t on legal trips "
+                    f"({gb_tonnes - claim_tonnes:.1f} t not reported)"))
+    return out

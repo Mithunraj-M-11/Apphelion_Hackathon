@@ -76,3 +76,19 @@ class SimRun(Base):
     honest_total: Mapped[int] = mapped_column(Integer, default=0)
     false_alarms: Mapped[int] = mapped_column(Integer, default=0)
     results: Mapped[list] = mapped_column(JSONB, default=list)  # per-scenario detail
+
+
+class SiteRun(Base):
+    """One site-level simulation: a whole contract period replayed through the gates, with its report."""
+
+    __tablename__ = "site_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scenario: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str | None] = mapped_column(String(500))
+    seed: Mapped[int] = mapped_column(Integer)
+    days: Mapped[int] = mapped_column(Integer)
+    permit_id: Mapped[int | None] = mapped_column(ForeignKey("permits.id"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    report: Mapped[dict | None] = mapped_column(JSONB)
