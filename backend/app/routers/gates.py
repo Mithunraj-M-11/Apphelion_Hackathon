@@ -8,13 +8,16 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import Movement, Permit
-from app.schemas import GateDecisionOut, GateEventIn, MovementOut, PassFull, PassSummary, TripCheckOut, TripSessionOut
+from app.deps import acting_officer
+from app.models import (Alert, EmergencyMovement, EventLog, Movement, Officer, Permit, TripSession, TruckHold,
+                        VehicleQuota, VendorReport)
+from app.schemas import (GateDecisionOut, GateEventIn, MovementOut, OfficerActionIn, PassFull, PassSummary,
+                         TripCheckOut, TripSessionOut)
 from app.services import logbus, trip
 from app.services.identify import Reading, describe, identify
 from app.services.logbus import LogLine
@@ -102,7 +105,10 @@ def process_gate_event(db: Session, gate: str, body: GateEventIn) -> GateDecisio
     db.commit()
     db.refresh(movement)
     logbus.publish(rows)
+    return _decision_out(db, movement, t)
 
+
+def _decision_out(db: Session, movement: Movement, t: trip.Trip) -> GateDecisionOut:
     out = GateDecisionOut.model_validate(movement)
     out.trip_checks = [TripCheckOut(**c) for c in t.trip_checks()]
     out.trip_decision = t.trip_decision
@@ -123,6 +129,58 @@ def gate_event(gate: str, body: GateEventIn, db: Session = Depends(get_db)):
     """A vehicle arrived at a gate barrier: identify it (plate + FASTag + length + GB RFID sticker), then run the
     entry or exit pipeline (pass, weight, quota, barrier)."""
     return process_gate_event(db, gate, body)
+
+
+@router.post("/movements/{movement_id}/officer-exit", response_model=GateDecisionOut, status_code=201)
+def officer_exit(movement_id: int, body: OfficerActionIn, db: Session = Depends(get_db),
+                 officer: Officer = Depends(acting_officer)):
+    """An officer lets out a truck whose exit was refused (lost QR, expired pass, sticker unreadable): the truck's
+    own pass is closed by the officer and flagged; the trip counts. Refused while the truck is on hold."""
+    refused = db.get(Movement, movement_id)
+    if refused is None:
+        raise HTTPException(404, "Movement not found")
+    try:
+        t = trip.officer_exit(db, refused, officer.name, body.reason, body.observed_at or datetime.now(timezone.utc))
+    except trip.OfficerActionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db.flush()
+    rows = logbus.save(db, [LogLine("ACT", "WARN", f"{refused.gate} exit: officer {officer.name} lets "
+                                                   f"{t.decision.truck.plate} out after a refused exit: {body.reason}"),
+                            *t.lines], source=refused.source, movement_id=t.movement.id)
+    db.commit()
+    db.refresh(t.movement)
+    logbus.publish(rows)
+    return _decision_out(db, t.movement, t)
+
+
+@router.delete("/walkthrough-history")
+def clear_walkthrough_history(db: Session = Depends(get_db)):
+    """Gate console only: delete every Gate console session (its permits, gate events, passes, holds, alerts and
+    log lines) so a demo starts from a clean slate. Real gate data, scenario runs and site runs are not touched."""
+    like = f"{WALKTHROUGH_PREFIX}%"
+    permits = list(db.scalars(select(Permit.id).where(Permit.source.like(like))))
+    moves = select(Movement.id).where(or_(Movement.source.like(like), Movement.permit_id.in_(permits)))
+    sessions = select(TripSession.id).where(or_(TripSession.source.like(like), TripSession.permit_id.in_(permits)))
+    move_ids, session_ids = list(db.scalars(moves)), list(db.scalars(sessions))
+    db.execute(update(Movement).where(Movement.id.in_(move_ids)).values(pass_id=None))
+    db.execute(update(TripSession).where(TripSession.id.in_(session_ids))
+               .values(entry_movement_id=None, exit_movement_id=None))
+    counts = {
+        "alerts": db.execute(delete(Alert).where(or_(Alert.permit_id.in_(permits), Alert.movement_id.in_(move_ids),
+                                                     Alert.pass_id.in_(session_ids)))).rowcount,
+        "holds": db.execute(delete(TruckHold).where(or_(TruckHold.permit_id.in_(permits),
+                                                        TruckHold.movement_id.in_(move_ids)))).rowcount,
+        "logs": db.execute(delete(EventLog).where(or_(EventLog.source.like(like),
+                                                      EventLog.movement_id.in_(move_ids)))).rowcount,
+    }
+    db.execute(delete(VendorReport).where(VendorReport.permit_id.in_(permits)))
+    db.execute(delete(VehicleQuota).where(VehicleQuota.permit_id.in_(permits)))
+    db.execute(delete(EmergencyMovement).where(EmergencyMovement.movement_id.in_(move_ids)))
+    counts["passes"] = db.execute(delete(TripSession).where(TripSession.id.in_(session_ids))).rowcount
+    counts["gate_events"] = db.execute(delete(Movement).where(Movement.id.in_(move_ids))).rowcount
+    counts["permits"] = db.execute(delete(Permit).where(Permit.source.like(like))).rowcount
+    db.commit()
+    return counts
 
 
 @router.get("/movements", response_model=list[MovementOut])
