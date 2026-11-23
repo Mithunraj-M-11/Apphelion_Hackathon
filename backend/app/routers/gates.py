@@ -182,6 +182,16 @@ def _heartbeat(db: Session, gate: str, hb: HeartbeatIn) -> dict:
     return {"gate": gate.upper(), "at": hb.at.isoformat(), "alerts": [a.code for a in alerts]}
 
 
+@router.post("/console/poles/{gate}/heartbeat")
+def console_heartbeat(gate: str, hb: HeartbeatIn, db: Session = Depends(get_db)) -> dict:
+    """The Gate console's simulated pole heartbeat (Gate console permits only), used by the console's
+    "pole goes silent" demonstration."""
+    permit = db.get(Permit, hb.permit_id) if hb.permit_id is not None else None
+    if permit is None or not (permit.source or "").startswith(WALKTHROUGH_PREFIX)             or not (hb.source or "").startswith(WALKTHROUGH_PREFIX):
+        raise HTTPException(403, "The console pole only signals for Gate console sessions")
+    return _heartbeat(db, gate, hb)
+
+
 @router.post("/poles/{gate}/heartbeat")
 async def pole_heartbeat(gate: str, request: Request, db: Session = Depends(get_db)):
     """A pole's 'I'm alive' signal (every few minutes). A silence longer than the allowed gap raises POLE_SILENT when

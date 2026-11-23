@@ -603,3 +603,16 @@ ul.plain li { padding: 3px 0; }
 .sc-metric-val { font-size: 1.4rem; font-weight: 700; }
 .sc-metric-label { font-size: 0.75rem; color: var(--muted); }
 .sc-status-line { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* Gate console: equipment & records panel */
+.gc-equipment { margin-bottom: 16px; }
+.gc-eq-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.gc-eq-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+.gc-eq-ref { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 8px; font-size: 0.85rem; }
+.gc-eq-ref input { width: 52px; font: inherit; }
+.gc-eq-results { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.gc-eq-results li { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; padding: 6px 10px;
+  border-left: 3px solid var(--border); background: var(--neutral-bg); border-radius: 0 6px 6px 0; font-size: 0.85rem; }
+.gc-eq-results li.alerted { border-left-color: var(--ok); }
+.gc-eq-results li.quiet { border-left-color: var(--bad); }

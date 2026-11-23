@@ -441,6 +441,22 @@ export const gateApi = {
   /** Delete every Gate console session (permits, gate events, passes, holds, alerts, logs). Demo data only. */
   clearWalkthroughHistory: () =>
     request<Record<string, number>>("/walkthrough-history", { method: "DELETE" }, false),
+  /** Gate console demo: the console pole's heartbeat (Gate console permits only). */
+  consoleHeartbeat: (gate: string, body: { at: string; permit_id: number; source: string }) =>
+    request<{ alerts: string[] }>(`/console/poles/${gate}/heartbeat`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** Gate console demo: an event posted to the real pole API WITHOUT a pole signature (it should be refused). */
+  postUnsigned: (gate: string, body: Record<string, unknown>) =>
+    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** An officer runs the GB's reference load over the weigh pad. */
+  referenceTest: (gate: string, body: { known_weight_t: number; pad_reading_t: number; permit_id: number }) =>
+    request<{ passed: boolean; difference_t: number; alerts: string[] }>(`/gates/${gate}/reference-test`,
+      { method: "POST", body: JSON.stringify(body) }),
+  /** Staging only (simulation / Gate console permits): an insider edits stored records directly. */
+  insiderEdit: (body: { permit_id: number; action: "lower_weight" | "erase_illegal_trip"; tonnes: number }) =>
+    request<Record<string, unknown>>("/sim/insider-edit", { method: "POST", body: JSON.stringify(body) }, false),
+  /** Record check: recompute the hash chain over the permit's gate events. */
+  verifyRecords: (permitId: number) =>
+    request<{ checked: number; intact: boolean; problems: string[]; alert: string | null }>(`/permits/${permitId}/verify-records`),
   /** An officer lets out a truck whose exit was refused: its own pass is closed by the officer and flagged. */
   officerExit: (movementId: number, reason: string) =>
     request<GateDecision>(`/movements/${movementId}/officer-exit`, { method: "POST", body: JSON.stringify({ reason }) }),

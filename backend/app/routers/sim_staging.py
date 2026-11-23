@@ -1,6 +1,6 @@
 """Staging only: lets the simulator act out cheats that are not a truck at a gate, so the threat-coverage runs can
 measure what the GB misses. This is the attacker's side, not a GB feature: it plays an insider with direct database
-access. It only touches simulation data (permits whose source starts with sim: or site:), never real gate data."""
+access. It only touches simulation and Gate console data (sim:, site:, walkthrough: permits), never real gate data."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,7 +12,7 @@ from app.models import Alert, EventLog, Movement, Permit, TripSession
 
 router = APIRouter(prefix="/api/sim", tags=["simulator staging"])
 
-SIM_ORIGINS = ("sim:", "site:")
+SIM_ORIGINS = ("sim:", "site:", "walkthrough:")  # simulations and Gate console sessions
 
 
 class InsiderEdit(BaseModel):

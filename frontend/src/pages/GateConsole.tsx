@@ -42,6 +42,7 @@ import {
 import { AlertList, BarrierBadge, ErrorNote, ResultBadge, TripBadge } from "../components";
 import { CHECK_LABEL, formatDateTime, formatPlate } from "../format";
 import { OfficerPanel, OpenItems } from "./GateOfficer";
+import { EquipmentPanel } from "./GateEquipment";
 import {
   markCounts,
   readingsFor,
@@ -141,7 +142,20 @@ const PRESETS: EntryPreset[] = [
     setup: outside({ outsidePlate: "OD07TT4410", outsideLength: 9.1 }),
     physical: { force: true },
   },
-  { name: "Light vehicle (car): logged, not a trip", setup: outside({ outsidePlate: "OD02CA1188", outsideLength: 4.3 }) },
+  { name: "Light vehicle (car): logged, not a trip", setup: outside({ outsidePlate: "OD02CA1188", outsideLength: 4.3, outsideEmpty: 1.8 }) },
+  { name: "Genuine truck, camera can't read the plate (let in, flagged)",
+    setup: { ...registered("OD09AJ3579", "GB-RFID-00008"), camera: "unreadable" } },
+  { name: "Genuine truck, camera misreads one character (let in, flagged)",
+    setup: { ...registered("OD09AL9015", "GB-RFID-00010"), camera: "misread" } },
+  { name: "Genuine truck, FASTag reader misses (let in, flagged)",
+    setup: { ...registered("OD09AK6402", "GB-RFID-00009"), fastagReader: "missed" } },
+  {
+    name: "Full transplant: real plate, FASTag and GB sticker on another truck",
+    setup: outside({
+      outsidePlate: "OD05TT9090", outsideLength: 8.5, outsideEmpty: 10.95, plate: "custom", customPlate: "OD14DF8821",
+      tag: "from", tagFrom: "OD14DF8821", rfidUid: "GB-RFID-00014", rfidSimMode: "genuine",
+    }),
+  },
 ];
 
 /** Exit presets, applied to the latest entry: the same vehicle (or another one) arrives at the exit. */
@@ -211,6 +225,13 @@ const EXIT_PRESETS: ExitPreset[] = [
     qr: "edited",
     physical: { load: "90%" },
     hint: "One character of the QR changed: the signature fails, refused.",
+  },
+  {
+    name: "Light vehicle leaves loaded (after the car preset)",
+    vehicle: "entry",
+    qr: "none",
+    physical: { load: "1.2" },
+    hint: "Light vehicles aren't trips, but they're weighed in and out: leaving 1.2 t heavier raises LIGHT_VEHICLE_LOADED.",
   },
   {
     name: "No pass, breaks through",
@@ -565,7 +586,7 @@ export default function GateConsole() {
     const tonnes = raw.endsWith("%") ? (rated * Number(raw.slice(0, -1))) / 100 : Number(raw);
     return Number.isFinite(tonnes) ? Math.round((empty + tonnes) * 100) / 100 : null;
   };
-  const entryWeight = weighPad(reg, entryLoad);
+  const entryWeight = weighPad(reg, entryLoad, setup.outsideEmpty ?? 12);
 
   // One row per thing on the truck, for each barrier; markers show what was staged
   const entryRows: RowsProps = {
@@ -598,7 +619,7 @@ export default function GateConsole() {
       if (ph.noWeight !== undefined) setNoWeight(ph.noWeight);
       if (ph.force !== undefined) setForceBarrier(ph.force);
     },
-    weight: weighPad(exitR.reg, exitLoad),
+    weight: weighPad(exitR.reg, exitLoad, exitSetup.outsideEmpty ?? 12),
     qr: {
       value: exitQrToken,
       entryToken,
@@ -651,7 +672,7 @@ export default function GateConsole() {
         plate_read: exitR.plateRead,
         fastag_read: exitR.tagRead,
         radar_length_m: exitR.length,
-        weight_t: weighPad(exitR.reg, exitLoad),
+        weight_t: weighPad(exitR.reg, exitLoad, exitSetup.outsideEmpty ?? 12),
         barrier_forced: forceBarrier,
         permit_id: permit?.id,
         source,
@@ -806,6 +827,7 @@ export default function GateConsole() {
       )}
 
       {permit && <OpenItems holds={holds} sessions={permitSessions} onChanged={reloadData} />}
+      {permit && <EquipmentPanel permit={permit} source={source} onChanged={reloadData} />}
 
       {mode === "ENTRY" ? (
         /* ================================================= ENTRY MODE ================================================= */
