@@ -188,6 +188,17 @@ def officer_action(client, ev: dict, sid: str, permit: dict, observed: datetime,
     """One officer action. Returns (the gate decision it produced, if any; what the officer did). Appends the
     request it made to `sent`."""
     action, reason = ev["officer"], ev.get("reason", f"Scenario {sid}: checked in person")
+    if action == "reference_test":  # the GB's reference load over the pad; a rigged pad reads it off too
+        known = float(ev.get("known_t", 30))
+        body = {"known_weight_t": known, "pad_reading_t": round(known + float(ev.get("weigh_offset_t", 0)), 2),
+                "observed_at": observed.isoformat(), "permit_id": permit["id"]}
+        sent.append({"method": "POST", "path": f"/api/gates/{ev.get('gate', 'G1')}/reference-test", "headers": headers,
+                     "body": body})
+        res = client.post(f"/api/gates/{ev.get('gate', 'G1')}/reference-test", headers=headers, json=body)
+        res.raise_for_status()
+        r = res.json()
+        return None, (f"runs the {known:g} t reference load over the weigh pad: it reads {body['pad_reading_t']:g} t, "
+                      + ("test passed" if r["passed"] else "test FAILED (WEIGH_DRIFT)"))
     if action == "let_out":
         refused = movements.get(ev["event"])
         if refused is None:
@@ -572,7 +583,7 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             if code not in {a["code"] for a in story_alerts}:
                 problems.append(f"story: expected alert {code} not raised (ideal response)")
         serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS
-                   and a["code"] not in ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT")]  # about equipment, not the truck
+                   and a["code"] not in ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP")]  # about equipment, not the truck
         if scn["kind"] == "honest" and serious:
             problems.append(f"false alarm: {serious}")
         expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])] + \

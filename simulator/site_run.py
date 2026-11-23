@@ -30,7 +30,7 @@ SERIOUS = ("HIGH", "CRITICAL")
 PERMIT_WARNINGS = ("TRIPS_", "TONNES_")  # permit-level, not about a truck: never a false alarm
 # about the GB's own equipment (a pole, the pad, the link), raised on whichever truck arrives next: never a false
 # alarm on that truck
-EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT")
+EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP")
 GATE = "G1"
 
 # Vehicles that are NOT in the registry (made-up test data)
@@ -179,6 +179,7 @@ class World:
         self.drift = cfg.get("weigh_drift")  # {from_day: 4, offset_t: -3}: loaded readings off from that day
         self.noise_cfg = cfg.get("sensor_noise", {})  # {plate_miss: 0.03, fastag_miss: 0.02} on honest reads
         self.misread_refusals = 0
+        self.reference_tests: list[dict] = []
         self.waits_for_outage = 0
 
     # ---- helpers
@@ -638,6 +639,22 @@ def plan_cheats(w: World) -> list[tuple[datetime, object]]:
     return starts
 
 
+def reference_test(w: World, permit: dict, at: datetime, officer_id: int):
+    """Gap 1B: an officer runs the GB's reference load over the pad at a random time. The rigged pad (weigh_drift)
+    reads it light too, since a reference load is a loaded reading."""
+    known = float(w.cfg["reference_test"].get("known_t", 30))
+    reading = known
+    if w.drift and (at.date() - w.days[0]).days + 1 >= w.drift["from_day"]:
+        reading = known + w.drift["offset_t"]
+    r = w.client.post(f"/api/gates/{GATE}/reference-test", headers={"X-Officer-Id": str(officer_id)},
+                      json={"known_weight_t": known, "pad_reading_t": round(reading, 2), "observed_at": at.isoformat(),
+                            "permit_id": permit["id"]}).raise_for_status().json()
+    w.reference_tests.append({"at": at.strftime("%Y-%m-%d %H:%M"), "known_t": known, "read_t": round(reading, 2),
+                              "passed": r["passed"]})
+    return
+    yield  # noqa: unreachable; makes this a generator
+
+
 def end_of_day(w: World, permit: dict, d: date, officer_id: int) -> None:
     """The Vendor files its report for the day (CP9); a GB officer reviews and releases the day's holds."""
     day = d.isoformat()
@@ -719,6 +736,11 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
     for t, actor in plan_cheats(w):
         heap.append((t, seq, actor, None))
         seq += 1
+    if cfg.get("reference_test"):  # gap 1B: one unannounced reference weight test a day
+        for d in w.days:
+            t = w.at(d, w.hours_start, w.u(30, (w.at(d, w.hours_end) - w.at(d, w.hours_start)).seconds / 60 - 30))
+            heap.append((t, seq, reference_test(w, permit, t, officer_id), None))
+            seq += 1
     heapq.heapify(heap)
 
     day_i = 0
@@ -898,7 +920,7 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         "staging": {"outages": [[a.strftime("%Y-%m-%d %H:%M"), b.strftime("%H:%M")] for a, b in w.outages],
                     "weigh_drift": w.drift, "sensor_noise": w.noise_cfg or None,
                     "bribed_officer": w.cfg.get("bribed_officer"), "honest_refused_by_misreads": w.misread_refusals,
-                    "events_held_by_outages": w.waits_for_outage},
+                    "events_held_by_outages": w.waits_for_outage, "reference_tests": w.reference_tests},
         "alerts": {"by_severity": {s: sev.get(s, 0) for s in ("CRITICAL", "HIGH", "MEDIUM", "INFO")},
                    "by_code": dict(sorted(codes.items(), key=lambda kv: -kv[1]))},
         "false_alarms": {"count": len(false_alarms), "honest_events": honest_events, "items": false_alarms[:50]},

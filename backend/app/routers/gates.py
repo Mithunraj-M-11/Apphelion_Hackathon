@@ -219,6 +219,32 @@ def officer_exit(movement_id: int, body: OfficerActionIn, db: Session = Depends(
     return _decision_out(db, t.movement, t)
 
 
+class ReferenceTestIn(BaseModel):
+    known_weight_t: float  # the reference load's certified weight
+    pad_reading_t: float  # what the GB weigh pad showed for it
+    observed_at: datetime | None = None
+    permit_id: int | None = None
+
+
+@router.post("/gates/{gate}/reference-test")
+def gate_reference_test(gate: str, body: ReferenceTestIn, db: Session = Depends(get_db),
+                        officer: Officer = Depends(acting_officer)) -> dict:
+    """Gap 1B: an officer runs the GB's reference load over the weigh pad (random, unannounced). Off by more than
+    0.3 t = WEIGH_DRIFT."""
+    permit = resolve_permit(db, body.permit_id)
+    at = body.observed_at or datetime.now(timezone.utc)
+    a = trip.reference_test(db, permit, gate.upper(), body.known_weight_t, body.pad_reading_t, at, officer)
+    ok = a is None
+    rows = logbus.save(db, [LogLine("MEASURE", "INFO" if ok else "ALERT",
+                                    f"Reference weight test at {gate.upper()} by {officer.name}: {body.known_weight_t:.2f} t "
+                                    f"load read {body.pad_reading_t:.2f} t" + ("" if ok else f". HIGH WEIGH_DRIFT"))],
+                       source=permit.source)
+    db.commit()
+    logbus.publish(rows)
+    return {"gate": gate.upper(), "passed": ok, "difference_t": round(body.pad_reading_t - body.known_weight_t, 2),
+            "alerts": [] if ok else ["WEIGH_DRIFT"]}
+
+
 @router.delete("/walkthrough-history")
 def clear_walkthrough_history(db: Session = Depends(get_db)):
     """Gate console only: delete every Gate console session (its permits, gate events, passes, holds, alerts and

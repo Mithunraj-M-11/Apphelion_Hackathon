@@ -298,8 +298,8 @@ scenarios:
     priority: P1
     kind: tamper
     category: measure
-    why: A remote chip lowers loaded readings. The GB should check its own pad (reference weights, or loads that are
-      consistently short) instead of trusting it.
+    why: A remote chip lowers loaded readings only, so empty trucks still weigh right. The GB catches it with an
+      unannounced reference weight test (a known load reads 3 t light), and over days by loads suddenly dropping.
     expect_story: { alerts: [WEIGH_DRIFT] }
     events:
       - { at: "08:00", dir: IN,  vehicle: OD09AC5678 }
@@ -308,6 +308,7 @@ scenarios:
       - { at: "09:45", dir: OUT, vehicle: OD09AD0090, weigh_offset_t: -3 }
       - { at: "10:00", dir: IN,  vehicle: OD09AH2468 }
       - { at: "10:45", dir: OUT, vehicle: OD09AH2468, weigh_offset_t: -3 }
+      - { at: "11:30", officer: reference_test, known_t: 30, weigh_offset_t: -3, note: unannounced test }
 
   - id: C3b
     name: GB weigh pad off on every reading (re-calibrated wrongly or a shim)

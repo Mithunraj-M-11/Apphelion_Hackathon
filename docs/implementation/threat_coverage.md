@@ -118,3 +118,26 @@ Still open, for the second pass:
   trucks read correctly. Needs a reference weight test or a fleet-wide load-drop check. It also hides light vehicles
   carrying material (their loaded exit reads light).
 - Officer cover-ups are now flagged as a pattern (gap), but the trip still counts as legal until reviewed.
+
+## Results: second pass (gap 10 and gap 1 B / C, 2026-11-23)
+
+Defences built: relaxed Identify (GB sticker + plate or FASTag + length is enough; PLATE_UNREADABLE /
+FASTAG_UNREAD / PLATE_MISREAD as Medium flags; IDENTIFIER_REPEATEDLY_MISSED after 3 in a day; a plate naming another
+registered truck stays a mismatch), fleet-wide load-drop check (LOAD_DROP: today's median load share under 90% of
+earlier days), and an unannounced daily reference weight test (WEIGH_DRIFT when a known load reads off by > 0.3 t).
+
+| Run | After round 1 | After second pass |
+|---|---|---|
+| `threat_coverage` | 24 covered, 3 gap, 4 silent of 31 | **28 covered, 3 silent** of 31 |
+| `threat_week` | 29 covered, 8 gap, 4 silent; **27 false alarms** | 29 covered, 8 gap, 5 silent of 42; **0 false alarms**, 0 honest trucks refused |
+| `gate_cheats` / `edge_resilience` | 34/34, 7/7 | 34/34, 7/7 |
+
+In the week the rigged pad (3 t light when loaded, from day 4) is caught on day 4 by the reference test and by
+LOAD_DROP on each of the 4 affected days. The tonnes it took off stay wrong in the GB's records (432 t): the alert
+says from when weights are suspect, it does not correct them.
+
+Still open:
+- **Side tracks** (A1b, B1c, B3b; 10 trips, 168 t in the week): volume check (mass balance) under discussion.
+- **Transplant onto a similar body**: a body under 0.4 t heavier than the enrolled one passes the body check (one in
+  the week, 0.5 t heavier but read within pad noise). Tighter tolerance needs real fuel / load data.
+- **Light vehicle on the rigged pad**: its exit reads light too; flagged pad, but the load itself is missed.
