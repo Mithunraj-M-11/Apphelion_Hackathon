@@ -7,8 +7,9 @@ tonnes, and which ones were cheats). It plays the resulting gate events, in time
 real pole uses; the GB never sees the ground truth. Each truck and each injected cheat is a small script (a Python
 generator) that yields the next physical arrival at a barrier and reacts to the GB's real answer (pass issued,
 barrier up / down). At the end of each site day the Vendor files its own report (CP9) and a simulated GB officer
-reviews and releases that day's holds. The report compares Permitted / Vendor reported / GB legal / GB actual /
-GB illegal / Ground truth, and scores every cheat as prevented, detected or missed.
+reviews and releases that day's holds. The report compares Permit allows / Vendor says / With a valid pass /
+Counted at GB gates / Without a pass / Really left (ground truth), and scores every cheat as prevented, detected or
+missed.
 
 Everything is deterministic for a given seed. The registry is never written to.
 """
@@ -983,7 +984,7 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
 
 def print_report(r: dict) -> None:
     h = r["headline"]
-    print(f"\n {'':<10}{'Permitted':>11}{'Vendor':>9}{'GB legal':>10}{'GB actual':>11}{'Illegal':>9}{'Truth':>9}")
+    print(f"\n {'':<10}{'Permit':>11}{'Vendor':>9}{'Pass':>10}{'Counted':>11}{'No pass':>9}{'Real':>9}")
     for k in ("trips", "tonnes"):
         x = h[k]
         print(f" {k:<10}{x['permitted']:>11g}{x['vendor_reported']:>9g}{x['gb_legal']:>10g}{x['gb_actual']:>11g}"
