@@ -280,6 +280,7 @@ const GROUP_TITLE: Record<Group, string> = {
   partial: "Partial",
   gap: "Gap: the GB has the refusal on record, but the load still left unseen",
   silent: "Silent gap: the GB has no trace",
+  period: "Period-level",
   unseen: "Trips the GB doesn't have",
   false: "False alarms on honest trucks",
 };
@@ -400,6 +401,58 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- weekly volume surveys (mass balance)
+function Surveys({ r }: { r: SiteReport }) {
+  const rows = r.surveys ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="card">
+      <header className="card-head"><h3>Weekly volume survey (mass balance)</h3></header>
+      <table className="table table-inner">
+        <thead>
+          <tr><th>Week</th><th>Ore that left, by the survey</th><th>Weighed out by the GB gates</th><th>Gap</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.period_from}>
+              <td className="nowrap">{dayLabel(s.period_from)} to {dayLabel(s.period_to)}</td>
+              <td>{s.surveyed_out_t != null ? `${fmt(s.surveyed_out_t)} t` : "rejected"}
+                <div className="small muted">really {fmt(s.true_out_t)} t; survey error {s.survey_error_pct > 0 ? "+" : ""}{s.survey_error_pct}%</div></td>
+              <td>{s.gates_out_t != null ? `${fmt(s.gates_out_t)} t` : "—"}</td>
+              <td className={s.gap_pct != null && s.gap_pct > 5 ? "bad-text" : s.gap_pct != null && s.gap_pct > 2 ? "warn-text" : ""}>
+                {s.gap_pct != null ? `${s.gap_pct > 0 ? "+" : ""}${s.gap_pct.toFixed(1)}%` : "—"}</td>
+              <td className="small mono">{s.alerts.join(", ") || <span className="muted">within tolerance</span>}</td>
+            </tr>
+          ))}
+          {rows.length > 1 && (() => {
+            const ok = rows.filter((x) => x.surveyed_out_t != null && x.gates_out_t != null);
+            const sv = ok.reduce((a, x) => a + (x.surveyed_out_t ?? 0), 0);
+            const gt = ok.reduce((a, x) => a + (x.gates_out_t ?? 0), 0);
+            const tr = ok.reduce((a, x) => a + x.true_out_t, 0);
+            return (
+              <tr className="sr-survey-total">
+                <td><strong>Since the first survey</strong></td>
+                <td><strong>{fmt(sv)} t</strong><div className="small muted">really {fmt(tr)} t</div></td>
+                <td><strong>{fmt(gt)} t</strong></td>
+                <td className={sv - gt > 0.05 * gt / ok.length ? "bad-text" : ""}>{fmt(sv - gt)} t ({gt ? ((100 * (sv - gt)) / gt).toFixed(1) : "0"}%)</td>
+                <td className="small muted">limit {fmt(0.05 * gt / Math.max(1, ok.length))} t (5% of an average week)</td>
+              </tr>
+            );
+          })()}
+        </tbody>
+      </table>
+      <p className="sr-note">
+        A GB drone survey each week: ore dug (volume x density) minus ore still in stockpiles is what left the site;
+        the gates should have weighed about the same. A gap above 5% raises VOLUME_MISMATCH; a gap above 2% three weeks
+        running raises VOLUME_TREND. Since the first survey, the middle terrain models cancel out, so the error stays
+        about one week's error in tonnes while steady leakage keeps adding up: above 5% of an average week raises
+        VOLUME_CUMULATIVE. Survey error here is a random +/-3% a week (stated); single trips are below what a survey
+        can see.
+      </p>
     </div>
   );
 }
@@ -632,6 +685,7 @@ function RunDetail({ id }: { id: number }) {
       </div>
 
       {r.missed_by_cause && Object.keys(r.missed_by_cause).length > 0 && <MissedByCause r={r} />}
+      <Surveys r={r} />
 
       <Scorecard
         judgedAgainst="A realistic period: every cheat attempt judged on whether the GB stopped it or caught it after (covered), only has the refusal on record (gap), or never knew (silent gap)."

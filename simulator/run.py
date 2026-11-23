@@ -593,8 +593,8 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
         caught = bool(expected_codes) and all(c in raised for c in expected_codes)
         gb_view = {"trips": ledger.get("actual_trips", 0), "tonnes": round(ledger.get("tonnes", 0.0), 2)}
         truth_view = {"trips": truth["trips"], "tonnes": round(truth["tonnes"], 2)}
-        coverage = coverage_of(problems, events, raised, truth_view, gb_view,
-                               any(c not in raised for c in expected_codes))
+        coverage = "period" if scn.get("period_only") else coverage_of(problems, events, raised, truth_view, gb_view,
+                                                                         any(c not in raised for c in expected_codes))
         verdict = {
             "story_passes": not problems, "cheat_caught": caught if scn["kind"] == "tamper" else None,
             "expected_alerts": expected_codes, "raised_alerts": sorted(raised),

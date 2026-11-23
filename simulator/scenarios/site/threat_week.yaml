@@ -23,6 +23,7 @@ weigh_drift: { from_day: 4, offset_t: -3 }
 sensor_noise: { plate_miss: 0.03, fastag_miss: 0.02 }
 bribed_officer: true
 reference_test: { known_t: 30 }   # one unannounced reference weight test a day (GB defence, gap 1B)
+survey: { every_days: 7, error_pct: 3, density: 3.2 }   # weekly volume survey (GB defence, gap 7)
 cheats:
   - { type: unregistered,           per_day: 0.6, on_refusal: { turn_back: 0.5, force: 0.3, side_track: 0.2 } }
   - { type: clone,                  per_day: 0.3, on_refusal: { turn_back: 0.4, force: 0.6 } }

@@ -384,7 +384,7 @@ export type TripScenarioResult = {
   pass: boolean;
   problems: string[];
   // threat_coverage stories: judged against the ideal GB response
-  coverage?: "covered" | "partial" | "gap" | "silent";
+  coverage?: "covered" | "partial" | "gap" | "silent" | "period";
   threat?: string | null;
   priority?: string | null;
   really_moved?: { trips: number; tonnes: number };
@@ -681,6 +681,9 @@ export type SiteReport = {
   skipped: string[];
   /** threat_week: what really moved but the GB doesn't have, by why (side track, pole down, rigged pad, ...). */
   missed_by_cause?: Record<string, { trips: number; tonnes: number | null }>;
+  /** Weekly volume surveys (mass balance): ore that left by the survey vs what the gates weighed. */
+  surveys?: { period_from: string; period_to: string; method: string; status: string; surveyed_out_t: number | null;
+    gates_out_t: number | null; gap_pct: number | null; alerts: string[]; true_out_t: number; survey_error_pct: number }[];
   /** threat_week: the staged faults and attacks (assumptions stated in the report). */
   staging?: {
     outages: [string, string][];

@@ -1,16 +1,18 @@
 """Permits (contract limits) with their live ledger, alerts, and truck holds."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import acting_officer
-from app.models import Alert, Contract, Officer, Permit, TruckHold, VendorReport
+from app.models import Alert, Contract, Officer, Permit, Survey, TruckHold, VendorReport
 from app.schemas import AlertOut, HoldOut, HoldRelease, PermitIn, PermitOut, VendorReportIn
 from app.services import integrity, logbus, trip
+from app.services import survey as survey_service
 from app.services.logbus import LogLine
 
 router = APIRouter(prefix="/api", tags=["permits"])
@@ -125,6 +127,47 @@ def verify_records(permit_id: int, db: Session = Depends(get_db)) -> dict:
     report = integrity.verify(db, permit)
     db.commit()
     return report
+
+
+class SurveyIn(BaseModel):
+    period_from: date
+    period_to: date
+    method: str = "drone_photogrammetry"  # drone_photogrammetry | drone_lidar | satellite_stereo
+    volume_dug_m3: float = Field(ge=0)
+    density_t_m3: float = Field(gt=0, lt=10)
+    stockpile_change_t: float = 0.0
+    outside_plan_m3: float = Field(default=0.0, ge=0)
+    check_error_cm: float | None = Field(default=None, ge=0)
+
+
+def _survey_out(s: Survey) -> dict:
+    return {k: getattr(s, k) for k in ("id", "permit_id", "period_from", "period_to", "method", "volume_dug_m3",
+                                       "density_t_m3", "stockpile_change_t", "outside_plan_m3", "check_error_cm",
+                                       "status", "surveyed_out_t", "gates_out_t", "gap_pct", "officer_id")}
+
+
+@router.post("/permits/{permit_id}/surveys", status_code=201)
+def add_survey(permit_id: int, body: SurveyIn, db: Session = Depends(get_db),
+               officer: Officer = Depends(acting_officer)) -> dict:
+    """Mass balance (gap 7): a GB survey of the site for a period. Ore that left by the survey is compared with what
+    the GB's gates weighed out; VOLUME_MISMATCH above 5%, VOLUME_TREND for a steady gap, EXTRACTION_OUTSIDE_PLAN."""
+    permit = _permit(db, permit_id)
+    s, alerts = survey_service.record(db, permit, **body.model_dump(), officer_id=officer.id)
+    gap = f"{s.gap_pct:+.1f}%" if s.gap_pct is not None else "n/a"
+    msg = (f"Survey {body.period_from} to {body.period_to} ({body.method}) rejected: check-pillar error "
+           f"{body.check_error_cm} cm, fly again") if s.status == "rejected" else         (f"Survey {body.period_from} to {body.period_to}: {s.surveyed_out_t:,.0f} t left by the survey, gates weighed "
+         f"{s.gates_out_t:,.0f} t, gap {gap}")
+    lines = [LogLine("COMPARE", "INFO" if not alerts else "ALERT", msg)] +         [LogLine("ACT", trip.LEVEL[a.severity], f"{a.severity} {a.code}: {a.message}") for a in alerts]
+    rows = logbus.save(db, lines, source=permit.source)
+    db.commit()
+    logbus.publish(rows)
+    return {**_survey_out(s), "alerts": [a.code for a in alerts]}
+
+
+@router.get("/permits/{permit_id}/surveys")
+def list_surveys(permit_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    return [_survey_out(s) for s in db.scalars(select(Survey).where(Survey.permit_id == permit_id)
+                                               .order_by(Survey.period_from)).all()]
 
 
 @router.get("/holds", response_model=list[HoldOut])

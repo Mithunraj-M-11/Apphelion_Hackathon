@@ -16,6 +16,7 @@
 #   { at, vendor_report: { trips, tonnes } }    the Vendor files its daily report
 #   expect_story: { alerts: [...] }             alerts the GB should raise at some point in the story
 #   check_records: true                         run the GB's record-integrity check at the end (if it exists)
+#   period_only: true                           only a period check (weekly survey) can see it: scored 'period-level'
 #
 # Story fields: threat (case id), priority (P0 | P1 | extra), kind, category. Alert codes the GB doesn't have yet
 # (POLE_SILENT, LATE_EVENT, WEIGH_DRIFT, BODY_MISMATCH, PLATE_UNREADABLE, PLATE_MISREAD, FASTAG_UNREAD,
@@ -55,6 +56,7 @@ scenarios:
     kind: tamper
     category: evasion
     why: An extra truck never comes near a GB gate. Only a volume check (survey vs tonnes through the gates) can show it.
+    period_only: true   # one trip is far below survey precision: judged by the weekly survey in the site runs
     expect_story: { alerts: [VOLUME_MISMATCH] }
     events:
       - { at: "09:00", unseen: came in by a side track and loaded, vehicle: { rogue: rogue_local_tipper } }
@@ -142,6 +144,7 @@ scenarios:
     kind: tamper
     category: evasion
     why: Never at a gate. Only a volume check can show it.
+    period_only: true   # one trip is far below survey precision: judged by the weekly survey in the site runs
     expect_story: { alerts: [VOLUME_MISMATCH] }
     events:
       - { at: "10:00", unseen: came in by a side track and loaded, vehicle: OD09AD0090 }
@@ -388,6 +391,7 @@ scenarios:
     kind: tamper
     category: evasion
     why: At night by side tracks the gates see nothing; only a volume check shows it.
+    period_only: true   # one trip is far below survey precision: judged by the weekly survey in the site runs
     expect_story: { alerts: [VOLUME_MISMATCH] }
     events:
       - { at: "21:00", unseen: came in by a side track at night and loaded, vehicle: OD09AJ3579 }

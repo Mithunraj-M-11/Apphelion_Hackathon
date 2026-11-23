@@ -586,3 +586,4 @@ ul.plain li { padding: 3px 0; }
 .sc-line { margin: -4px 0 14px; }
 .sc-was { display: block; font-size: 0.75rem; margin-top: 2px; }
 .sc-before { margin: -6px 0 10px; }
+.sr-survey-total td { border-top: 2px solid var(--border); }

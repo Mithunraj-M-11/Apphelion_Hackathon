@@ -4,8 +4,8 @@ run under their own source-tagged permits, so each can be cleared without touchi
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.models import (Alert, EmergencyMovement, EventLog, Movement, Permit, PoleState, RecordEntry, TripSession,
-                        TruckHold, VehicleQuota, VendorReport)
+from app.models import (Alert, EmergencyMovement, EventLog, Movement, Permit, PoleState, RecordEntry, Survey,
+                        TripSession, TruckHold, VehicleQuota, VendorReport)
 
 ORIGINS = ("walkthrough:", "sim:", "site:")  # never the real permit (source NULL)
 
@@ -34,6 +34,7 @@ def clear_source(db: Session, prefix: str) -> dict[str, int]:
     }
     db.execute(delete(VendorReport).where(VendorReport.permit_id.in_(permits)))
     db.execute(delete(RecordEntry).where(RecordEntry.permit_id.in_(permits)))
+    db.execute(delete(Survey).where(Survey.permit_id.in_(permits)))
     db.execute(delete(PoleState).where(or_(PoleState.permit_id.in_(permits), PoleState.source.like(like))))
     db.execute(delete(VehicleQuota).where(VehicleQuota.permit_id.in_(permits)))
     db.execute(delete(EmergencyMovement).where(EmergencyMovement.movement_id.in_(move_ids)))

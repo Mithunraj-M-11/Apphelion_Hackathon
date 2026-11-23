@@ -180,6 +180,9 @@ class World:
         self.noise_cfg = cfg.get("sensor_noise", {})  # {plate_miss: 0.03, fastag_miss: 0.02} on honest reads
         self.misread_refusals = 0
         self.reference_tests: list[dict] = []
+        self.surveys: list[dict] = []
+        self.model_errors: list[float] = []  # per terrain model, in tonnes
+        self.survey_rng = random.Random(cfg.get("seed", 1) + 99)  # its own stream: surveys don't change the run
         self.waits_for_outage = 0
 
     # ---- helpers
@@ -655,6 +658,34 @@ def reference_test(w: World, permit: dict, at: datetime, officer_id: int):
     yield  # noqa: unreachable; makes this a generator
 
 
+def survey(w: World, permit: dict, d: date, officer_id: int) -> None:
+    """Gap 7: the GB's weekly survey (RTK drone photogrammetry). Staged from ground truth: the ore that really left the
+    site in the period, with a random survey error within +/- error_pct, as a volume at the in-situ density. No
+    stockpiles in the simulation. The GB compares it with what its gates weighed out."""
+    cfg = w.cfg["survey"]
+    every = int(cfg.get("every_days", 7))
+    i = (d - w.days[0]).days
+    if (i + 1) % every:
+        return
+    d_from = w.days[i + 1 - every]
+    in_period = [t for t in w.truth if d_from.isoformat() <= t["day"] <= d.isoformat()]
+    true_t = sum(t["tonnes"] for t in in_period)
+    # each survey makes a terrain model with its own error; a week's volume is the difference of two models, so its
+    # error is (this model's - last model's), within +/- error_pct. Over many weeks the middle models cancel out.
+    amp = cfg.get("error_pct", 3) / 100 / 2 * true_t
+    if not w.model_errors:
+        w.model_errors.append(w.survey_rng.uniform(-1, 1) * amp)  # the baseline survey at the start of the period
+    w.model_errors.append(w.survey_rng.uniform(-1, 1) * amp)
+    err = (w.model_errors[-1] - w.model_errors[-2]) / true_t if true_t else 0.0
+    density = cfg.get("density", 3.2)
+    body = {"period_from": d_from.isoformat(), "period_to": d.isoformat(), "method": "drone_photogrammetry",
+            "volume_dug_m3": round(true_t * (1 + err) / density, 1), "density_t_m3": density,
+            "stockpile_change_t": 0.0, "check_error_cm": round(w.survey_rng.uniform(1.5, 4.0), 1)}
+    r = w.client.post(f"/api/permits/{permit['id']}/surveys", headers={"X-Officer-Id": str(officer_id)},
+                      json=body).raise_for_status().json()
+    w.surveys.append({**r, "true_out_t": round(true_t, 2), "survey_error_pct": round(err * 100, 2)})
+
+
 def end_of_day(w: World, permit: dict, d: date, officer_id: int) -> None:
     """The Vendor files its report for the day (CP9); a GB officer reviews and releases the day's holds."""
     day = d.isoformat()
@@ -677,6 +708,8 @@ def end_of_day(w: World, permit: dict, d: date, officer_id: int) -> None:
                         json={"day": day, "trips": trips, "tonnes": round(tonnes, 2)}).raise_for_status().json()
     w.vendor.append({"day": day, "trips": trips, "tonnes": round(tonnes, 2), "true_trips": len(true_trips),
                      "alerts": [a["code"] for a in res["alerts"]]})
+    if w.cfg.get("survey"):
+        survey(w, permit, d, officer_id)
     for h in w.client.get(f"/api/holds?permit_id={permit['id']}").raise_for_status().json():
         w.client.post(f"/api/holds/{h['id']}/release", headers={"X-Officer-Id": str(officer_id)},
                       json={"reason": "Reviewed at end of day (simulated officer)"}).raise_for_status()
@@ -814,6 +847,11 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
     ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
     daily = client.get(f"/api/permits/{permit['id']}/ledger/daily").raise_for_status().json()
     alerts = client.get(f"/api/alerts?permit_id={permit['id']}&limit=5000").raise_for_status().json()
+    if any(a["code"] in ("VOLUME_MISMATCH", "VOLUME_TREND") for a in alerts):  # the survey shows leakage, not which trip
+        for c in w.cheats:
+            if c.type in ("side_track_both", "light_vehicle") and c.outcome == "missed" and not c.attempt_flagged:
+                c.attempt_flagged = True
+                c.note += " (leakage shown by the weekly survey)"
     if any(a["code"] == "POLE_SILENT" for a in alerts):  # the GB knows the pole was down, not what moved meanwhile
         for c in w.cheats:
             if c.type == "outage_trip":
@@ -917,6 +955,7 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         "cheats_by_type": by_type,
         "cheats": [c.as_dict() for c in w.cheats],
         "missed_by_cause": missed_by_cause(w, ledger),
+        "surveys": w.surveys,
         "staging": {"outages": [[a.strftime("%Y-%m-%d %H:%M"), b.strftime("%H:%M")] for a, b in w.outages],
                     "weigh_drift": w.drift, "sensor_noise": w.noise_cfg or None,
                     "bribed_officer": w.cfg.get("bribed_officer"), "honest_refused_by_misreads": w.misread_refusals,

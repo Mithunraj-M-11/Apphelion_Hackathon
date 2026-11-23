@@ -12,6 +12,7 @@ from app.models.registry import (
     TruckPhoto,
 )
 from app.models.rfid import RfidSticker
+from app.models.survey import Survey
 from app.models.trip import (
     Alert,
     Permit,
@@ -41,6 +42,7 @@ __all__ = [
     "ServerKey",
     "SimRun",
     "SiteRun",
+    "Survey",
     "SyncOutbox",
     "Transporter",
     "TripSession",

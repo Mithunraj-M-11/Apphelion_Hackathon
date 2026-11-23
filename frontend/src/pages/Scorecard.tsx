@@ -2,7 +2,7 @@
 // questions everywhere: what works, what doesn't (and does the GB at least know), and what it cost.
 import type { ReactNode } from "react";
 
-export type Status = "covered" | "partial" | "gap" | "silent";
+export type Status = "covered" | "partial" | "gap" | "silent" | "period";
 
 /** One judged item: a scenario story, an edge case, or one attempt in a site run. */
 export type ScoreItem = {
@@ -43,11 +43,12 @@ export const STATUS_TEXT: Record<Status, string> = {
   partial: "Partial",
   gap: "Gap",
   silent: "Silent gap",
+  period: "Period-level",
 };
-const RANK: Record<Status, number> = { covered: 0, partial: 1, gap: 2, silent: 3 };
+const RANK: Record<Status, number> = { covered: 0, period: 0, partial: 1, gap: 2, silent: 3 };
 
 export function StatusBadge({ s }: { s?: Status | null }) {
-  const cls = s === "covered" ? "ok" : s === "partial" ? "warn" : s ? "bad" : "neutral";
+  const cls = s === "covered" ? "ok" : s === "partial" ? "warn" : s === "period" ? "neutral" : s ? "bad" : "neutral";
   return <span className={`badge ${cls}`}>{s ? STATUS_TEXT[s] : "—"}</span>;
 }
 
@@ -122,6 +123,12 @@ export function Scorecard({
               sub={<><div>the GB doesn't know</div><Was was={was("silent")} now={count("silent")} lowerIsBetter /></>}
               onClick={click("silent")} />
       </div>
+      {count("period") > 0 && (
+        <p className="small muted sc-line">
+          <strong>{count("period")} period-level</strong>: a single trip is far below what a volume survey can measure,
+          so these are judged by the weekly survey in the site runs, not per story.
+        </p>
+      )}
       {(cost.trips || cost.tonnes || cost.honest) && (
         <div className="stats stats-3">
           {cost.trips && (
