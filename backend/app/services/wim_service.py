@@ -889,3 +889,39 @@ def run_demonstration_scenario(db: Session, scenario_id: int) -> dict:
 
     else:
         raise ValueError(f"Scenario ID {scenario_id} must be between 1 and 11")
+
+
+# ---------------------------------------------------------------- WIM inside the gate pipeline
+READING_STATUS = {"OK": "VALID", "POOR": "ANOMALY", "TIMEOUT": "TIMEOUT", "OFFLINE": "FAILED"}
+
+
+def record_from_gate(db: Session, movement: Movement, truck: Truck | None, reading: dict, status: str) -> WimMeasurement:
+    """Store the WIM reading that came with a signed gate event, in the caller's transaction (no commit, no log: the
+    gate pipeline logs and raises alerts). The teammate's anomaly rules still run for the WIM dashboard."""
+    gate = movement.gate.upper()
+    code = f"WIM-{gate}-01"
+    weights = [round(float(w), 2) for w in (reading.get("axle_weights_t") or [])]
+    m = WimMeasurement(
+        measurement_id=f"WIM-{uuid.uuid4().hex[:6].upper()}",
+        device_id=(dev.id if (dev := get_wim_device(db, code)) else None),
+        device_code=code, gate=gate, lane=f"{'ENTRY' if movement.direction == 'IN' else 'EXIT'}-1",
+        direction=movement.direction, observed_at=movement.observed_at,
+        plate=movement.plate_normalised or movement.plate_read, truck_id=truck.id if truck else None,
+        speed_kmh=float(reading.get("speed_kmh") or 0.0), axle_count=int(reading.get("axle_count") or 0),
+        axle_weights=weights, axle_spacings_m=reading.get("axle_spacings_m"),
+        gross_weight_t=calculate_gross_weight(weights) if weights else 0.0,
+        quality="POOR" if status == "POOR" else "GOOD", status=READING_STATUS.get(status, "VALID"),
+        source=movement.source or "SIMULATED", movement_id=movement.id, radar_length_m=movement.radar_length_m,
+        correlation_status="CORRELATED" if status == "OK" else "RADAR_ONLY",
+    )
+    db.add(m)
+    db.flush()
+    for a in detect_anomalies(db, m, truck, movement):
+        db.add(a)
+    return m
+
+
+def device_offline(db: Session, gate: str) -> bool:
+    """The WIM device for this gate is switched off in the WIM dashboard / Gate console (status OFFLINE)."""
+    dev = get_wim_device(db, f"WIM-{gate.upper()}-01")
+    return dev is not None and dev.status == "OFFLINE"

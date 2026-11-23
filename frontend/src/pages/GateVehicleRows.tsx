@@ -2,7 +2,7 @@
 // STAGED (green genuine, amber breaks a rule, red tampered), never a prediction of the GB server's decision: the left
 // panel shows the cheat that was set up, the server panel shows whether it was caught.
 import type { ReactNode } from "react";
-import type { RfidSticker, Truck, TruckListItem } from "../api";
+import type { RfidSticker, Truck, TruckListItem, WimReading } from "../api";
 import { formatPlate } from "../format";
 
 export type VehicleKind = "registered" | "outside";
@@ -24,7 +24,40 @@ export type Setup = {
   camera?: "ok" | "unreadable" | "misread"; // sensor fault: the plate is there, the camera fails
   fastagReader?: "ok" | "missed"; // sensor fault: the tag is there, the reader misses it
   outsideEmpty?: number; // empty weight of an outside vehicle (t), default 12
+  outsideAxles?: string; // axle spacings of an outside vehicle (m, front to back), default "3.80, 1.35"
 };
+
+/** The axle spacings of the body physically at the gate: a registered truck's enrolled layout, or the outside
+ * vehicle's own. This is what the WIM strip measures, whatever plate, FASTag or sticker the body wears. */
+export function spacingsOf(s: Setup, details: Record<string, Truck>): number[] {
+  if (s.vehicle === "registered") return details[s.registeredPlate]?.axle_spacings_m ?? [3.8, 1.35];
+  const xs = (s.outsideAxles ?? "3.80, 1.35").split(",").map((x) => Number(x.trim())).filter((x) => x > 0);
+  return xs.length ? xs : [3.8, 1.35];
+}
+
+/** What the lane's WIM strip reports: the body's axle layout and its real weight (not what a rigged pad shows),
+ * with in-motion noise. Same model as the simulator (simulator/pole.py wim_reading). */
+export function wimReading(spacings: number[], emptyT: number, trueT: number | null,
+                           status: WimReading["status"]): WimReading | null {
+  if (trueT == null) return null; // drove round the weigh pad and the strip
+  if (status === "OFFLINE" || status === "TIMEOUT") return { status };
+  const noise = () => (Math.random() + Math.random() + Math.random() - 1.5) * 0.02;
+  let gross = trueT * (1 + noise() * 0.6);
+  if (status === "POOR") gross *= Math.random() < 0.5 ? 0.88 : 1.12;
+  const n = spacings.length + 1;
+  const frontN = n <= 3 ? 1 : 2;
+  const load = Math.max(0, trueT - emptyT);
+  const [shareE, shareL] = frontN === 1 ? [0.42, 0.13] : [0.45, 0.3]; // steer axle(s) share of empty / load
+  const front = Math.min(gross * 0.6, ((shareE * emptyT + shareL * load) * gross) / trueT);
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  return {
+    status,
+    axle_count: n,
+    axle_spacings_m: spacings.map((x) => r2(x + noise())),
+    axle_weights_t: [...Array(frontN).fill(r2(front / frontN)), ...Array(n - frontN).fill(r2((gross - front) / (n - frontN)))],
+    speed_kmh: Math.round((8 + Math.random() * 6) * 10) / 10,
+  };
+}
 
 export const OUTSIDE_TAG = "34161FA8000000000000OUT1"; // an outside truck's own FASTag: real, not in the GB registry
 export const LIGHT_VEHICLE_MAX_M = 6; // shorter vehicles are logged, not trips (rule C2)
@@ -88,7 +121,10 @@ function Row({ label, mark, reading, children }: { label: string; mark: Mark; re
   );
 }
 
-export type Physical = { load: string; noWeight: boolean; force: boolean };
+export type WimStatus = WimReading["status"];
+/** The physical side of a crossing. `padOffset`: a rigged weigh pad reads this many t off (staging). `wim`: what the
+ * lane's WIM strip does on this crossing (it always measures the real body and weight). */
+export type Physical = { load: string; noWeight: boolean; force: boolean; padOffset?: string; wim?: WimStatus };
 
 export type QrChoice = {
   value: string;
@@ -108,7 +144,8 @@ export type RowsProps = {
   stickers: Record<string, RfidSticker>;
   physical: Physical;
   setPhysical: (patch: Partial<Physical>) => void;
-  weight: number | null;
+  weight: number | null; // what the weigh pad shows
+  realWeight?: number | null; // what the truck really weighs (what WIM sees)
   qr?: QrChoice;
   openPass?: string | null;
 };
@@ -156,6 +193,9 @@ function analyse({ dir, setup, trucks, details, stickers, physical, qr, openPass
   const tagMark: Mark = setup.tag === "own" ? (setup.fastagReader === "missed" ? "warn" : "ok")
     : light && setup.tag === "none" ? "ok" : "bad"; // a car has no FASTag; a missed read is a sensor fault
   const plateMark: Mark = setup.plate === "own" ? (setup.camera && setup.camera !== "ok" ? "warn" : "ok") : "bad";
+  const rigged = (Number(physical.padOffset) || 0) !== 0;
+  const padMark: Mark = physical.noWeight || rigged ? "bad" : "ok";
+  const wimMark: Mark = (physical.wim ?? "OK") === "OK" ? "ok" : "warn"; // a WIM fault is equipment, not tampering
   const marks: Mark[] = [
     vehicleMark,
     plateMark,
@@ -163,10 +203,12 @@ function analyse({ dir, setup, trucks, details, stickers, physical, qr, openPass
     stickerMark,
     ...(qr ? [qrMark] : []),
     loadMark,
-    physical.noWeight ? "bad" : "ok",
+    padMark,
+    wimMark,
     physical.force ? "bad" : "ok",
   ];
-  return { r, light, listed, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, plateMark, marks };
+  return { r, light, listed, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, plateMark,
+           padMark, wimMark, rigged, marks };
 }
 
 /** Count of tampered / rule-breaking rows, for the panel header. */
@@ -177,8 +219,9 @@ export function markCounts(props: RowsProps) {
 
 /** The rows for one barrier (entry or exit). */
 export function VehicleRows(props: RowsProps) {
-  const { setup, update, trucks, stickers, physical, setPhysical, weight, qr } = props;
-  const { r, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, plateMark } = analyse(props);
+  const { setup, update, trucks, details, stickers, physical, setPhysical, weight, realWeight, qr } = props;
+  const { r, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, plateMark, padMark, wimMark,
+          rigged } = analyse(props);
   const others = (exclude: string) => trucks.filter((t) => t.plate !== exclude);
 
   // ---- plate
@@ -260,6 +303,14 @@ export function VehicleRows(props: RowsProps) {
               title="Empty weight (t)"
             />
             <span className="muted small">t empty</span>
+            <input
+              type="text"
+              value={setup.outsideAxles ?? "3.80, 1.35"}
+              onChange={(e) => update({ outsideAxles: e.target.value })}
+              title="Axle spacings (m, front to back): what the WIM strip measures"
+              style={{ width: "7.5em" }}
+            />
+            <span className="muted small">m axles</span>
           </div>
         )}
       </Row>
@@ -374,10 +425,47 @@ export function VehicleRows(props: RowsProps) {
         )}
       </Row>
 
-      <Row label="Weigh pad" mark={physical.noWeight ? "bad" : "ok"}>
-        <select value={physical.noWeight ? "skip" : "read"} onChange={(e) => setPhysical({ noWeight: e.target.value === "skip" })}>
+      <Row
+        label="Weigh pad"
+        mark={padMark}
+        reading={physical.noWeight ? "drove round the pad" : rigged ? `rigged: reads ${physical.padOffset} t off` : undefined}
+      >
+        <select
+          value={physical.noWeight ? "skip" : rigged ? `rig:${physical.padOffset}` : "read"}
+          onChange={(e) => {
+            const v = e.target.value;
+            setPhysical(v === "skip" ? { noWeight: true, padOffset: "0" }
+              : v.startsWith("rig:") ? { noWeight: false, padOffset: v.slice(4) } : { noWeight: false, padOffset: "0" });
+          }}
+        >
           <option value="read">Reads the truck</option>
-          <option value="skip">Skipped (no reading)</option>
+          <option value="rig:-3">Rigged: reads 3 t low</option>
+          <option value="rig:-1">Rigged: reads 1 t low</option>
+          {rigged && !["-3", "-1"].includes(physical.padOffset ?? "") && (
+            <option value={`rig:${physical.padOffset}`}>Rigged: reads {physical.padOffset} t off</option>
+          )}
+          <option value="skip">Skipped (drove round it)</option>
+        </select>
+      </Row>
+
+      <Row
+        label="WIM strip"
+        mark={wimMark}
+        reading={(() => {
+          const status = physical.wim ?? "OK";
+          if (physical.noWeight || realWeight == null) return "not crossed (drove round the pad)";
+          if (status === "OFFLINE") return "offline: no reading";
+          if (status === "TIMEOUT") return "timed out: no reading";
+          const sp = spacingsOf(setup, details);
+          return `${status === "POOR" ? "poor reading, " : ""}${sp.length + 1} axles · ${sp.map((x) => x.toFixed(2)).join(" / ")} m · ` +
+                 `about ${realWeight.toFixed(1)} t`;
+        })()}
+      >
+        <select value={physical.wim ?? "OK"} onChange={(e) => setPhysical({ wim: e.target.value as WimStatus })}>
+          <option value="OK">Reads the axles and real weight</option>
+          <option value="POOR">Poor reading (driver brakes on it)</option>
+          <option value="TIMEOUT">Times out (no weight)</option>
+          <option value="OFFLINE">Offline (no reading)</option>
         </select>
       </Row>
 

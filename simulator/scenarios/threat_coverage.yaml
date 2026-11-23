@@ -33,7 +33,13 @@ permit: { trip_limit: 50, tonne_limit: 1500, vehicle_limit: 20, hours_start: "06
 rogue_vehicles:
   rogue_local_tipper: { own_plate: OD09ZX7781, length_m: 8.1 }
   rogue_same_size:    { own_plate: OD02KK7310, length_m: 8.3 }    # same size as OD09AB1234 (8.32 m)
-  transplant_body:    { own_plate: OD05TT9090, length_m: 8.36, empty_weight_t: 11.2, rated_capacity_t: 18.0 }
+  transplant_body:    { own_plate: OD05TT9090, length_m: 8.36, empty_weight_t: 11.2, rated_capacity_t: 18.0,
+                        axle_spacings_m: [3.60, 1.30] }   # another model's chassis
+  # OD09AB1234 (Signa 2823.K) is enrolled at 8.32 m, 10.60 t empty, axles 3.90 / 1.37 m
+  transplant_axles:   { own_plate: OD05TT9191, length_m: 8.34, empty_weight_t: 10.75, rated_capacity_t: 17.5,
+                        axle_spacings_m: [3.60, 1.30] }   # weight within the pad's noise, different axle layout
+  transplant_twin:    { own_plate: OD05TT9292, length_m: 8.30, empty_weight_t: 10.72, rated_capacity_t: 17.5,
+                        axle_spacings_m: [3.90, 1.37] }   # the same model: same length, axles and (nearly) weight
   pickup:             { own_plate: OD02PK1212, length_m: 4.6, empty_weight_t: 1.8, rated_capacity_t: 1.5 }
 
 scenarios:
@@ -447,3 +453,63 @@ scenarios:
     events:
       - { at: "08:00", dir: IN,  vehicle: { rogue: pickup }, fastag: none, expect: { barrier: up } }
       - { at: "08:30", dir: OUT, vehicle: { rogue: pickup }, fastag: none, pass: none, load: 1.4, expect: { barrier: up } }
+
+  # ================================================================== Weigh-in-Motion (second weight + axle layout)
+  - id: W1a
+    name: Rigged weigh pad reads 3 t low at exit, WIM catches it on the first truck
+    threat: C3
+    priority: P1
+    kind: tamper
+    category: measure
+    why: The WIM strip in the lane weighs the same truck independently. A pad reading 3 t below WIM is flagged on the
+      first loaded truck, instead of waiting for a reference test or a drift pattern.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678 }
+      - { at: "08:45", dir: OUT, vehicle: OD09AC5678, weigh_offset_t: -3, expect: { trip: LEGAL, alerts: [WIM_PAD_DISAGREE] } }
+
+  - id: W2a
+    name: Full transplant onto a body within the pad's noise, but with a different axle layout
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Every identifier is genuine and the empty weight is only 0.15 t off, inside the pad's noise. The WIM strip
+      measures the axle spacing, and this chassis is not the enrolled one.
+    events:
+      - { at: "08:30", dir: IN, vehicle: { rogue: transplant_axles }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, expect: { barrier: down, alerts: [BODY_MISMATCH] } }
+
+  - id: W2b
+    name: Full transplant onto a body of the same model (known limit)
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Same model, so the same length and axle layout, and an empty weight within the pad's noise. No sensor can tell
+      two trucks of one model apart; the defence is that the identifiers can't be removed (tear-on-removal sticker).
+    events:
+      - { at: "08:30", dir: IN, vehicle: { rogue: transplant_twin }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, expect: { barrier: down, alerts: [BODY_MISMATCH] } }
+
+  - id: W3a
+    name: WIM strip offline, a genuine truck still works
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: WIM is a second check, not a gate. When it is down the truck is judged by radar and the pad as before, and
+      the GB is told the strip is down.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AE4521, wim: offline, expect: { barrier: up, alerts: [WIM_UNAVAILABLE] } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AE4521, wim: offline, expect: { trip: LEGAL } }
+
+  - id: W3b
+    name: Driver brakes on the WIM strip (poor reading), nothing is raised
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: A poor in-motion reading is ignored rather than alarmed on; the pad and radar decide.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AE4521, wim: poor, expect: { barrier: up } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AE4521, wim: poor, expect: { trip: LEGAL } }

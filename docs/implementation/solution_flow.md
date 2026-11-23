@@ -27,7 +27,8 @@ records.
 | Where | Equipment | What it does |
 |---|---|---|
 | Each gate (entry and exit) | **Pole** with a number-plate camera, a FASTag reader, a GB RFID sticker reader and a radar | Reads who the truck is and how long it is |
-| Each gate | **Weigh pad** | Weighs the truck (empty at entry, loaded at exit) |
+| Each gate | **Weigh pad** | Weighs the truck (empty at entry, loaded at exit); the official weight for tonnes |
+| Each gate lane | **Weigh-in-Motion (WIM) strip** | Weighs each axle as the truck rolls over it: axle count, axle spacing and a second, independent weight |
 | Each gate | **Two barriers** (entry, exit) | Open only when the GB server says so; an impact sensor records a forced crossing |
 | On each registered truck | **GB RFID sticker** | A chip that answers a cryptographic challenge: it can't be copied |
 | On site | **Edge computer** (primary + standby) | Keeps the gates working if the link to the GB server is down |
@@ -39,7 +40,8 @@ records.
 ## 4. Before any truck works
 
 **4.1 Registration (GB inspection).** A GB officer inspects each truck in person and records it in the GB registry:
-plate, FASTag number, length, empty weight, rated capacity, documents (fitness, insurance, permit), transporter. The
+plate, FASTag number, length, axle count and axle spacing, empty weight, rated capacity, documents (fitness,
+insurance, permit), transporter. The
 GB fits a **GB RFID sticker** tied to that one truck. The registry is the ground truth for identity; every change is
 signed by an officer and kept in history.
 
@@ -52,36 +54,50 @@ a number of trips per vehicle.
 ## 5. One truck's trip, step by step
 
 ### At the entry gate
-1. **The truck arrives.** The pole reads the plate, the FASTag, the GB sticker and the length; the pad weighs it.
-   The pole signs everything it sends, so the server knows the reading came from a real GB pole.
-2. **Identify: which truck is this, and is it genuine?**
-   - Plate, FASTag and length must point to the same registered truck.
+1. **The truck arrives.** The pole reads the plate, the FASTag, the GB sticker and the length; the WIM strip reads
+   its axles; the pad weighs it. The pole signs everything it sends (WIM included), so the server knows the reading
+   came from a real GB pole.
+
+   Two layers are checked. **Identity** (who claims to be here): GB sticker, plate, FASTag. **Body** (is it physically
+   that truck): radar length, WIM axle count and spacing, empty weight from the pad and WIM. Length and axles belong
+   to a truck *model*, not one truck, so they can't identify a truck on their own; they catch a body that doesn't
+   match the identity it wears.
+2. **Identify, part 1: identity. Which truck claims to be here, and is it genuine?**
+   - Plate and FASTag must point to the same registered truck.
    - The GB sticker must answer the challenge (not cloned), be active (not revoked) and belong to that truck.
    - If the plate or the FASTag is missed once (mud, rain, a faulty tag), the sticker plus the other one is enough:
      the truck goes through with a flag. A plate that names **another** truck is treated as a clone.
-3. **Eligibility: may it work right now?** Not on hold, no open or unresolved trip, inside the permit period and
+3. **Identify, part 2: body. Is it physically that truck?**
+   - **Length (radar)** within 0.5 m of the registered length.
+   - **Axles (WIM):** the same axle count, and each axle gap within 0.15 m of the registered layout.
+   - **Empty weight:** a bit heavier than registered (more than 0.4 t) means another body wearing this truck's
+     identifiers. Pad, WIM and the registered weight are compared: if the pad is the odd one out, the body is judged
+     by WIM instead and the pad is flagged.
+   - Any mismatch: refused and held (BODY_MISMATCH; a length mismatch is raised as POSSIBLE_CLONE, since it is
+     decided together with the plate and FASTag).
+4. **Eligibility: may it work right now?** Not on hold, no open or unresolved trip, inside the permit period and
    hours, the permit's trips, tonnes and vehicles not used up.
-4. **Measure.** The entry weight is compared with the truck's registered empty weight:
-   - much heavier: it arrived loaded (material from outside);
-   - a bit heavier (more than 0.4 t): the body is not the one registered, someone moved this truck's identifiers
-     onto another truck: refused and held.
-5. **Pass.** The GB issues a **trip pass**: a signed QR code plus an 8-character SMS code, tied to this truck and its
+5. **Measure.** The entry weight recorded on the pass, and whether the scale can be trusted: pad vs WIM (they must
+   agree within max(1 t, 8%), else WIM_PAD_DISAGREE) and pad drift. Much heavier than registered: it arrived loaded.
+6. **Pass.** The GB issues a **trip pass**: a signed QR code plus an 8-character SMS code, tied to this truck and its
    sticker, valid for 2 hours. One trip is reserved against the permit.
-6. **Barrier.** It lifts only if a pass was issued.
+7. **Barrier.** It lifts only if a pass was issued.
 
 ### Inside the site
 The truck loads. The GB sees nothing here; that is why the pass is needed at the exit.
 
 ### At the exit gate
-7. **Identify again, from scratch,** with the same sticker as at entry. The exit never trusts what the entry said.
-8. **Pass check.** The driver shows the QR (or gives the SMS code). The pass must be genuine (signature), not used
+8. **Identify again, from scratch** (identity and body), with the same sticker as at entry. A body that
+   differs at exit is flagged (truck swapped inside?), not refused. The exit never trusts what the entry said.
+9. **Pass check.** The driver shows the QR (or gives the SMS code). The pass must be genuine (signature), not used
    before, for this truck and sticker, and not expired. If the driver has no phone, the GB can match the truck's open
    pass by plate + FASTag + sticker, once a day and never while the truck is on hold.
-9. **Measure.** Exit weight minus entry weight = **net tonnes**. Overload, an empty exit or a skipped weigh pad are
-   flagged.
-10. **Compare.** The trip is confirmed against the permit; tonnes added; warnings at 80%, 90%, 100%; a late exit
+10. **Measure.** Exit weight minus entry weight = **net tonnes** (from the pad). Overload, an empty exit or a skipped
+   weigh pad are flagged. The WIM strip weighs the same truck: if pad and WIM disagree by more than max(1 t, 8%), the
+   pad may be rigged to read low (WIM_PAD_DISAGREE, with WIM's estimate of the real load). It never stops the truck.
+11. **Compare.** The trip is confirmed against the permit; tonnes added; warnings at 80%, 90%, 100%; a late exit
     after hours is flagged.
-11. **Barrier.** It lifts only on a valid pass. A truck that breaks through is recorded as an **illegal trip** with a
+12. **Barrier.** It lifts only on a valid pass. A truck that breaks through is recorded as an **illegal trip** with a
     critical alert.
 
 **Result:** every trip through a gate is counted, with its tonnes, against the permit, whatever the Vendor says.
@@ -115,7 +131,8 @@ Attacks on the equipment are cheaper than fooling it, so the GB watches its own 
 | Link to the pole cut | An event arriving well after the pole's latest signal | LATE_EVENT |
 | Someone posting fake gate events | Events without a valid pole signature are refused | FAKE_GATE_EVENT |
 | Weigh pad off on every reading | Empty trucks at entry no longer weigh their registered weights, all by about the same amount | WEIGH_DRIFT |
-| Weigh pad chip that only reads loaded trucks light | Unannounced test with a GB load of known weight; and all trucks' loads suddenly lighter than earlier days | WEIGH_DRIFT, LOAD_DROP |
+| Weigh pad chip that only reads loaded trucks light | The WIM strip disagrees on the first loaded truck; an unannounced test with a GB load of known weight; all trucks' loads suddenly lighter than earlier days | WIM_PAD_DISAGREE, WEIGH_DRIFT, LOAD_DROP |
+| WIM strip down | No reading (offline or timed out): the body and weight are checked by radar and the pad only, as before. A poor reading (braking on the strip) is ignored | WIM_UNAVAILABLE |
 | Edge computer fails or the WAN is down | Standby takes over; the site keeps working offline and syncs later; degraded states raise alerts | EDGE_* alerts |
 
 ---
@@ -174,7 +191,7 @@ which the GB never sees.
 |---|---|
 | **Gate console** | You set up one truck (genuine or tampered) and watch every check live |
 | **Gate cheats** (34 stories) | Regression: every rule we built still works |
-| **Threat coverage** (31 stories) | Every priority cheat from our threat list, judged against what the GB *should* do |
+| **Threat coverage** (36 stories) | Every priority cheat from our threat list, judged against what the GB *should* do |
 | **Edge resilience** (7 cases) | Failover, WAN loss, recovery |
 | **Site runs** | A whole period: honest traffic with cheats, faults and surveys mixed in (clean week, the brief's case, mixed week, threat week, threat month) |
 
@@ -186,26 +203,31 @@ which the GB never sees.
 5. **By threat area**: covered / partial / gap / silent gap (the GB doesn't know) / period-level (only the survey
    can see it).
 
-**Headline results (2026-11-23):** threat coverage 15 → 28 of 31 covered (plus 3 period-level); threat week 0 false
-alarms, 41 of 42 cheats caught; the brief's case (permit 100, 206 really moved): the GB records 129 at its gates and
+**Headline results (2026-11-23):** threat coverage 15 → 32 of 36 covered (plus 3 period-level; the one left is the
+same-model transplant, a known limit); threat week 0 false alarms, 41 of 42 cheats caught, the rigged weigh pad
+flagged by WIM on the first loaded truck; the brief's case (permit 100, 206 really moved): the GB records 129 at its gates and
 the weekly survey shows +57.5%.
 
 ## 12. What is real and what is simulated
 
 | Real (built software) | Simulated (stands in for hardware or people) |
 |---|---|
-| Registry, permit, identify, passes, weights logic, barriers' decisions, alerts, holds, officer actions | Camera, FASTag reader, RFID reader, radar, weigh pad readings |
+| Registry, permit, identify, passes, weights logic, barriers' decisions, alerts, holds, officer actions | Camera, FASTag reader, RFID reader, radar, weigh pad and WIM strip readings |
 | Signatures (passes, poles), hash chain, heartbeat checks | Trucks, drivers, the Vendor, the bribed officer, the insider |
 | Vendor report check, mass balance calculation | Drone survey results (from ground truth with a stated error) |
 | Dashboard, live log | Edge hardware |
 
 ## 13. Known limits (say them before the judges do)
 
+- **A transplant onto a truck of the same model** (same length, same axle layout, empty weight within the pad's noise)
+  passes: no sensor can tell two trucks of one model apart. The defence is that the identifiers can't be moved (the
+  GB sticker tears on removal). Shown honestly in the Gate console and the threat suite (story W2b).
+- **WIM is a few percent accurate in motion**, so it catches a pad that is off by about 1 t or 8% and more; smaller
+  offsets are left to the drift check and the reference weight test. Net tonnes always come from the pad.
 - "Covered" means the GB responded as designed to the cheats we modelled; thresholds were tuned on those cases.
 - Detected is not recovered: trips during a pole outage, tonnes taken off by a rigged pad, edited records are
   flagged but stay wrong until investigated.
 - A few side-track trips a week (under about 2% of the volume) stay below what a survey can see.
-- A truck wearing another truck's identifiers on a body of almost the same weight can pass.
 - Not built yet: real-time watchdog on poles, pole keys in a secure element, sending the record chain off site,
   officer login, barrier that stays shut without power, incident escalation, manual review.
 
@@ -216,7 +238,7 @@ the weekly survey shows +57.5%.
 | UNREGISTERED_VEHICLE, UNIDENTIFIED_VEHICLE, POSSIBLE_CLONE | Not a registered truck / not identifiable / plate and FASTag disagree |
 | RFID_CLONED, RFID_MISSING, RFID_REVOKED, RFID_MISMATCH | GB sticker copied / missing / revoked / of another truck |
 | PLATE_UNREADABLE, FASTAG_UNREAD, PLATE_MISREAD | Genuine truck, one sensor missed (let through, flagged) |
-| BODY_MISMATCH | The truck's identifiers are on a different body |
+| BODY_MISMATCH | The truck's identifiers are on a different body (weight or WIM axle layout) |
 | NO_PASS, PASS_REUSE, PASS_MISMATCH, INVALID_PASS, PASS_EXPIRED_AT_EXIT | Pass missing / reused / another truck's / edited / expired |
 | UNRESOLVED_TRIP | Its last trip was never closed (likely left by a side track) |
 | TRIP_LIMIT, TONNE_LIMIT, VEHICLE_LIMIT, OUTSIDE_HOURS | Contract limits |
@@ -225,6 +247,8 @@ the weekly survey shows +57.5%.
 | OFFICER_EXIT, OFFICER_LATE_CLOSE, OFFICER_OVERRIDE_PATTERN | Officer overrides, and too many by one officer |
 | POLE_SILENT, LATE_EVENT, FAKE_GATE_EVENT | Pole down / link cut / fake events |
 | WEIGH_DRIFT, LOAD_DROP | Weigh pad wrong |
+| WIM_PAD_DISAGREE | Weigh pad and the WIM strip disagree: pad rigged or WIM faulty |
+| WIM_UNAVAILABLE | WIM strip gave no reading; body and weight checked by radar and the pad only |
 | RECORD_TAMPERED | Stored records changed |
 | UNDER_REPORT | The Vendor declared less than the gates recorded |
 | VOLUME_MISMATCH, VOLUME_TREND, VOLUME_CUMULATIVE, EXTRACTION_OUTSIDE_PLAN | The ground says more left than the gates saw |

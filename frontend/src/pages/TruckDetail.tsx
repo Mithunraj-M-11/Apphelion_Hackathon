@@ -153,6 +153,9 @@ export default function TruckDetail() {
         <Card title="Physical (measured at inspection)">
           <Field label="Length">{t.length_m} m</Field>
           <Field label="Axles">{t.axle_count}</Field>
+          <Field label="Axle spacings">
+            {t.axle_spacings_m?.length ? `${t.axle_spacings_m.map((x) => x.toFixed(2)).join(" / ")} m` : "—"}
+          </Field>
           <Field label="Empty weight">{t.empty_weight_t} t</Field>
           <Field label="Rated capacity">{t.rated_capacity_t} t</Field>
           <Field label="Gross vehicle weight">{t.gvw_t ? `${t.gvw_t} t` : "—"}</Field>

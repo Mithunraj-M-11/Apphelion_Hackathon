@@ -3,7 +3,9 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
+from pydantic import ValidationError
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -23,7 +25,7 @@ from app.schemas import (
     WimMeasurementSimulateIn,
     WimVerificationCheck,
 )
-from app.services import wim_service
+from app.services import integrity, wim_service
 from app.services.wim_simulator import generate_simulated_wim
 
 router = APIRouter(prefix="/api/wim", tags=["wim"])
@@ -156,11 +158,21 @@ def simulate_wim_measurement(
 
 
 @router.post("/measurements", response_model=WimMeasurementOut, status_code=201)
-def create_measurement(
-    body: WimMeasurementIn,
-    db: Session = Depends(get_db),
-):
-    """Ingest a dynamic WIM measurement."""
+async def create_measurement(request: Request, db: Session = Depends(get_db)):
+    """Ingest a dynamic WIM measurement from a GB WIM strip. Like gate events, it must be signed by the gate's pole
+    key (X-Pole-Signature: HMAC-SHA256 of the body), so nobody on the network can post fake weights (gap 4).
+    Normally the WIM reading travels inside the signed gate event; this endpoint is for stand-alone readings."""
+    raw = await request.body()
+    try:
+        body = WimMeasurementIn.model_validate_json(raw)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False)) from exc
+    if not integrity.signature_ok(body.gate.upper(), raw, request.headers.get("X-Pole-Signature")):
+        raise HTTPException(401, "WIM measurement not signed by a GB pole: refused")
+    return await run_in_threadpool(_store_measurement, db, body)
+
+
+def _store_measurement(db: Session, body: WimMeasurementIn):
     gross = body.gross_weight_t or sum(body.axle_weights)
     m = wim_service.record_measurement(
         db=db,

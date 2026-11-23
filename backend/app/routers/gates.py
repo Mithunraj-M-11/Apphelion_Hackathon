@@ -17,11 +17,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.deps import acting_officer
-from app.models import Movement, Officer, Permit
+from app.models import Movement, Officer, Permit, WimMeasurement
 from app.schemas import (GateDecisionOut, GateEventIn, MovementOut, OfficerActionIn, PassFull, PassSummary,
                          TripCheckOut, TripSessionOut, WimMeasurementOut)
-from app.services import cleanup, integrity, logbus, trip, wim_service
-from app.services.wim_simulator import generate_simulated_wim
+from app.services import cleanup, integrity, logbus, trip
 from app.services.identify import Reading, describe, identify
 from app.services.logbus import LogLine
 
@@ -100,7 +99,7 @@ def process_gate_event(db: Session, gate: str, body: GateEventIn) -> GateDecisio
     db.flush()
     t = trip.Trip(db, permit, movement, decision, decision.involved, pass_token=body.pass_token or body.qr_token,
                   pass_code=body.pass_code, sticker_uid=body.rfid_sticker_uid,
-                  rfid_mode=body.rfid_sim_mode or "genuine")
+                  rfid_mode=body.rfid_sim_mode or "genuine", wim=body.wim.model_dump() if body.wim else None)
     trip.process(t)
     # the pole was heard: judge its silence before this event, and whether this event arrived late (gaps 2, 3)
     for a in integrity.signal(db, permit, gate, observed, body.source, heartbeat=False, movement_id=movement.id):
@@ -114,64 +113,12 @@ def process_gate_event(db: Session, gate: str, body: GateEventIn) -> GateDecisio
     db.refresh(movement)
     logbus.publish(rows)
 
-    # Optional Weigh-in-Motion (WIM) independent verification
+    # Weigh-in-Motion: checked inside the pipeline (Measure); here only shaped for the Gate console WIM panel
     wim_verification = None
-    should_wim = bool(body.wim_scenario) or (body.wim_enabled and (body.source or "").startswith(WALKTHROUGH_PREFIX))
-    if should_wim:
-        try:
-            dev_code = body.wim_device_code or f"WIM-{gate}-01"
-            truck_specs = None
-            if decision.truck:
-                truck_specs = {
-                    "axle_count": decision.truck.axle_count,
-                    "empty_weight_t": decision.truck.empty_weight_t,
-                    "rated_capacity_t": decision.truck.rated_capacity_t,
-                    "gvw_t": decision.truck.gvw_t,
-                }
-            scenario = body.wim_scenario or ("normal" if decision.truck else "normal_2axle")
-            sim_reading = generate_simulated_wim(
-                scenario=scenario,
-                gate=gate,
-                direction=body.direction,
-                device_code=dev_code,
-                plate=decision.plate_normalised or body.plate_read,
-                observed_at=observed,
-                custom_axle_weights=body.wim_custom_weights,
-                custom_quality=body.wim_quality,
-                known_truck_specs=truck_specs,
-            )
-            wim_m = wim_service.record_measurement(
-                db=db,
-                device_code=sim_reading.device_code,
-                gate=sim_reading.gate,
-                direction=sim_reading.direction,
-                speed_kmh=sim_reading.speed_kmh,
-                axle_count=sim_reading.axle_count,
-                axle_weights=sim_reading.axle_weights,
-                quality=sim_reading.quality,
-                status=sim_reading.status,
-                plate=decision.plate_normalised or body.plate_read,
-                truck_id=decision.truck.id if decision.truck else None,
-                movement_id=movement.id,
-                radar_length_m=body.radar_length_m,
-                source=sim_reading.source,
-                observed_at=sim_reading.observed_at,
-                measurement_id=sim_reading.measurement_id,
-            )
-            wim_corr = wim_service.correlate_radar_and_wim(
-                radar_length_m=body.radar_length_m,
-                wim_measurement=wim_m,
-                truck=decision.truck,
-                radar_available=body.radar_length_m is not None,
-                wim_available=sim_reading.status not in ("FAILED", "TIMEOUT"),
-            )
-            wim_verification = {
-                **wim_corr,
-                "measurement": WimMeasurementOut.model_validate(wim_m).model_dump(mode="json"),
-            }
-        except Exception:
-            # WIM is an independent monitoring mechanism; failure in WIM simulation should not crash gate event
-            pass
+    if t.wim_result is not None:
+        meas = db.get(WimMeasurement, t.wim_result["measurement_pk"])
+        wim_verification = {k: v for k, v in t.wim_result.items() if k != "measurement_pk"}
+        wim_verification["measurement"] = WimMeasurementOut.model_validate(meas).model_dump(mode="json") if meas else None
 
     return _decision_out(db, movement, t, wim_verification=wim_verification)
 

@@ -30,7 +30,7 @@ SERIOUS = ("HIGH", "CRITICAL")
 PERMIT_WARNINGS = ("TRIPS_", "TONNES_")  # permit-level, not about a truck: never a false alarm
 # about the GB's own equipment (a pole, the pad, the link), raised on whichever truck arrives next: never a false
 # alarm on that truck
-EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP")
+EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP", "WIM_UNAVAILABLE", "WIM_PAD_DISAGREE")
 GATE = "G1"
 
 # Vehicles that are NOT in the registry (made-up test data)
@@ -47,6 +47,7 @@ class Veh:
     empty: float
     rated: float
     sticker: str | None = None  # GB RFID sticker UID (registered trucks)
+    spacings: list[float] | None = None  # axle spacings of the real body (m), what the WIM strip measures
 
 
 @dataclass
@@ -183,18 +184,21 @@ class World:
         self.surveys: list[dict] = []
         self.model_errors: list[float] = []  # per terrain model, in tonnes
         self.survey_rng = random.Random(cfg.get("seed", 1) + 99)  # its own stream: surveys don't change the run
+        self.wim_rng = random.Random(cfg.get("seed", 1) + 77)  # WIM noise and faults: their own stream too
+        self.wim_cfg = cfg.get("wim_noise", {})  # {poor: 0.03, offline: 0.01}: share of crossings
         self.waits_for_outage = 0
 
     # ---- helpers
     def veh(self, t: dict) -> Veh:
         return Veh(t["plate"], t["plate"], t["fastag_tag_id"], t["length_m"], t["empty_weight_t"], t["rated_capacity_t"],
-                   self.stickers.get(t["plate"]))
+                   self.stickers.get(t["plate"]), t.get("axle_spacings_m"))
 
     def outsider(self) -> Veh:
         i = self.outsider_i
         self.outsider_i += 1
         return Veh(f"outsider {OUTSIDERS[i % len(OUTSIDERS)]}", OUTSIDERS[i % len(OUTSIDERS)], OUTSIDE_TAG.format(i),
-                   round(self.rng.uniform(7.8, 9.6), 2), 12.0, 25.0)
+                   round(self.rng.uniform(7.8, 9.6), 2), 12.0, 25.0,
+                   spacings=[round(self.wim_rng.uniform(3.5, 4.1), 2), 1.35])
 
     def at(self, d: date, t: time, plus_min: float = 0) -> datetime:
         return datetime.combine(d, t, tzinfo=IST) + timedelta(minutes=plus_min)
@@ -393,7 +397,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
             return w.drop(c, f"real truck refused ({[a['code'] for a in r['alerts']]})")
         p = r["issued_pass"]
         # same plate, cloned FASTag, same size, and a copied sticker UID: it cannot answer the challenge-response
-        twin = Veh(f"clone of {v.plate}", v.plate, v.tag, round(v.length + 0.1, 2), 12.0, v.rated, v.sticker)
+        twin = Veh(f"clone of {v.plate}", v.plate, v.tag, round(v.length + 0.1, 2), 12.0, v.rated, v.sticker, v.spacings)
         ev = Ev(start + mins(10, 25), "IN", twin, w.w(twin, 0), forced=(on_refusal == "force"), honest=False,
                 rfid="cloned")
         r = yield ev
@@ -512,8 +516,9 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         c.note = {"overload": "load above rated capacity", "arrive_loaded": "brought material in from outside",
                   "weigh_bypass": "drove round the weigh pad"}[type_]
     elif type_ == "transplant":  # X's real plate, FASTag and GB sticker moved onto the Vendor's extra truck
+        other = [round(v.spacings[0] - 0.3, 2), *v.spacings[1:]] if v.spacings else None  # another model's chassis
         body = Veh(f"extra truck wearing {v.label}'s identity", v.plate, v.tag, round(v.length + 0.04, 2),
-                   round(v.empty + w.u(0.5, 0.8), 2), v.rated, v.sticker)
+                   round(v.empty + w.u(0.5, 0.8), 2), v.rated, v.sticker, other)
         c.off(start - timedelta(minutes=30), f"{v.label}'s plate, FASTag and GB sticker moved onto an extra truck")
         r = yield Ev(start, "IN", body, w.w(body, 0), honest=False)
         c.saw(r, start, "the extra truck")
@@ -564,7 +569,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         c.note = "side-route trip covered up by a bribed officer's late close"
 
     elif type_ == "light_vehicle":  # a pickup under 6 m carries about a tonne, logged but not counted
-        pickup = Veh(f"pickup {v.plate}", v.plate, None, 4.6, 1.8, 1.5)
+        pickup = Veh(f"pickup {v.plate}", v.plate, None, 4.6, 1.8, 1.5, spacings=[2.9])
         r = yield Ev(start, "IN", pickup, w.w(pickup, 0), tag=None, honest=False)
         c.saw(r, start)
         load_t = w.u(1.0, 1.4)
@@ -735,6 +740,12 @@ def post(w: World, permit: dict, source: str, ev: Ev) -> dict:
         body["pass_token"] = ev.token
     if ev.code:
         body["pass_code"] = ev.code
+    roll = w.wim_rng.random()  # staging: occasional WIM faults
+    wim_status = "OFFLINE" if roll < w.wim_cfg.get("offline", 0) else \
+        "POOR" if roll < w.wim_cfg.get("offline", 0) + w.wim_cfg.get("poor", 0) else "OK"
+    wim = pole.wim_reading(w.wim_rng, v.spacings, v.empty, ev.weight, wim_status)  # the real weight, not the pad's
+    if wim is not None:
+        body["wim"] = wim
     return pole.event(w.client, GATE, body).raise_for_status().json()
 
 

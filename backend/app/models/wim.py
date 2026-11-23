@@ -53,6 +53,7 @@ class WimMeasurement(Base):
     speed_kmh: Mapped[float] = mapped_column(Float)  # e.g. 14.5 km/h
     axle_count: Mapped[int] = mapped_column(Integer)  # e.g. 2, 3, 4
     axle_weights: Mapped[list] = mapped_column(JSONB)  # e.g. [4.2, 5.0, 5.0] in tonnes
+    axle_spacings_m: Mapped[list | None] = mapped_column(JSONB)  # between consecutive axles, front to back
     gross_weight_t: Mapped[float] = mapped_column(Float)  # sum of axle_weights in tonnes
 
     # Measurement quality and status
