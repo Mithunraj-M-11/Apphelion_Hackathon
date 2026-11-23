@@ -141,6 +141,8 @@ function Layout() {
           <Route path="/registry/:id/edit" element={<TruckForm />} />
           <Route path="/transporters" element={<Transporters />} />
           <Route path="/solution" element={<SolutionFlow />} />
+          <Route path="/about" element={<SolutionFlow />} />
+          <Route path="/equipment" element={<SolutionFlow />} />
           <Route path="/gate-console" element={<GateConsole />} />
           <Route path="/trip-passes" element={<TripPasses />} />
           <Route path="/rfid-stickers" element={<RfidStickers />} />

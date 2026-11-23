@@ -1,28 +1,22 @@
 import type { ReactNode } from "react";
 import type { IconType } from "react-icons";
 import {
-  LuActivity,
   LuArrowRight,
   LuBan,
   LuCamera,
   LuCheck,
   LuConstruction,
-  LuCpu,
   LuDatabase,
   LuFingerprint,
   LuFlag,
   LuLock,
-  LuMonitor,
   LuMountain,
   LuNfc,
   LuPlane,
-  LuRadar,
   LuRuler,
   LuScale,
-  LuServer,
   LuShieldCheck,
   LuSiren,
-  LuSmartphone,
   LuSun,
   LuTag,
   LuTicket,
@@ -30,6 +24,7 @@ import {
   LuWifi,
   LuX,
 } from "react-icons/lu";
+import { EquipmentCatalogue } from "../components/equipment/EquipmentCatalogue";
 
 // ================================================================ One trip: SVG flow diagram
 
@@ -198,19 +193,7 @@ function TripFlow() {
   );
 }
 
-// ================================================================ installs & independence
-const INSTALLS: { Icon: IconType; name: string; where: string }[] = [
-  { Icon: LuRadar, name: "Pole: camera, FASTag reader, GB sticker reader, radar", where: "Every gate lane; signs what it sends" },
-  { Icon: LuNfc, name: "GB RFID sticker", where: "Every registered truck; crypto chip, tears if removed" },
-  { Icon: LuScale, name: "Weigh pad", where: "Every gate lane; the official weight" },
-  { Icon: LuActivity, name: "Weigh-in-Motion strip", where: "Every gate lane; axles + a second weight" },
-  { Icon: LuConstruction, name: "GB boom barrier", where: "Every entry and exit lane" },
-  { Icon: LuCpu, name: "Edge computer (primary + standby)", where: "On site; keeps gates working offline" },
-  { Icon: LuServer, name: "GB server", where: "Off site" },
-  { Icon: LuSmartphone, name: "App + SMS pass", where: "Driver's phone" },
-  { Icon: LuPlane, name: "Volume survey (drone)", where: "Weekly; checks tonnes dug vs tonnes out" },
-  { Icon: LuMonitor, name: "Dashboard", where: "GB office" },
-];
+// ================================================================ vendor independence
 
 const INDEPENDENCE: { vendor: string; answer: string; Icon: IconType }[] = [
   { vendor: "Power", answer: "Solar + battery on every GB device", Icon: LuSun },
@@ -272,17 +255,7 @@ export default function SolutionFlow() {
         <TripFlow />
       </Section>
 
-      <Section title="What the GB installs">
-        <div className="sf-installs">
-          {INSTALLS.map((x) => (
-            <div key={x.name} className="sf-install">
-              <x.Icon className="sf-install-icon" />
-              <div className="sf-install-name">{x.name}</div>
-              <div className="muted small">{x.where}</div>
-            </div>
-          ))}
-        </div>
-      </Section>
+      <EquipmentCatalogue />
 
       <Section title="Why the Vendor can't switch it off" sub="Independence: nothing the Vendor controls is trusted.">
         <div className="sf-indep">
