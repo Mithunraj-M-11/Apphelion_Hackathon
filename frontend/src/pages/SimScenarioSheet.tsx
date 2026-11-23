@@ -170,6 +170,17 @@ function StepCard({ st, vehicles }: { st: Json; vehicles: Json }) {
       </div>
     );
   }
+  if (st.actor === "unseen" || st.actor === "insider" || st.actor === "vendor") {
+    const title = st.actor === "unseen" ? "Not seen by the GB" : st.actor === "insider" ? "Insider" : "Vendor";
+    return (
+      <div className={`ss-step${st.actor === "unseen" ? " ss-step-unseen" : ""}`}>
+        {head(null, title)}
+        <div className="small">{str(st.did)}</div>
+        {((act.alerts ?? []) as string[]).length > 0 && <div className="small mono">{((act.alerts ?? []) as string[]).join(", ")}</div>}
+        {Object.keys(exp).length > 0 && <div className="ss-expect small">Expected: {expectLine(exp)}</div>}
+      </div>
+    );
+  }
   if (st.actor === "edge") {
     return (
       <div className="ss-step">

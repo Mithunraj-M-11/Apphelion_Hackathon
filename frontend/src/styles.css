@@ -573,3 +573,46 @@ ul.plain li { padding: 3px 0; }
 .sr-tl-alerts { color: var(--bad); }
 .sr-timeline li.officer::before { background: var(--warn); }
 .sr-tl-expect { margin: 0 0 2px 54px; }
+.ss-step-unseen { border-style: dashed; opacity: 0.85; }
+.sr-cat.warn { border-left-color: var(--warn); }
+.sr-cat-open { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 2px; }
+.sr-cov-line { margin: 4px 0 14px; }
+
+/* Shared scorecard (scenario runs, edge, site runs) */
+.sc-judged { margin: 0 0 12px; padding: 8px 12px; border-left: 3px solid var(--primary); background: var(--neutral-bg);
+  border-radius: 0 6px 6px 0; }
+.stats-4 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 10px; }
+.stats-3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.sc-line { margin: -4px 0 14px; }
+.sc-was { display: block; font-size: 0.75rem; margin-top: 2px; }
+.sc-before { margin: -6px 0 10px; }
+.sr-survey-total td { border-top: 2px solid var(--border); }
+
+/* Scorecard: correct overall, then cheats and honest with precision / recall / F1 */
+.sc-overall { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.sc-overall-num { font-size: 2.2rem; font-weight: 700; line-height: 1; }
+.sc-overall-num .muted { font-size: 1.2rem; font-weight: 500; }
+.sc-overall-pct { margin-left: 12px; font-size: 1.4rem; color: var(--ok); }
+.sc-overall-label { flex: 1; min-width: 240px; }
+.sc-classes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.sc-class { margin-bottom: 0; }
+.sc-class-line { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; }
+.sc-class-line strong { font-size: 1.3rem; }
+.sc-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 6px; }
+.sc-metric { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.sc-metric-val { font-size: 1.4rem; font-weight: 700; }
+.sc-metric-label { font-size: 0.75rem; color: var(--muted); }
+.sc-status-line { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* Gate console: equipment & records panel */
+.gc-equipment { margin-bottom: 16px; }
+.gc-eq-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.gc-eq-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+.gc-eq-ref { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 8px; font-size: 0.85rem; }
+.gc-eq-ref input { width: 52px; font: inherit; }
+.gc-eq-results { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.gc-eq-results li { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; padding: 6px 10px;
+  border-left: 3px solid var(--border); background: var(--neutral-bg); border-radius: 0 6px 6px 0; font-size: 0.85rem; }
+.gc-eq-results li.alerted { border-left-color: var(--ok); }
+.gc-eq-results li.quiet { border-left-color: var(--bad); }

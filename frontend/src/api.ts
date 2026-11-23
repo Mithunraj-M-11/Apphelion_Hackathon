@@ -339,7 +339,7 @@ export type TripEventExpect = {
 export type TripEventResult = {
   n: number;
   at: string;
-  dir: "IN" | "OUT" | "OFFICER";
+  dir: "IN" | "OUT" | "OFFICER" | "UNSEEN" | "INSIDER" | "VENDOR";
   vehicle: string;
   note: string | null;
   readings: {
@@ -383,6 +383,12 @@ export type TripScenarioResult = {
   ledger: Ledger;
   pass: boolean;
   problems: string[];
+  // threat_coverage stories: judged against the ideal GB response
+  coverage?: "covered" | "partial" | "gap" | "silent" | "period";
+  threat?: string | null;
+  priority?: string | null;
+  really_moved?: { trips: number; tonnes: number };
+  gb_recorded?: { trips: number; tonnes: number };
 };
 export type ScenarioResult = EdgeScenarioResult | TripScenarioResult;
 export type SimSuite = { suite: string; title: string; description: string; stories: number };
@@ -416,9 +422,10 @@ export const gateApi = {
   /** Delete every scenario run and its data. Gate console and site runs are not touched. */
   clearSimRuns: () => request<Record<string, number>>("/sim-runs", { method: "DELETE" }, false),
   simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
-  /** What a gate pole sends (no officer: poles are machines). */
+  /** The Gate console's simulated pole (run by the GB, Gate console sessions only). Real poles sign their events
+   * and post to /gates/{gate}/events. */
   postEvent: (gate: string, body: GateEventIn) =>
-    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+    request<GateDecision>(`/console/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
   /** Source-tagged permits (simulator / Gate console) need no officer; real permits do. */
   createPermit: (body: PermitIn) =>
     request<Permit>("/permits", { method: "POST", body: JSON.stringify(body) }, body.source == null),
@@ -434,6 +441,22 @@ export const gateApi = {
   /** Delete every Gate console session (permits, gate events, passes, holds, alerts, logs). Demo data only. */
   clearWalkthroughHistory: () =>
     request<Record<string, number>>("/walkthrough-history", { method: "DELETE" }, false),
+  /** Gate console demo: the console pole's heartbeat (Gate console permits only). */
+  consoleHeartbeat: (gate: string, body: { at: string; permit_id: number; source: string }) =>
+    request<{ alerts: string[] }>(`/console/poles/${gate}/heartbeat`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** Gate console demo: an event posted to the real pole API WITHOUT a pole signature (it should be refused). */
+  postUnsigned: (gate: string, body: Record<string, unknown>) =>
+    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** An officer runs the GB's reference load over the weigh pad. */
+  referenceTest: (gate: string, body: { known_weight_t: number; pad_reading_t: number; permit_id: number }) =>
+    request<{ passed: boolean; difference_t: number; alerts: string[] }>(`/gates/${gate}/reference-test`,
+      { method: "POST", body: JSON.stringify(body) }),
+  /** Staging only (simulation / Gate console permits): an insider edits stored records directly. */
+  insiderEdit: (body: { permit_id: number; action: "lower_weight" | "erase_illegal_trip"; tonnes: number }) =>
+    request<Record<string, unknown>>("/sim/insider-edit", { method: "POST", body: JSON.stringify(body) }, false),
+  /** Record check: recompute the hash chain over the permit's gate events. */
+  verifyRecords: (permitId: number) =>
+    request<{ checked: number; intact: boolean; problems: string[]; alert: string | null }>(`/permits/${permitId}/verify-records`),
   /** An officer lets out a truck whose exit was refused: its own pass is closed by the officer and flagged. */
   officerExit: (movementId: number, reason: string) =>
     request<GateDecision>(`/movements/${movementId}/officer-exit`, { method: "POST", body: JSON.stringify({ reason }) }),
@@ -672,6 +695,20 @@ export type SiteReport = {
   daily: SiteDay[];
   unexpected: string[];
   skipped: string[];
+  /** threat_week: what really moved but the GB doesn't have, by why (side track, pole down, rigged pad, ...). */
+  missed_by_cause?: Record<string, { trips: number; tonnes: number | null }>;
+  /** Weekly volume surveys (mass balance): ore that left by the survey vs what the gates weighed. */
+  surveys?: { period_from: string; period_to: string; method: string; status: string; surveyed_out_t: number | null;
+    gates_out_t: number | null; gap_pct: number | null; alerts: string[]; true_out_t: number; survey_error_pct: number }[];
+  /** threat_week: the staged faults and attacks (assumptions stated in the report). */
+  staging?: {
+    outages: [string, string][];
+    weigh_drift: { from_day: number; offset_t: number } | null;
+    sensor_noise: { plate_miss?: number; fastag_miss?: number } | null;
+    bribed_officer: boolean | null;
+    honest_refused_by_misreads: number;
+    events_held_by_outages: number;
+  };
 };
 export type SiteRun = {
   id: number;

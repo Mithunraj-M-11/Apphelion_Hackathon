@@ -21,6 +21,9 @@ export type Setup = {
   tagFrom: string;
   rfidUid: string;
   rfidSimMode: RfidSimMode;
+  camera?: "ok" | "unreadable" | "misread"; // sensor fault: the plate is there, the camera fails
+  fastagReader?: "ok" | "missed"; // sensor fault: the tag is there, the reader misses it
+  outsideEmpty?: number; // empty weight of an outside vehicle (t), default 12
 };
 
 export const OUTSIDE_TAG = "34161FA8000000000000OUT1"; // an outside truck's own FASTag: real, not in the GB registry
@@ -34,8 +37,11 @@ export function readingsFor(s: Setup, details: Record<string, Truck>) {
   const ownPlate = s.vehicle === "registered" ? s.registeredPlate : s.outsidePlate;
   const ownTag = s.vehicle === "registered" ? reg?.fastag_tag_id ?? null : OUTSIDE_TAG;
   const length = s.vehicle === "registered" ? reg?.length_m ?? null : s.outsideLength;
-  const plateRead = s.plate === "own" ? ownPlate || null : s.plate === "none" ? null : s.customPlate.trim() || null;
-  const tagRead = s.tag === "own" ? ownTag : s.tag === "none" ? null : details[s.tagFrom]?.fastag_tag_id ?? null;
+  let plateRead = s.plate === "own" ? ownPlate || null : s.plate === "none" ? null : s.customPlate.trim() || null;
+  if (plateRead && s.camera === "unreadable") plateRead = null;
+  else if (plateRead && s.camera === "misread") plateRead = plateRead.slice(0, -1) + (plateRead.endsWith("8") ? "3" : "8");
+  let tagRead = s.tag === "own" ? ownTag : s.tag === "none" ? null : details[s.tagFrom]?.fastag_tag_id ?? null;
+  if (tagRead && s.fastagReader === "missed") tagRead = null;
   const ready = s.vehicle === "outside" || !!reg;
   return { reg, ownPlate, plateRead, tagRead, length, ready };
 }
@@ -147,10 +153,12 @@ function analyse({ dir, setup, trucks, details, stickers, physical, qr, openPass
   const qrMisused =
     qrValue === "entry" && !!qr && (qr.entryPassUsed || (!!qr.entryPlate && claimedPlate(setup) !== qr.entryPlate));
   const qrMark: Mark = qrValue === "entry" ? (qrMisused ? "bad" : "ok") : qrValue === "none" ? "warn" : "bad";
-  const tagMark: Mark = setup.tag === "own" || (light && setup.tag === "none") ? "ok" : "bad"; // a car has no FASTag
+  const tagMark: Mark = setup.tag === "own" ? (setup.fastagReader === "missed" ? "warn" : "ok")
+    : light && setup.tag === "none" ? "ok" : "bad"; // a car has no FASTag; a missed read is a sensor fault
+  const plateMark: Mark = setup.plate === "own" ? (setup.camera && setup.camera !== "ok" ? "warn" : "ok") : "bad";
   const marks: Mark[] = [
     vehicleMark,
-    setup.plate === "own" ? "ok" : "bad",
+    plateMark,
     tagMark,
     stickerMark,
     ...(qr ? [qrMark] : []),
@@ -158,7 +166,7 @@ function analyse({ dir, setup, trucks, details, stickers, physical, qr, openPass
     physical.noWeight ? "bad" : "ok",
     physical.force ? "bad" : "ok",
   ];
-  return { r, light, listed, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, marks };
+  return { r, light, listed, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, plateMark, marks };
 }
 
 /** Count of tampered / rule-breaking rows, for the panel header. */
@@ -170,18 +178,24 @@ export function markCounts(props: RowsProps) {
 /** The rows for one barrier (entry or exit). */
 export function VehicleRows(props: RowsProps) {
   const { setup, update, trucks, stickers, physical, setPhysical, weight, qr } = props;
-  const { r, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark } = analyse(props);
+  const { r, vehicleMark, vehicleNote, kind, stickerMark, loadMark, qrValue, qrMark, tagMark, plateMark } = analyse(props);
   const others = (exclude: string) => trucks.filter((t) => t.plate !== exclude);
 
   // ---- plate
-  const plateValue = setup.plate === "custom" ? `copy:${setup.customPlate}` : setup.plate;
+  const plateValue = setup.plate === "custom" ? `copy:${setup.customPlate}`
+    : setup.plate === "own" && setup.camera && setup.camera !== "ok" ? `cam:${setup.camera}` : setup.plate;
   const setPlate = (v: string) =>
-    v.startsWith("copy:") ? update({ plate: "custom", customPlate: v.slice(5) }) : update({ plate: v as PlateShown });
+    v.startsWith("cam:") ? update({ plate: "own", camera: v.slice(4) as Setup["camera"] }) :
+    v.startsWith("copy:") ? update({ plate: "custom", customPlate: v.slice(5), camera: "ok" })
+      : update({ plate: v as PlateShown, camera: "ok" });
 
   // ---- FASTag
-  const tagValue = setup.tag === "from" ? `from:${setup.tagFrom}` : setup.tag;
+  const tagValue = setup.tag === "from" ? `from:${setup.tagFrom}`
+    : setup.tag === "own" && setup.fastagReader === "missed" ? "reader:missed" : setup.tag;
   const setTag = (v: string) =>
-    v.startsWith("from:") ? update({ tag: "from", tagFrom: v.slice(5) }) : update({ tag: v as TagShown });
+    v === "reader:missed" ? update({ tag: "own", fastagReader: "missed" }) :
+    v.startsWith("from:") ? update({ tag: "from", tagFrom: v.slice(5), fastagReader: "ok" })
+      : update({ tag: v as TagShown, fastagReader: "ok" });
 
   // ---- GB sticker
   const ownSticker = setup.vehicle === "registered" ? stickers[setup.registeredPlate]?.uid ?? "" : "";
@@ -238,17 +252,27 @@ export function VehicleRows(props: RowsProps) {
               title="True length (m)"
             />
             <span className="muted small">m</span>
+            <input
+              type="number"
+              step="0.1"
+              value={setup.outsideEmpty ?? 12}
+              onChange={(e) => update({ outsideEmpty: Number(e.target.value) })}
+              title="Empty weight (t)"
+            />
+            <span className="muted small">t empty</span>
           </div>
         )}
       </Row>
 
       <Row
         label="Plate"
-        mark={setup.plate === "own" ? "ok" : "bad"}
+        mark={plateMark}
         reading={r.plateRead ? `reads ${formatPlate(r.plateRead)}` : "no plate read"}
       >
         <select value={plateValue} onChange={(e) => setPlate(e.target.value)}>
           <option value="own">Its own plate</option>
+          <option value="cam:unreadable">Its own plate, camera can't read it (mud, night)</option>
+          <option value="cam:misread">Its own plate, camera misreads one character</option>
           <option value="none">No plate (removed or covered)</option>
           {setup.plate === "custom" && !trucks.some((t) => t.plate === setup.customPlate) && (
             <option value={plateValue}>Fake plate {setup.customPlate}</option>
@@ -264,6 +288,7 @@ export function VehicleRows(props: RowsProps) {
       <Row label="FASTag" mark={tagMark} reading={`reads ${shortTag(r.tagRead)}`}>
         <select value={tagValue} onChange={(e) => setTag(e.target.value)}>
           <option value="own">{setup.vehicle === "registered" ? "Its own tag" : "Its own tag (not in GB registry)"}</option>
+          <option value="reader:missed">Its own tag, reader misses it</option>
           <option value="none">No tag (removed or blocked)</option>
           {others(setup.registeredPlate).map((t) => (
             <option key={t.id} value={`from:${t.plate}`}>

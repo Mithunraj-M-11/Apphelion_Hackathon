@@ -6,7 +6,8 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db import engine
-from app.routers import edge, gates, logs, permits, reference, rfid, sim_runs, site_runs, transporters, trips, trucks
+from app.routers import (edge, gates, logs, permits, reference, rfid, sim_runs, sim_staging, site_runs, transporters,
+                         trips, trucks)
 
 app = FastAPI(title="Aphelion GB Monitoring API", version="0.1.0")
 
@@ -15,6 +16,7 @@ app.include_router(transporters.router)
 app.include_router(trucks.router)
 app.include_router(gates.router)
 app.include_router(sim_runs.router)
+app.include_router(sim_staging.router)
 app.include_router(site_runs.router)
 app.include_router(logs.router)
 app.include_router(permits.router)

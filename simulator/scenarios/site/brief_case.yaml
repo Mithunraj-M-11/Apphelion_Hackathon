@@ -12,3 +12,4 @@ after_quota: { turn_back: 0.3, force: 0.2, side_track: 0.5 }
 vendor_report: { mode: cap_at_permit }
 cheats:
   - { type: side_track_both, per_day: 2 }
+survey: { every_days: 7, error_pct: 3, density: 3.2 }   # weekly volume survey (GB defence, gap 7)
