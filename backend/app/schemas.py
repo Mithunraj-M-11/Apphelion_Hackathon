@@ -91,6 +91,7 @@ class _TruckFields(BaseModel):
     fastag_chip_id: str | None = None
     length_m: float | None = Field(default=None, gt=0, lt=30)
     axle_count: int | None = Field(default=None, ge=2, le=10)
+    axle_spacings_m: list[float] | None = None  # between consecutive axles, front to back
     make: str | None = None
     model: str | None = None
     body_type: str | None = None
@@ -171,6 +172,7 @@ class TruckOut(ORM):
     fastag_chip_id: str | None
     length_m: float
     axle_count: int | None
+    axle_spacings_m: list[float] | None = None
     make: str | None
     model: str | None
     body_type: str | None
@@ -226,6 +228,15 @@ class LookupOut(BaseModel):
 
 
 # ---------- Gate events (Identify) ----------
+class WimReadingIn(BaseModel):
+    """What the gate's Weigh-in-Motion strip reported for this crossing (part of the signed pole event)."""
+    status: Literal["OK", "POOR", "TIMEOUT", "OFFLINE"] = "OK"  # POOR = braking / bounce; TIMEOUT / OFFLINE = no reading
+    axle_count: int | None = Field(default=None, ge=1, le=12)
+    axle_spacings_m: list[float] | None = None  # between consecutive axles, front to back
+    axle_weights_t: list[float] | None = None
+    speed_kmh: float | None = Field(default=None, ge=0, le=120)
+
+
 class GateEventIn(BaseModel):
     """What a gate pole reports. Sensors report what is physically there; null = nothing read."""
 
@@ -243,7 +254,8 @@ class GateEventIn(BaseModel):
     rfid_sim_mode: str | None = "genuine"  # PoC sensor truth: genuine | cloned | revoked | unknown_damaged
     qr_token: str | None = Field(default=None, max_length=2000)  # same as pass_token (Gate console name)
     source: str | None = Field(default=None, max_length=100)
-    # Simulated WIM parameters (independent verification mechanism)
+    wim: WimReadingIn | None = None  # Weigh-in-Motion reading at this gate (None = no WIM here)
+    # Legacy WIM simulation parameters (teammate's first version); the pipeline uses `wim` above
     wim_enabled: bool = True
     wim_scenario: str | None = None
     wim_device_code: str | None = None
@@ -770,6 +782,7 @@ class WimMeasurementOut(ORM):
     speed_kmh: float
     axle_count: int
     axle_weights: list[float]
+    axle_spacings_m: list[float] | None = None
     gross_weight_t: float
     quality: str
     status: str

@@ -18,7 +18,8 @@ const DATE_FIELDS = ["rc_valid_until", "fitness_valid_until", "insurance_valid_u
 
 const EMPTY: FormState = {
   plate: "", fastag_tag_id: "", fastag_chip_id: "", make: "", model: "", body_type: "Tipper", colour: "",
-  chassis_no: "", engine_no: "", length_m: "", axle_count: "3", empty_weight_t: "", rated_capacity_t: "",
+  chassis_no: "", engine_no: "", length_m: "", axle_count: "3", axle_spacings_m: "", empty_weight_t: "",
+  rated_capacity_t: "",
   gvw_t: "", rc_valid_until: "", fitness_valid_until: "", insurance_valid_until: "", permit_valid_until: "",
   vahan_verified: false, valid_from: "", valid_to: "", transporter_id: "", contract_id: "", approved_by: "",
   inspection_location: "GB enrollment bay, site gate 1",
@@ -34,6 +35,7 @@ function fromTruck(t: Truck): FormState {
   s.contract_id = t.contract ? String(t.contract.id) : "";
   s.approved_by = t.approver ? String(t.approver.id) : "";
   s.vahan_verified = t.vahan_verified;
+  s.axle_spacings_m = (t.axle_spacings_m ?? []).join(", ");
   return s;
 }
 
@@ -46,6 +48,8 @@ function toPayload(s: FormState, editing: boolean): Record<string, unknown> {
   }
   for (const k of NUMBER_FIELDS) out[k] = s[k] === "" ? null : Number(s[k]);
   for (const k of DATE_FIELDS) out[k] = s[k] === "" ? null : s[k];
+  const spacings = String(s.axle_spacings_m ?? "").split(",").map((x) => x.trim()).filter(Boolean).map(Number);
+  out.axle_spacings_m = spacings.length && spacings.every((x) => x > 0) ? spacings : null;
   if (!editing) for (const k of Object.keys(out)) if (out[k] === null) delete out[k];
   return out;
 }
@@ -128,6 +132,7 @@ export default function TruckForm() {
           <Row>
             {input("length_m", "Length (m)", "number", { step: "0.01", required: true })}
             {input("axle_count", "Axles", "number")}
+            {input("axle_spacings_m", "Axle spacings (m, front to back, e.g. 3.90, 1.37)")}
           </Row>
           <Row>
             {input("empty_weight_t", "Empty weight (t)", "number", { step: "0.01", required: true })}

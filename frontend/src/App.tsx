@@ -11,7 +11,6 @@ import {
   LuMenu,
   LuMonitorPlay,
   LuRadar,
-  LuScale,
   LuScanLine,
   LuShieldCheck,
   LuTag,
@@ -34,7 +33,6 @@ import TripPasses from "./pages/TripPasses";
 import TripQuotas from "./pages/TripQuotas";
 import TruckDetail from "./pages/TruckDetail";
 import TruckForm from "./pages/TruckForm";
-import WimDashboard from "./pages/WimDashboard";
 
 const COLLAPSE_KEY = "sitewatch.navCollapsed";
 
@@ -43,7 +41,6 @@ const NAV: { to: string; label: string; Icon: IconType }[] = [
   { to: "/registry", label: "Truck registry", Icon: LuTruck },
   { to: "/transporters", label: "Transporters", Icon: LuBuilding2 },
   { to: "/gate-console", label: "Gate console", Icon: LuMonitorPlay },
-  { to: "/wim", label: "WIM verification", Icon: LuScale },
   { to: "/trip-passes", label: "Trip passes", Icon: LuLayers },
   { to: "/rfid-stickers", label: "RFID stickers", Icon: LuTag },
   { to: "/trip-quotas", label: "Trip quotas", Icon: LuGauge },
@@ -145,8 +142,6 @@ function Layout() {
           <Route path="/transporters" element={<Transporters />} />
           <Route path="/solution" element={<SolutionFlow />} />
           <Route path="/gate-console" element={<GateConsole />} />
-          <Route path="/wim" element={<WimDashboard />} />
-          <Route path="/wim-monitoring" element={<WimDashboard />} />
           <Route path="/trip-passes" element={<TripPasses />} />
           <Route path="/rfid-stickers" element={<RfidStickers />} />
           <Route path="/trip-quotas" element={<TripQuotas />} />

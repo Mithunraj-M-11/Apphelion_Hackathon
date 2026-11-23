@@ -87,6 +87,16 @@ MODELS = {
     "al3520": ("Ashok Leyland", "3520 Tipper", 4, 9.7, 13.0, 22.0, 35.0, "MB1PBF"),
 }
 
+# Axle spacings (m, front to back) per model, approximate: WIM measures these (body fingerprint)
+AXLE_SPACINGS = {
+    "signa2823": [3.90, 1.37],
+    "al2820": [3.80, 1.35],
+    "bb2823": [4.00, 1.40],
+    "eicher6028": [3.85, 1.32],
+    "signa3523": [1.95, 3.30, 1.37],
+    "al3520": [1.90, 3.40, 1.35],
+}
+
 # (plate, model key, transporter index, colour, note)
 TRUCKS = [
     ("OD09AB1234", "signa2823", 0, "Yellow", None),  # near-miss target for a simulated misread (B -> 8)
@@ -199,6 +209,7 @@ def seed() -> None:
                     fastag_chip_id="E28011" + _hex(18),
                     length_m=round(length + rng.uniform(-0.1, 0.1), 2),
                     axle_count=axles,
+                    axle_spacings_m=AXLE_SPACINGS[model_key],
                     make=make,
                     model=model,
                     body_type="Tipper",

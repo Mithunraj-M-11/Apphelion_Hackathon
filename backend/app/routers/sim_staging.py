@@ -8,7 +8,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Alert, EventLog, Movement, Permit, TripSession
+from app.models import Alert, EventLog, Movement, Permit, TripSession, WimAnomaly, WimMeasurement
 
 router = APIRouter(prefix="/api/sim", tags=["simulator staging"])
 
@@ -35,6 +35,8 @@ def insider_edit(body: InsiderEdit, db: Session = Depends(get_db)) -> dict:
             raise HTTPException(409, "No illegal trip to erase")
         db.execute(delete(Alert).where(Alert.movement_id == m.id))
         db.execute(delete(EventLog).where(EventLog.movement_id == m.id))
+        db.execute(delete(WimAnomaly).where(WimAnomaly.movement_id == m.id))
+        db.execute(delete(WimMeasurement).where(WimMeasurement.movement_id == m.id))
         db.delete(m)
         db.commit()
         return {"erased_movement": m.id}

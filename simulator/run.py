@@ -15,6 +15,7 @@ it to the GB backend exactly like a real pole. It never writes to the registry: 
 """
 
 import os
+import random
 import sys
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
@@ -29,6 +30,8 @@ BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
 IST = timezone(timedelta(hours=5, minutes=30))
 SERIOUS = ("HIGH", "CRITICAL")
+EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP", "WIM_UNAVAILABLE", "WIM_PAD_DISAGREE")
+WIM_RNG = random.Random(7)  # its own stream: WIM noise doesn't change the rest of a story
 
 DEFAULT_PERMIT = {"trip_limit": 50, "tonne_limit": 1500, "vehicle_limit": 20, "hours_start": "06:00",
                   "hours_end": "18:00", "exit_grace_min": 30, "pass_expiry_min": 120}
@@ -85,12 +88,14 @@ def vehicle_of(spec, sid: str, registry: dict[str, dict], rogues: dict[str, dict
         if t is None:
             raise ScenarioError(f"{sid}: registered truck {spec['registered']} not found in the registry")
         return {"label": t["plate"], "plate": t["plate"], "tag": t["fastag_tag_id"], "length": t["length_m"],
-                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"], "registered": True}
+                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"], "registered": True,
+                "spacings": t.get("axle_spacings_m")}
     r = rogues.get(spec["rogue"])
     if r is None:
         raise ScenarioError(f"{sid}: unknown rogue vehicle {spec['rogue']}")
     return {"label": spec["rogue"], "plate": r.get("own_plate"), "tag": r.get("fastag"), "length": r["length_m"],
-            "empty": r.get("empty_weight_t", 12.0), "rated": r.get("rated_capacity_t", 25.0)}
+            "empty": r.get("empty_weight_t", 12.0), "rated": r.get("rated_capacity_t", 25.0),
+            "spacings": r.get("axle_spacings_m", [3.8, 1.35])}
 
 
 def identity_readings(phys: dict, sid: str, vehicle: dict, registry: dict[str, dict]) -> dict:
@@ -427,6 +432,13 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             body = {"direction": ev["dir"], **reading, **sticker_reading(ev, vehicle, STICKERS, sid),
                     "weight_t": weight, "observed_at": observed.isoformat(), "barrier_forced": bool(ev.get("forces")),
                     "permit_id": permit["id"], "source": source}
+            wim_status = str(ev.get("wim", "ok")).upper()
+            wim = pole.wim_reading(WIM_RNG, vehicle.get("spacings"), vehicle["empty"], real_w, wim_status)
+            if wim is not None:  # the lane's WIM strip weighs the real truck, whatever the pad shows
+                body["wim"] = wim
+                if wim_status != "OK":
+                    faults.append({"OFFLINE": "WIM strip offline", "TIMEOUT": "WIM strip timed out",
+                                   "POOR": "WIM reading poor (braking over the strip)"}.get(wim_status, wim_status))
             shown = None
             if ev["dir"] == "OUT":
                 extra, shown = shown_at_exit(ev, sid, vkey, own_pass, issued)
@@ -583,7 +595,7 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             if code not in {a["code"] for a in story_alerts}:
                 problems.append(f"story: expected alert {code} not raised (ideal response)")
         serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS
-                   and a["code"] not in ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP")]  # about equipment, not the truck
+                   and a["code"] not in EQUIPMENT_ALERTS]  # about equipment, not the truck
         if scn["kind"] == "honest" and serious:
             problems.append(f"false alarm: {serious}")
         expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])] + \

@@ -8,6 +8,7 @@
 #   heartbeats     the pole sends 'I'm alive' every 15 min while it has power (the GB has no endpoint yet)
 #   weigh_drift    from day N the GB weigh pad reads offset_t off when loaded (remote chip)
 #   sensor_noise   share of honest reads where the camera misses the plate / the reader misses the FASTag
+#   wim_noise      share of crossings where the WIM strip reads poorly or gives nothing
 #   bribed_officer one officer late-closes side-route trips as "sensor fault" (officer_cover)
 description: Every priority cheat in one week, with pole outages, a rigged weigh pad, sensor misses and a bribed officer.
 days: 7
@@ -21,6 +22,7 @@ heartbeats: true
 outages: { per_week: 2, minutes: [30, 90] }
 weigh_drift: { from_day: 4, offset_t: -3 }
 sensor_noise: { plate_miss: 0.03, fastag_miss: 0.02 }
+wim_noise: { poor: 0.03, offline: 0.01 }   # WIM strip: braking over it / no reading
 bribed_officer: true
 reference_test: { known_t: 30 }   # one unannounced reference weight test a day (GB defence, gap 1B)
 survey: { every_days: 7, error_pct: 3, density: 3.2 }   # weekly volume survey (GB defence, gap 7)

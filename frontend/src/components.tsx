@@ -117,7 +117,9 @@ export function StepList({ steps }: { steps: { name: string; status: string; ite
     <div className="step-list">
       {steps.map((s) => (
         <div key={s.name} className="step-block">
-          <div className={`step-name step-${s.status}`}>{s.name}</div>
+          <div className={`step-name step-${s.status}`}>
+            {s.name === "Identify" ? "Identify: identity" : s.name === "Body" ? "Identify: body" : s.name}
+          </div>
           <ul className="checks">
             {s.items.map((c, i) => (
               <li key={`${c.label}-${i}`} className={`check check-${c.status}`}>

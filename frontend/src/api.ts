@@ -37,6 +37,7 @@ export type Truck = {
   fastag_chip_id: string | null;
   length_m: number;
   axle_count: number | null;
+  axle_spacings_m?: number[] | null; // between consecutive axles, front to back
   make: string | null;
   model: string | null;
   body_type: string | null;
@@ -482,6 +483,16 @@ export type GateEventIn = {
   rfid_sticker_uid?: string | null;
   rfid_sim_mode?: "genuine" | "cloned" | "revoked" | "unknown_damaged";
   qr_token?: string | null;
+  wim?: WimReading | null; // the lane's Weigh-in-Motion strip (part of the signed pole event)
+};
+
+/** What the WIM strip reports for one crossing. */
+export type WimReading = {
+  status: "OK" | "POOR" | "TIMEOUT" | "OFFLINE";
+  axle_count?: number;
+  axle_spacings_m?: number[];
+  axle_weights_t?: number[];
+  speed_kmh?: number;
 };
 
 export type RfidSticker = {
@@ -786,6 +797,7 @@ export type WimMeasurement = {
   truck_id: number | null;
   speed_kmh: number;
   axle_count: number;
+  axle_spacings_m?: number[] | null;
   axle_weights: number[];
   gross_weight_t: number;
   quality: "GOOD" | "FAIR" | "POOR";

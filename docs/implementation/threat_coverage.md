@@ -159,3 +159,17 @@ Staging: one error per terrain model, so each week's error is within +/-3%.
 | `threat_coverage` | side-track stories scored "period-level": 28 covered + 3 period-level of 31, no gaps |
 
 Limit: a few side-track trips a week (under about 2% of the volume) stay below what the survey can see.
+
+## Results: Weigh-in-Motion (2026-11-23)
+
+The teammate's WIM (PR #9) ran beside the pipeline with random weights. It now runs inside it: the WIM reading travels
+in the signed gate event and is checked in Measure, against the registered truck (axle count and spacing) and against
+the weigh pad (second weight). Thresholds: axle gap 0.15 m, pad vs WIM max(1 t, 8%). Equipment alerts
+(`WIM_UNAVAILABLE`, `WIM_PAD_DISAGREE`) are raised once per gate per 6 hours and are not false alarms on the truck.
+
+| Run | Before | After |
+|---|---|---|
+| `threat_coverage` | 28 covered + 3 period-level of 31 | 32 covered + 3 period-level of 36: new W1a (rigged pad caught on the first truck), W2a (transplant within pad noise, other axles), W3a / W3b (WIM offline / poor, no false alarm) pass; W2b (same-model transplant) fails: the known limit, staged on purpose |
+| `threat_week` | rigged pad (day 4) first flagged by LOAD_DROP, 07:12 day 4 | first flagged by WIM, 06:37 day 4 (first loaded exit); 0 false alarms; HIGH alerts 60 with the 6-hour grouping |
+| `threat_month` | 146 / 146 flagged, 0 false alarms | unchanged, with WIM faults (3% poor, 1% offline) staged |
+| `gate_cheats` / `edge_resilience` | 34/34, 7/7 | 34/34, 7/7 |
