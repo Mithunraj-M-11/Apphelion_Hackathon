@@ -221,6 +221,7 @@ export type Movement = {
   counted_trip: boolean;
   trip: "LEGAL" | "ILLEGAL" | null;
   steps: Step[] | null;
+  wim_verification?: WimCorrelation | null;
   pass: PassSummary | null;
   alerts: Alert[];
   rfid_sticker_uid?: string | null;
@@ -734,3 +735,131 @@ export const siteApi = {
   /** Delete every site run and its data. Gate console and scenario runs are not touched. */
   clear: () => request<Record<string, number>>("/site-runs", { method: "DELETE" }, false),
 };
+
+// ==============================================================================
+// Weigh-in-Motion (WIM) Independent Verification API
+// ==============================================================================
+
+export type WimDevice = {
+  id: number;
+  device_code: string;
+  gate: string;
+  lane: string;
+  status: "ONLINE" | "OFFLINE" | "DEGRADED";
+  model: string;
+  firmware_version: string;
+  last_heartbeat: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WimAnomaly = {
+  id: number;
+  anomaly_code: string;
+  measurement_id: number | null;
+  movement_id: number | null;
+  truck_id: number | null;
+  plate: string | null;
+  anomaly_type: string;
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  description: string;
+  details: Record<string, unknown> | null;
+  status: "OPEN" | "UNDER_REVIEW" | "RESOLVED" | "DISMISSED";
+  reviewed_by: number | null;
+  reviewer_name?: string | null;
+  reviewed_at: string | null;
+  resolution_reason: string | null;
+  created_at: string;
+};
+
+export type WimMeasurement = {
+  id: number;
+  measurement_id: string;
+  device_id: number | null;
+  device_code: string;
+  gate: string;
+  lane: string;
+  direction: string;
+  observed_at: string;
+  received_at: string;
+  plate: string | null;
+  truck_id: number | null;
+  speed_kmh: number;
+  axle_count: number;
+  axle_weights: number[];
+  gross_weight_t: number;
+  quality: "GOOD" | "FAIR" | "POOR";
+  status: string;
+  source: string;
+  movement_id: number | null;
+  radar_length_m: number | null;
+  correlation_status: "CORRELATED" | "DISCREPANCY" | "RADAR_ONLY" | "WIM_ONLY" | "BOTH_UNAVAILABLE" | "UNMATCHED";
+  discrepancy_details: { reason?: string } | null;
+  created_at: string;
+  anomalies?: WimAnomaly[];
+};
+
+export type WimVerificationCheck = {
+  name: string;
+  label: string;
+  status: "passed" | "warning" | "failed" | "unavailable" | "pending";
+  detail: string;
+};
+
+export type WimCorrelation = {
+  overall_status: "PASSED" | "WARNING" | "FAILED" | "UNAVAILABLE" | "PENDING";
+  correlation_status: "CORRELATED" | "DISCREPANCY" | "RADAR_ONLY" | "WIM_ONLY" | "BOTH_UNAVAILABLE" | "UNMATCHED";
+  summary: string;
+  checks: WimVerificationCheck[];
+  measurement?: WimMeasurement | null;
+  discrepancy_reason?: string | null;
+  monitoring_warning?: string | null;
+};
+
+export type WimDashboardMetrics = {
+  total_devices: number;
+  online_devices: number;
+  offline_devices: number;
+  degraded_devices: number;
+  total_measurements: number;
+  successful_measurements: number;
+  poor_quality_measurements: number;
+  radar_wim_discrepancies: number;
+  overload_anomalies: number;
+  verification_overview: {
+    both_operational: number;
+    radar_only: number;
+    wim_only: number;
+    both_unavailable: number;
+    discrepancies: number;
+  };
+  anomaly_counts_by_status: {
+    OPEN: number;
+    UNDER_REVIEW: number;
+    RESOLVED: number;
+    DISMISSED: number;
+  };
+};
+
+export const wimApi = {
+  devices: () => request<WimDevice[]>("/wim/devices"),
+  updateStatus: (deviceCode: string, status: string, reason?: string) =>
+    request<WimDevice>(`/wim/devices/${deviceCode}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
+  simulate: (data: Record<string, unknown>) =>
+    request<WimCorrelation>("/wim/simulate", { method: "POST", body: JSON.stringify(data) }, false),
+  measurements: (params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<WimMeasurement[]>(`/wim/measurements${qs.toString() ? `?${qs}` : ""}`);
+  },
+  measurement: (id: string) => request<WimMeasurement>(`/wim/measurements/${id}`),
+  movementWim: (movementId: number) => request<WimCorrelation>(`/wim/movements/${movementId}`),
+  vehicleHistory: (plate: string) => request<WimMeasurement[]>(`/wim/vehicles/${plate}`),
+  anomalies: (params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<WimAnomaly[]>(`/wim/anomalies${qs.toString() ? `?${qs}` : ""}`);
+  },
+  reviewAnomaly: (id: number, status: string, reason: string) =>
+    request<WimAnomaly>(`/wim/anomalies/${id}/review`, { method: "POST", body: JSON.stringify({ status, reason }) }),
+  dashboard: () => request<WimDashboardMetrics>("/wim/dashboard"),
+};
+
