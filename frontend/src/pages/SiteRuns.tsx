@@ -65,10 +65,10 @@ const CHEAT_STORY: Record<string, string> = {
 
 // ---------------------------------------------------------------- daily chart
 const SERIES: { key: keyof SiteDay; label: string; color: string }[] = [
-  { key: "true_trips", label: "Ground truth", color: "var(--series-1)" },
-  { key: "gb_actual", label: "GB actual", color: "var(--series-2)" },
-  { key: "gb_legal", label: "GB legal", color: "var(--series-3)" },
-  { key: "vendor_trips", label: "Vendor reported", color: "var(--series-4)" },
+  { key: "true_trips", label: "Really left", color: "var(--series-1)" },
+  { key: "gb_actual", label: "Counted at GB gates", color: "var(--series-2)" },
+  { key: "gb_legal", label: "With a valid pass", color: "var(--series-3)" },
+  { key: "vendor_trips", label: "Vendor says", color: "var(--series-4)" },
 ];
 
 /** Trips per day: what really left vs what the GB saw vs what was legal vs what the Vendor claimed. */
@@ -230,8 +230,8 @@ function RunList() {
       <table className="table">
         <thead>
           <tr>
-            <th>Run</th><th>Scenario</th><th>Period</th><th>Permitted</th><th>Vendor</th><th>GB actual</th>
-            <th>Truth</th><th>Cheats prevented / detected / missed</th><th>False alarms</th><th />
+            <th>Run</th><th>Scenario</th><th>Period</th><th>Permit allows</th><th>Vendor says</th><th>Counted at GB gates</th>
+            <th>Really left</th><th>Cheats prevented / detected / missed</th><th>False alarms</th><th />
           </tr>
         </thead>
         <tbody>
@@ -469,7 +469,9 @@ const CAUSE_TEXT: Record<string, string> = {
 function MissedByCause({ r }: { r: SiteReport }) {
   const rows = Object.entries(r.missed_by_cause ?? {});
   const st = r.staging;
-  const trips = rows.reduce((n, [, v]) => n + (v.trips || 0), 0);
+  // side tracks, pole down and light vehicles were never counted; the weigh-pad rows were counted, but weighed wrong
+  const COUNTED = ["weighed short (rigged pad)", "not weighed (pad bypassed)"];
+  const trips = rows.reduce((n, [cause, v]) => n + (COUNTED.includes(cause) ? 0 : v.trips || 0), 0);
   return (
     <div className="card">
       <header className="card-head"><h3>What the GB missed, and why</h3></header>
@@ -486,8 +488,10 @@ function MissedByCause({ r }: { r: SiteReport }) {
         </tbody>
       </table>
       <p className="sr-note">
-        {fmt(trips)} trips really moved that the GB doesn't count. Tonnes include trips the gates counted but weighed
-        short. Read with the ledger above: ground truth minus GB actual.
+        {fmt(trips)} trips really left that no GB gate counted (really left minus counted at GB gates, above). The
+        weigh-pad rows are trips the gates did count, but without the right weight. Worked out from the simulator's
+        ground truth: in reality the GB doesn't see these trip by trip, only through its signals (pole silent, the
+        weekly survey, WIM disagreeing with the pad).
       </p>
       {st && (
         <p className="small muted">
@@ -562,6 +566,16 @@ function ContractSection({ permitId }: { permitId: number }) {
   );
 }
 
+/** The ledger's columns: what each number is, in plain words (used by the headline and the daily table). */
+const LEDGER_COLS = [
+  { label: "Permit allows", hint: "the contract limit" },
+  { label: "Vendor says", hint: "its own daily reports" },
+  { label: "With a valid pass", hint: "passes closed at exit, or by an officer" },
+  { label: "Counted at GB gates", hint: "every loaded exit, pass or not" },
+  { label: "Without a pass", hint: "forced the barrier (illegal)" },
+  { label: "Really left", hint: "ground truth: simulator only" },
+];
+
 function Headline({ r }: { r: SiteReport }) {
   const rows: { label: string; key: "trips" | "tonnes"; digits: number }[] = [
     { label: "Trips", key: "trips", digits: 0 },
@@ -571,8 +585,10 @@ function Headline({ r }: { r: SiteReport }) {
     <table className="table sr-headline">
       <thead>
         <tr>
-          <th /><th>Permitted</th><th>Vendor reported</th><th>GB legal</th><th>GB actual</th><th>GB illegal</th>
-          <th>Ground truth</th>
+          <th />
+          {LEDGER_COLS.map((c) => (
+            <th key={c.label}>{c.label}<div className="sr-col-hint">{c.hint}</div></th>
+          ))}
         </tr>
       </thead>
       <tbody>
@@ -677,10 +693,14 @@ function RunDetail({ id }: { id: number }) {
         <header className="card-head"><h3>The ledger: what was allowed, claimed, recorded, and real</h3></header>
         <Headline r={r} />
         <p className="sr-note">
-          Ground truth is what really left the site; the GB never sees it. GB actual counts every heavy vehicle that
-          crossed an exit (legal closes plus forced barriers); illegal tonnes are estimated from the weigh pad minus
-          the truck's enrolled empty weight.
-          {h.vendor_reported < h.gb_actual && ` The Vendor reported ${fmt(h.gb_actual - h.vendor_reported)} fewer trips than the GB recorded.`}
+          <strong>Counted at GB gates</strong> is every loaded truck that crossed a GB exit: those that closed a pass
+          there, plus those <strong>without a pass</strong>. <strong>With a valid pass</strong> also includes passes an
+          officer closed with no truck at the gate (a late close), so it can be higher than the gates' own count:
+          {h.gb_legal + h.gb_illegal > h.gb_actual &&
+            ` here ${fmt(h.gb_legal + h.gb_illegal - h.gb_actual)} passes were closed by an officer, not at a gate.`} Tonnes with a pass are the weigh pad's net tonnes; tonnes without
+          a pass are estimated (exit weight minus the truck's enrolled empty weight). <strong>Really left</strong> is
+          the simulator's ground truth: the GB never sees it, it is here to show what the GB missed.
+          {h.vendor_reported < h.gb_actual && ` The Vendor reported ${fmt(h.gb_actual - h.vendor_reported)} fewer trips than the GB counted.`}
         </p>
       </div>
 
@@ -704,8 +724,8 @@ function RunDetail({ id }: { id: number }) {
         <table className="table table-inner">
           <thead>
             <tr>
-              <th>Day</th><th>Ground truth</th><th>GB actual</th><th>GB legal</th><th>GB illegal</th>
-              <th>Never at a gate</th><th>Refused at entry</th><th>Vendor reported</th><th>Vendor check</th>
+              <th>Day</th><th>Really left</th><th>Counted at GB gates</th><th>With a valid pass</th><th>Without a pass</th>
+              <th>Never at a gate</th><th>Refused at entry</th><th>Vendor says</th><th>Vendor check</th>
             </tr>
           </thead>
           <tbody>

@@ -79,8 +79,8 @@ docker compose run --rm simulator edge_resilience   # 7 cases: WAN loss, failove
 
 `simulator/site_run.py` plays a whole contract period (7 days by default) through the gates: honest trucks working
 their shifts plus cheats mixed in, with a simulated Vendor filing daily reports. It keeps the **ground truth** the GB
-never sees, and saves a site report comparing Permitted / Vendor reported / GB legal / GB actual / GB illegal /
-Ground truth, with every cheat scored as prevented, detected or missed. Same seed, same result.
+never sees, and saves a site report comparing Permit allows / Vendor says / With a valid pass / Counted at GB gates /
+Without a pass / Really left (ground truth), with every cheat scored as prevented, detected or missed. Same seed, same result.
 
 ```bash
 docker compose run --rm simulator site clean_week   # control: honest traffic only

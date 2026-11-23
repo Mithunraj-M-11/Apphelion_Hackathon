@@ -394,6 +394,7 @@ ul.plain li { padding: 3px 0; }
 .sr-headline td, .sr-headline th { text-align: right; }
 .sr-headline td:first-child, .sr-headline th:first-child { text-align: left; }
 .sr-headline .sr-truth { font-weight: 700; }
+.sr-col-hint { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 0.75rem; color: var(--muted); }
 .sr-chart-wrap { position: relative; }
 .sr-chart { width: 100%; height: auto; display: block; overflow: visible; }
 .sr-grid { stroke: var(--border); stroke-width: 1; }
