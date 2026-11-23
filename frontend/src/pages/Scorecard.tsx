@@ -1,29 +1,36 @@
-// One scorecard for every run (Gate cheats, Threat coverage, Edge resilience, Site runs). It answers the same three
-// questions everywhere: what works, what doesn't (and does the GB at least know), and what it cost.
+// One scorecard for every run (Gate cheats, Threat coverage, Edge resilience, Site runs). It answers, in order:
+//   1. Correct against ground truth: how often did the GB do the right thing, out of everything judged?
+//   2. Cheats: how many did it catch (recall), and when it flags, is it really a cheat (precision)? F1.
+//   3. Honest: does it leave honest trucks alone (recall), and is what it passes really honest (precision)? F1.
+//   then what it cost (trips / tonnes missed) and the detail by threat area.
 import type { ReactNode } from "react";
 
+/** How the GB handled one item: covered (as it should), partial, gap (noticed, not enough), silent (no idea),
+ * period (only a period check, e.g. the weekly survey, can judge it). */
 export type Status = "covered" | "partial" | "gap" | "silent" | "period";
 
-/** One judged item: a scenario story, an edge case, or one attempt in a site run. */
+/** One judged item: a scenario story, an edge case, or one cheat attempt in a site run. */
 export type ScoreItem = {
   id: string;
   name: string;
   area: string; // threat area key (AREAS)
   status: Status;
+  cls: "cheat" | "honest" | "other"; // other = officer / edge cases: counted in "correct" only
   priority?: string | null;
   how?: string; // e.g. "stopped" / "caught after" for covered site attempts
 };
 
-/** The previous run of the same suite / scenario, to show before -> after. */
-export type Before = { label: string; items: ScoreItem[]; cost: Cost };
+/** Honest cases counted outside the items (site runs: honest gate events, not stories). */
+export type HonestCount = { total: number; flagged: number; unit: string };
 
 export type Cost = {
   trips?: { missed: number; of: number };
   tonnes?: { missed: number; of: number };
-  honest?: { refused: number; of: number; label: string }; // honest trucks / events the GB wrongly refused or flagged
 };
 
-/** The threat areas, the same on every page. */
+/** The previous run of the same suite / scenario, to show before -> after. */
+export type Before = { label: string; items: ScoreItem[]; cost: Cost; honest?: HonestCount | null };
+
 export const AREAS: { key: string; title: string }[] = [
   { key: "identity", title: "Vehicle identity" },
   { key: "sticker", title: "GB RFID sticker" },
@@ -52,10 +59,69 @@ export function StatusBadge({ s }: { s?: Status | null }) {
   return <span className={`badge ${cls}`}>{s ? STATUS_TEXT[s] : "—"}</span>;
 }
 
-function Was({ was, now, lowerIsBetter }: { was: number | undefined; now: number; lowerIsBetter?: boolean }) {
-  if (was === undefined || Math.round(was) === Math.round(now)) return was === undefined ? null : <span className="sc-was">same as before</span>;
+// ---------------------------------------------------------------- the numbers
+type Scores = {
+  correct: number;
+  judged: number;
+  cheats: number;
+  caught: number; // flagged: covered, partial or gap
+  fully: number; // covered
+  missed: number; // silent
+  period: number;
+  honest: number;
+  honestFlagged: number;
+  cheatP: number | null;
+  cheatR: number | null;
+  cheatF1: number | null;
+  honestP: number | null;
+  honestR: number | null;
+  honestF1: number | null;
+};
+
+const ratio = (a: number, b: number) => (b ? a / b : null);
+const f1 = (p: number | null, r: number | null) => (p == null || r == null ? null : p + r ? (2 * p * r) / (p + r) : 0);
+
+export function scores(items: ScoreItem[], honestCount?: HonestCount | null): Scores {
+  const cheats = items.filter((i) => i.cls === "cheat" && i.status !== "period");
+  const period = items.filter((i) => i.status === "period").length;
+  const caught = cheats.filter((i) => i.status !== "silent").length;
+  const fully = cheats.filter((i) => i.status === "covered").length;
+  const missed = cheats.length - caught;
+  const honestItems = items.filter((i) => i.cls === "honest");
+  const honest = honestCount ? honestCount.total : honestItems.length;
+  const honestFlagged = honestCount ? honestCount.flagged : honestItems.filter((i) => i.status !== "covered").length;
+  const other = items.filter((i) => i.cls === "other");
+  const tp = caught, fn = missed, fp = honestFlagged, tn = honest - honestFlagged;
+  const cheatP = ratio(tp, tp + fp), cheatR = ratio(tp, tp + fn);
+  const honestP = ratio(tn, tn + fn), honestR = ratio(tn, tn + fp);
+  return {
+    correct: fully + tn + other.filter((i) => i.status === "covered").length,
+    judged: cheats.length + honest + other.length,
+    cheats: cheats.length, caught, fully, missed, period, honest, honestFlagged,
+    cheatP, cheatR, cheatF1: f1(cheatP, cheatR), honestP, honestR, honestF1: f1(honestP, honestR),
+  };
+}
+
+const pct = (x: number | null) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
+const num = (x: number) => Math.round(x).toLocaleString("en-IN");
+
+function Was({ was, now, lowerIsBetter, asPct }: { was: number | null | undefined; now: number | null; lowerIsBetter?: boolean;
+  asPct?: boolean }) {
+  if (was == null || now == null) return null;
+  const same = asPct ? Math.abs(was - now) < 0.0005 : Math.round(was) === Math.round(now);
+  if (same) return <span className="sc-was">same as before</span>;
   const better = lowerIsBetter ? now < was : now > was;
-  return <span className={`sc-was ${better ? "ok-text" : "bad-text"}`}>was {Math.round(was).toLocaleString("en-IN")}</span>;
+  return <span className={`sc-was ${better ? "ok-text" : "bad-text"}`}>was {asPct ? pct(was) : num(was)}</span>;
+}
+
+function Metric({ label, value, was, help }: { label: string; value: number | null; was?: number | null; help: string }) {
+  return (
+    <div className="sc-metric" title={help}>
+      <div className="sc-metric-val">{pct(value)}</div>
+      <div className="sc-metric-label">{label}</div>
+      <Was was={was} now={value} asPct />
+    </div>
+  );
 }
 
 function Tile({ label, value, total, tone, sub, onClick }: { label: string; value: number; total?: number;
@@ -64,8 +130,8 @@ function Tile({ label, value, total, tone, sub, onClick }: { label: string; valu
     <div className={`stat${onClick ? " sr-tile-click" : ""}`} onClick={onClick} role={onClick ? "button" : undefined}
          title={onClick ? "Show the list behind this number" : undefined}>
       <div className={`stat-num ${tone ? `${tone}-text` : ""}`}>
-        {value.toLocaleString("en-IN")}
-        {total != null && <span className="muted stat-of">/{total.toLocaleString("en-IN")}</span>}
+        {num(value)}
+        {total != null && <span className="muted stat-of">/{num(total)}</span>}
       </div>
       <div className="stat-label">{label}</div>
       {sub && <div className="small muted">{sub}</div>}
@@ -78,6 +144,7 @@ export function Scorecard({
   items,
   unit,
   cost,
+  honest,
   onStatus,
   onCost,
   before,
@@ -86,71 +153,124 @@ export function Scorecard({
   items: ScoreItem[];
   unit: string; // "stories", "cases", "attempts"
   cost: Cost;
-  before?: Before | null;
+  honest?: HonestCount | null; // site runs: honest gate events instead of honest items
   onStatus?: (s: Status) => void;
   onCost?: (k: "trips" | "tonnes" | "honest") => void;
+  before?: Before | null;
 }) {
-  const n = items.length;
+  const sc = scores(items, honest);
+  const was = before ? scores(before.items, before.honest) : null;
+  const honestUnit = honest?.unit ?? "honest stories";
   const count = (s: Status) => items.filter((i) => i.status === s).length;
-  const was = (s: Status) => (before ? before.items.filter((i) => i.status === s).length : undefined);
   const hows = items.filter((i) => i.status === "covered" && i.how).reduce<Record<string, number>>((a, i) => {
     a[i.how as string] = (a[i.how as string] ?? 0) + 1;
     return a;
   }, {});
-  const howText = Object.entries(hows).map(([h, k]) => `${k} ${h}`).join(", ");
   const priorities = ["P0", "P1", "extra"]
     .map((p) => {
-      const rs = items.filter((i) => i.priority === p);
+      const rs = items.filter((i) => i.priority === p && i.status !== "period");
       return rs.length ? `${p}: ${rs.filter((i) => i.status === "covered").length} of ${rs.length} covered` : null;
     })
     .filter(Boolean)
     .join(" · ");
   const click = (s: Status) => (onStatus ? () => onStatus(s) : undefined);
-  const costClick = (k: "trips" | "tonnes" | "honest") => (onCost ? () => onCost(k) : undefined);
 
   return (
     <>
       <p className="sc-judged">{judgedAgainst}</p>
       {before && <p className="small muted sc-before">Compared with {before.label}: green = better than before, red = worse.</p>}
-      <div className="stats stats-4">
-        <Tile label="Covered" value={count("covered")} total={n} tone="ok" onClick={click("covered")}
-              sub={<>{howText && <div>{howText}</div>}<Was was={was("covered")} now={count("covered")} /></>} />
-        <Tile label="Partial" value={count("partial")} total={n} tone={count("partial") ? "warn" : undefined} onClick={click("partial")}
-              sub={<Was was={was("partial")} now={count("partial")} lowerIsBetter />} />
-        <Tile label="Gap" value={count("gap")} total={n} tone={count("gap") ? "bad" : undefined} onClick={click("gap")}
-              sub={<Was was={was("gap")} now={count("gap")} lowerIsBetter />} />
-        <Tile label="Silent gap" value={count("silent")} total={n} tone={count("silent") ? "bad" : undefined}
-              sub={<><div>the GB doesn't know</div><Was was={was("silent")} now={count("silent")} lowerIsBetter /></>}
-              onClick={click("silent")} />
+
+      {/* 1. correct against ground truth */}
+      <div className="card sc-overall">
+        <div className="sc-overall-num">
+          {num(sc.correct)}<span className="muted"> of {num(sc.judged)}</span>
+          <span className="sc-overall-pct">{pct(ratio(sc.correct, sc.judged))}</span>
+        </div>
+        <div className="sc-overall-label">
+          <strong>Correct against ground truth</strong>: cheats fully handled, honest cases passed clean
+          {items.some((i) => i.cls === "other") ? ", officer and edge cases as specified" : ""}.
+          <Was was={was ? ratio(was.correct, was.judged) : null} now={ratio(sc.correct, sc.judged)} asPct />
+        </div>
       </div>
-      {count("period") > 0 && (
-        <p className="small muted sc-line">
-          <strong>{count("period")} period-level</strong>: a single trip is far below what a volume survey can measure,
-          so these are judged by the weekly survey in the site runs, not per story.
-        </p>
-      )}
-      {(cost.trips || cost.tonnes || cost.honest) && (
+
+      {/* 2. cheats and 3. honest */}
+      <div className="sc-classes">
+        {sc.cheats > 0 && (
+          <div className="card sc-class">
+            <header className="card-head"><h3>Cheats</h3><span className="muted small">{num(sc.cheats)} {unit === "attempts" ? "attempts" : "cheat stories"}</span></header>
+            <div className="sc-class-line">
+              <span className="sr-tile-click" onClick={click("covered")}><strong className="ok-text">{num(sc.fully)}</strong> fully handled</span>
+              <span className="sr-tile-click" onClick={click("gap")}><strong className="warn-text">{num(sc.caught - sc.fully)}</strong> flagged only</span>
+              <span className="sr-tile-click" onClick={click("silent")}><strong className={sc.missed ? "bad-text" : ""}>{num(sc.missed)}</strong> missed silently</span>
+            </div>
+            <div className="sc-metrics">
+              <Metric label="Recall: cheats caught" value={sc.cheatR} was={was?.cheatR}
+                      help="Caught (flagged at all) / all cheats. How many cheats we catch." />
+              <Metric label="Precision: flags that were cheats" value={sc.cheatP} was={was?.cheatP}
+                      help="Caught / everything flagged (cheats caught + honest wrongly flagged)." />
+              <Metric label="F1" value={sc.cheatF1} was={was?.cheatF1} help="Harmonic mean of precision and recall." />
+            </div>
+            {Object.keys(hows).length > 0 && (
+              <div className="small muted">Fully handled: {Object.entries(hows).map(([h, k]) => `${k} ${h}`).join(", ")}</div>
+            )}
+          </div>
+        )}
+        {sc.honest > 0 && (
+          <div className="card sc-class">
+            <header className="card-head"><h3>Honest</h3><span className="muted small">{num(sc.honest)} {honestUnit}</span></header>
+            <div className="sc-class-line">
+              <span><strong className="ok-text">{num(sc.honest - sc.honestFlagged)}</strong> passed clean</span>
+              <span className={onCost ? "sr-tile-click" : ""} onClick={onCost ? () => onCost("honest") : undefined}>
+                <strong className={sc.honestFlagged ? "bad-text" : ""}>{num(sc.honestFlagged)}</strong> wrongly flagged
+              </span>
+            </div>
+            <div className="sc-metrics">
+              <Metric label="Recall: honest left alone" value={sc.honestR} was={was?.honestR}
+                      help="Passed clean / all honest cases. Do we leave honest trucks alone?" />
+              <Metric label="Precision: passes that were honest" value={sc.honestP} was={was?.honestP}
+                      help="Honest passed clean / everything passed clean (honest + cheats missed silently)." />
+              <Metric label="F1" value={sc.honestF1} was={was?.honestF1} help="Harmonic mean of precision and recall." />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* what it cost */}
+      {(cost.trips || cost.tonnes) && (
         <div className="stats stats-3">
           {cost.trips && (
             <Tile label="Trips the GB missed" value={cost.trips.missed} total={cost.trips.of}
                   sub={<><div>of what really moved</div><Was was={before?.cost.trips?.missed} now={cost.trips.missed} lowerIsBetter /></>}
-                  tone={cost.trips.missed ? "bad" : "ok"} onClick={costClick("trips")} />
+                  tone={cost.trips.missed ? "bad" : "ok"} onClick={onCost ? () => onCost("trips") : undefined} />
           )}
           {cost.tonnes && (
-            <Tile label="Tonnes the GB missed" value={Math.round(cost.tonnes.missed)} total={Math.round(cost.tonnes.of)}
+            <Tile label="Tonnes the GB missed" value={cost.tonnes.missed} total={cost.tonnes.of}
                   sub={<><div>of what really moved</div><Was was={before?.cost.tonnes?.missed} now={cost.tonnes.missed} lowerIsBetter /></>}
-                  tone={cost.tonnes.missed >= 1 ? "bad" : "ok"} onClick={costClick("tonnes")} />
-          )}
-          {cost.honest && (
-            <Tile label={cost.honest.label} value={cost.honest.refused} total={cost.honest.of}
-                  sub={<Was was={before?.cost.honest?.refused} now={cost.honest.refused} lowerIsBetter />}
-                  tone={cost.honest.refused ? "bad" : "ok"} onClick={costClick("honest")} />
+                  tone={cost.tonnes.missed >= 1 ? "bad" : "ok"} onClick={onCost ? () => onCost("tonnes") : undefined} />
           )}
         </div>
       )}
-      {priorities && <p className="sc-line"><strong>{priorities}</strong></p>}
+
+      {/* detail: by threat area, with the status breakdown */}
       <div className="card">
-        <header className="card-head"><h3>By threat area</h3><span className="muted small">{n} {unit}</span></header>
+        <header className="card-head">
+          <h3>By threat area</h3>
+          <span className="muted small">{items.length} {unit}</span>
+        </header>
+        <div className="sc-status-line small">
+          {(["covered", "partial", "gap", "silent", "period"] as Status[]).filter((s) => count(s) > 0 || s !== "period").map((s) => (
+            <span key={s} className={onStatus ? "sr-tile-click" : ""} onClick={click(s)}>
+              <StatusBadge s={s} /> {count(s)}
+            </span>
+          ))}
+          {priorities && <span className="muted">· {priorities}</span>}
+        </div>
+        {count("period") > 0 && (
+          <p className="small muted">
+            Period-level: a single trip is far below what a volume survey can measure, so these are judged by the weekly
+            survey in the site runs, not here.
+          </p>
+        )}
         <div className="sr-cats">
           {AREAS.map((a) => {
             const rs = items.filter((i) => i.area === a.key);

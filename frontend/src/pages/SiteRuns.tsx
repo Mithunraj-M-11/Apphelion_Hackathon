@@ -17,7 +17,7 @@ import {
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-import { Scorecard, type Cost, type ScoreItem, type Status } from "./Scorecard";
+import { Scorecard, type Cost, type HonestCount, type ScoreItem, type Status } from "./Scorecard";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -596,19 +596,19 @@ function Headline({ r }: { r: SiteReport }) {
 }
 
 /** A site run in the shared scorecard's terms: one status per cheat attempt, and the cost against ground truth. */
-function siteScore(r: SiteReport): { items: ScoreItem[]; cost: Cost } {
+function siteScore(r: SiteReport): { items: ScoreItem[]; cost: Cost; honest: HonestCount } {
   const h = r.headline.trips;
   return {
     items: r.cheats.map((c, i) => ({
       id: String(i), name: `${dayLabel(c.day)} ${c.at} ${CHEAT_LABEL[c.type] ?? c.type}`,
-      area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c),
+      area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c), cls: "cheat" as const,
       how: c.outcome === "prevented" ? "stopped" : c.outcome === "detected" ? "caught after" : undefined,
     })),
+    honest: { total: r.false_alarms.honest_events, flagged: r.false_alarms.count, unit: "honest gate events" },
     cost: {
       trips: { missed: Math.max(0, h.ground_truth - h.gb_actual), of: h.ground_truth },
       tonnes: { missed: Math.max(0, r.headline.tonnes.ground_truth - r.headline.tonnes.gb_actual),
                 of: r.headline.tonnes.ground_truth },
-      honest: { refused: r.false_alarms.count, of: r.false_alarms.honest_events, label: "Honest gate events with a false alarm" },
     },
   };
 }

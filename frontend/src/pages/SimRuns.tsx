@@ -283,13 +283,14 @@ function score(run: SimRun): { items: ScoreItem[]; cost: Cost } {
   const items: ScoreItem[] = [
     ...tripResults.map((r) => ({
       id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "control", priority: r.priority ?? null, status: status(r),
+      cls: (r.kind === "tamper" ? "cheat" : r.kind === "honest" ? "honest" : "other") as ScoreItem["cls"],
     })),
     ...edgeResults.map((r) => ({
       id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "edge", status: (r.pass ? "covered" : "gap") as Status,
+      cls: "other" as const,
     })),
   ];
   const sum = (f: (r: TripScenarioResult) => number) => tripResults.reduce((a, r) => a + f(r), 0);
-  const honest = tripResults.filter((r) => r.kind === "honest");
   const hasTruth = tripResults.some((r) => r.really_moved);
   const cost: Cost = {
     ...(hasTruth
@@ -299,10 +300,6 @@ function score(run: SimRun): { items: ScoreItem[]; cost: Cost } {
           tonnes: { missed: sum((r) => Math.max(0, (r.really_moved?.tonnes ?? 0) - (r.gb_recorded?.tonnes ?? 0))),
                     of: sum((r) => r.really_moved?.tonnes ?? 0) },
         }
-      : {}),
-    ...(honest.length
-      ? { honest: { refused: honest.filter((r) => status(r) !== "covered").length, of: honest.length,
-                    label: "Honest trucks wrongly refused or flagged" } }
       : {}),
   };
   return { items, cost };
