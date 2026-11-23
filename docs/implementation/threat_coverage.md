@@ -141,3 +141,21 @@ Still open:
 - **Transplant onto a similar body**: a body under 0.4 t heavier than the enrolled one passes the body check (one in
   the week, 0.5 t heavier but read within pad noise). Tighter tolerance needs real fuel / load data.
 - **Light vehicle on the rigged pad**: its exit reads light too; flagged pad, but the load itself is missed.
+
+## Results: mass balance (gap 7, 2026-11-23)
+
+Weekly GB survey (RTK drone photogrammetry; monthly LiDAR and quarterly satellite as cross-checks; GB-owned check
+pillars, surveys over 5 cm check error rejected; random day each week). Ore that left = volume dug x in-situ density
+- stockpile increase, against what the GB gates weighed out. Alerts: VOLUME_MISMATCH (> 5% in a week), VOLUME_TREND
+(> +2% three weeks running), VOLUME_CUMULATIVE (since the first survey, > 5% of an average week; the error of a
+long period stays about one week's error in tonnes because the middle terrain models cancel), EXTRACTION_OUTSIDE_PLAN.
+Staging: one error per terrain model, so each week's error is within +/-3%.
+
+| Run | Survey result |
+|---|---|
+| `brief_case` (permit 100, 206 really moved) | +57.5% in week 1: VOLUME_MISMATCH. All 77 side-track attempts become gaps (leakage known, not which trip) |
+| `threat_week` (rigged pad + side tracks) | +18%: VOLUME_MISMATCH (the gates' weights are wrong and material leaked) |
+| `threat_month` (4 weeks, honest pad, 4-6% leakage a week) | weeks: +3.8%, +5.8% MISMATCH, +4.6% TREND + CUMULATIVE, +3.1% TREND |
+| `threat_coverage` | side-track stories scored "period-level": 28 covered + 3 period-level of 31, no gaps |
+
+Limit: a few side-track trips a week (under about 2% of the volume) stay below what the survey can see.
