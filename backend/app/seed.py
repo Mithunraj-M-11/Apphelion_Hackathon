@@ -34,9 +34,9 @@ from app.services.registry import record_history, snapshot
 rng = random.Random(42)  # deterministic: everyone gets the same data
 
 OFFICERS = [
-    ("Mithunraj", "inspector"),
-    ("Adishesh", "approver"),
-    ("Bhuvanesh", "reviewer"),
+    ("Admin 1", "inspector"),
+    ("Admin 2", "approver"),
+    ("Admin 3", "reviewer"),
 ]
 
 CONTRACT = {

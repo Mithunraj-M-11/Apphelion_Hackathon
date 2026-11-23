@@ -158,7 +158,7 @@ def execute_extended_scenario(
     actual: dict[str, Any] = {}
     mov_id = 0
 
-    headers = {"X-Officer-Id": "1"}  # Acting as Adishesh (approver)
+    headers = {"X-Officer-Id": "1"}  # acting as officer 1
 
     if scn_type == "entry":
         plate = scn["vehicle"]["registered"]
