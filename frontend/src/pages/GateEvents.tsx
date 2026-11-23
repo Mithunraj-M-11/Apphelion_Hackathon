@@ -37,7 +37,8 @@ export function MovementDetail({ m }: { m: Movement }) {
         )}
         <div className="field-label" style={{ marginTop: 10 }}>Gate event</div>
         <div className="small">#{m.id} · {m.gate} {m.direction === "IN" ? "entry" : "exit"} · mode {m.identify_mode}
-          {m.weight_t != null ? ` · weigh pad ${m.weight_t.toFixed(2)} t` : " · no weight"}</div>
+          {m.radar_length_m != null ? ` · radar ${m.radar_length_m.toFixed(2)} m` : " · no radar"}
+          {m.weight_t != null ? ` · weigh pad ${m.weight_t.toFixed(2)} t` : " · no weigh pad"}</div>
         {m.barrier && (
           <>
             <div className="field-label" style={{ marginTop: 10 }}>Decision</div>

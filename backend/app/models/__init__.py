@@ -13,6 +13,7 @@ from app.models.registry import (
 )
 from app.models.rfid import RfidSticker
 from app.models.survey import Survey
+from app.models.wim import WimAnomaly, WimDevice, WimMeasurement
 from app.models.trip import (
     Alert,
     Permit,
@@ -51,4 +52,7 @@ __all__ = [
     "TruckPhoto",
     "VehicleQuota",
     "VendorReport",
+    "WimAnomaly",
+    "WimDevice",
+    "WimMeasurement",
 ]

@@ -38,7 +38,10 @@ import {
   type TripSession,
   type Truck,
   type TruckListItem,
+  type WimCorrelation,
+  wimApi,
 } from "../api";
+import { WimSimulatorControls, WimVerificationPanel, type WimSimulationState } from "./GateWimSection";
 import { AlertList, BarrierBadge, ErrorNote, ResultBadge, TripBadge } from "../components";
 import { CHECK_LABEL, formatDateTime, formatPlate } from "../format";
 import { OfficerPanel, OpenItems } from "./GateOfficer";
@@ -365,6 +368,16 @@ export default function GateConsole() {
   const logRef = useRef<HTMLDivElement>(null);
   const [copiedToken, setCopiedToken] = useState(false);
 
+  // Weigh-in-Motion (WIM) Simulation & Verification state
+  const [wimState, setWimState] = useState<WimSimulationState>({
+    enabled: true,
+    deviceCode: "WIM-G1-01",
+    scenario: "normal",
+    deviceStatus: "ONLINE",
+  });
+  const [wimCorrelation, setWimCorrelation] = useState<WimCorrelation | null>(null);
+  const [wimRevealed, setWimRevealed] = useState(0);
+
   // Load edge infrastructure state
   useEffect(() => {
     api.edgeState().then(setEdge).catch(() => {});
@@ -492,6 +505,14 @@ export default function GateConsole() {
     const t = setTimeout(() => setRevealed((r) => r + 1), instant ? 0 : 250);
     return () => clearTimeout(t);
   }, [movement, exitResult, revealed, totalChecks, instant, mode]);
+
+  // Reveal WIM verification checks smoothly
+  useEffect(() => {
+    if (!wimCorrelation) return;
+    if (wimRevealed >= wimCorrelation.checks.length) return;
+    const t = setTimeout(() => setWimRevealed((r) => r + 1), instant ? 0 : 200);
+    return () => clearTimeout(t);
+  }, [wimCorrelation, wimRevealed, instant]);
 
   // What the sensors will report for physical setup
   const { reg, plateRead, tagRead, length, ready } = readingsFor(setup, details);
@@ -631,6 +652,29 @@ export default function GateConsole() {
     openPass: exitActive?.trip_code ?? null,
   };
 
+  // Trigger on-demand WIM scenario simulation
+  const triggerWimScenario = (scenario: string) => {
+    setWimState((cur) => ({ ...cur, scenario }));
+    const currentPlate = mode === "ENTRY" ? plateRead : exitR.plateRead;
+    const currentLength = mode === "ENTRY" ? length : exitR.length;
+    const currentGate = mode === "ENTRY" ? "G1" : exitGate;
+    const activeMovement = mode === "ENTRY" ? movement : exitMovement;
+
+    wimApi.simulate({
+      scenario,
+      gate: currentGate,
+      direction: mode,
+      device_code: wimState.deviceCode,
+      plate: currentPlate,
+      radar_length_m: currentLength,
+      movement_id: activeMovement?.id,
+      force_device_status: scenario === "device_offline" ? "OFFLINE" : wimState.deviceStatus,
+    }).then((corr) => {
+      setWimCorrelation(corr);
+      setWimRevealed(0);
+    }).catch(() => {});
+  };
+
   // Arrive at Entry Gate
   const arriveEntry = async () => {
     setBusy(true);
@@ -648,9 +692,30 @@ export default function GateConsole() {
         source,
         rfid_sticker_uid: setup.rfidUid.trim() || null,
         rfid_sim_mode: setup.rfidSimMode,
-      });
+        wim_enabled: wimState.enabled,
+        wim_scenario: wimState.scenario,
+        wim_device_code: wimState.deviceCode,
+      } as any);
       setRevealed(0);
       setMovement(m);
+      if (m.wim_verification) {
+        setWimCorrelation(m.wim_verification as WimCorrelation);
+        setWimRevealed(0);
+      } else if (wimState.enabled) {
+        wimApi.simulate({
+          scenario: wimState.scenario,
+          gate: "G1",
+          direction: "ENTRY",
+          device_code: wimState.deviceCode,
+          plate: plateRead,
+          radar_length_m: length,
+          movement_id: m.id,
+          force_device_status: wimState.deviceStatus,
+        }).then((corr) => {
+          setWimCorrelation(corr);
+          setWimRevealed(0);
+        }).catch(() => {});
+      }
       setEntrySetup({ ...setup });
       reloadData();
     } catch (e) {
@@ -679,8 +744,29 @@ export default function GateConsole() {
         rfid_sticker_uid: exitSetup.rfidUid.trim() || null,
         rfid_sim_mode: exitSetup.rfidSimMode,
         qr_token: exitQrToken.trim() || null,
-      });
+        wim_enabled: wimState.enabled,
+        wim_scenario: wimState.scenario,
+        wim_device_code: `WIM-${exitGate}-01`,
+      } as any);
       showExit(m);
+      if (m.wim_verification) {
+        setWimCorrelation(m.wim_verification as WimCorrelation);
+        setWimRevealed(0);
+      } else if (wimState.enabled) {
+        wimApi.simulate({
+          scenario: wimState.scenario,
+          gate: exitGate,
+          direction: "EXIT",
+          device_code: `WIM-${exitGate}-01`,
+          plate: exitR.plateRead,
+          radar_length_m: exitR.length,
+          movement_id: m.id,
+          force_device_status: wimState.deviceStatus,
+        }).then((corr) => {
+          setWimCorrelation(corr);
+          setWimRevealed(0);
+        }).catch(() => {});
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -724,6 +810,8 @@ export default function GateConsole() {
       setExitSetup(BLANK_EXIT);
       setExitQrToken("");
       setRevealed(0);
+      setWimCorrelation(null);
+      setWimRevealed(0);
       setLogs([]);
       setHolds([]);
       setPermitSessions([]);
@@ -868,6 +956,13 @@ export default function GateConsole() {
 
             <VehicleRows {...entryRows} />
 
+            <WimSimulatorControls
+              gate="G1"
+              state={wimState}
+              onChange={(patch) => setWimState((cur) => ({ ...cur, ...patch }))}
+              onTriggerScenario={triggerWimScenario}
+            />
+
             <button
               className="btn primary gc-go"
               disabled={busy || !ready}
@@ -930,6 +1025,15 @@ export default function GateConsole() {
                     </ul>
                   </div>
                 ))}
+
+                {/* Independent WIM Verification Section */}
+                {wimState.enabled && wimCorrelation && (
+                  <WimVerificationPanel
+                    correlation={wimCorrelation}
+                    revealed={wimRevealed}
+                    instant={instant}
+                  />
+                )}
 
                 {done && (
                   <div className="gc-result">
@@ -1124,6 +1228,13 @@ export default function GateConsole() {
 
             <VehicleRows {...exitRows} />
 
+            <WimSimulatorControls
+              gate={exitGate}
+              state={wimState}
+              onChange={(patch) => setWimState((cur) => ({ ...cur, ...patch }))}
+              onTriggerScenario={triggerWimScenario}
+            />
+
             <button
               className="btn primary gc-go"
               disabled={busy || !exitR.ready}
@@ -1172,6 +1283,15 @@ export default function GateConsole() {
                     })}
                   </ul>
                 </div>
+
+                {/* Independent WIM Verification Section */}
+                {wimState.enabled && wimCorrelation && (
+                  <WimVerificationPanel
+                    correlation={wimCorrelation}
+                    revealed={wimRevealed}
+                    instant={instant}
+                  />
+                )}
 
                 {done && (
                   <div className="gc-result">
