@@ -28,6 +28,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 SITE_DIR = Path(__file__).parent / "scenarios" / "site"
 SERIOUS = ("HIGH", "CRITICAL")
 PERMIT_WARNINGS = ("TRIPS_", "TONNES_")  # permit-level, not about a truck: never a false alarm
+# about the GB's own equipment (a pole, the pad, the link), raised on whichever truck arrives next: never a false
+# alarm on that truck
+EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT")
 GATE = "G1"
 
 # Vehicles that are NOT in the registry (made-up test data)
@@ -821,7 +824,7 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         if not e.honest or not e.resp:
             continue
         for a in e.resp["alerts"]:
-            if a["severity"] in SERIOUS and not a["code"].startswith(PERMIT_WARNINGS):
+            if a["severity"] in SERIOUS and not a["code"].startswith(PERMIT_WARNINGS) and a["code"] not in EQUIPMENT_ALERTS:
                 false_alarms.append({"at": e.at.strftime("%d %b %H:%M"), "vehicle": e.veh.label, "code": a["code"],
                                      "message": a["message"]})
     honest_events = sum(1 for e in w.events if e.honest)

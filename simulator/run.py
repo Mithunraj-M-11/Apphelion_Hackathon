@@ -571,7 +571,8 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
         for code in scn.get("expect_story", {}).get("alerts", []):
             if code not in {a["code"] for a in story_alerts}:
                 problems.append(f"story: expected alert {code} not raised (ideal response)")
-        serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS]
+        serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS
+                   and a["code"] not in ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT")]  # about equipment, not the truck
         if scn["kind"] == "honest" and serious:
             problems.append(f"false alarm: {serious}")
         expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])] + \
