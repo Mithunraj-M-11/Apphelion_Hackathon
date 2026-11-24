@@ -27,7 +27,7 @@ import { ErrorNote } from "../components";
 import { formatDateTime } from "../format";
 import { ScenarioSheetButton } from "./SimScenarioSheet";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-import { Scorecard, StatusBadge, type Before, type Cost, type Pick, type ScoreItem, type Status } from "./Scorecard";
+import { Scorecard, StatusBadge, type Cost, type Pick, type ScoreItem, type Status } from "./Scorecard";
 
 const POLL_MS = 2000;
 
@@ -36,6 +36,8 @@ const JUDGED: Record<string, string> = {
   gate_cheats: "Regression: every rule we built, judged against its own design. Everything should be covered.",
   threat_coverage: "Threat coverage: every P0 / P1 cheat, judged against what the GB should do, built or not. "
     + "What isn't covered is the work still to do.",
+  mixed_batch: "Mixed batch: 300 stories in a shuffled order, cheats and honest trips together, each judged against "
+    + "what the GB should do. Built from the regression and threat stories with other trucks, plus generated honest trips.",
   edge_resilience: "Edge resilience: failover, WAN loss, disaster recovery, snapshots and reconciliation, each judged "
     + "against its specified behaviour.",
 };
@@ -426,18 +428,8 @@ function RunDetail({ id }: { id: number }) {
   const [pick, setPick] = useState<Pick | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [previous, setPrevious] = useState<SimRun | null>(null);
   const load = () => {
-    gateApi.simRun(id).then((r) => {
-      setRun(r);
-      // the run before this one of the same suite, for before -> after
-      gateApi.simRuns().then((all) => {
-        // a complete run only: an interrupted one has fewer stories and would skew before -> after
-        const p = all.find((x) => x.suite === r.suite && x.id < r.id && x.finished_at != null
-                                  && x.results.length >= r.results.length);
-        if (p) gateApi.simRun(p.id).then(setPrevious).catch(() => {});
-      }).catch(() => {});
-    }).catch((e) => setError(e.message));
+    gateApi.simRun(id).then(setRun).catch((e) => setError(e.message));
     gateApi
       .movements({ source_prefix: `sim:${id}:` })
       .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
@@ -466,8 +458,6 @@ function RunDetail({ id }: { id: number }) {
   const threatRun = tripResults.some((r) => r.coverage && r.threat);
   const edgeResults = run.results.filter((r): r is EdgeScenarioResult => !isTripResult(r));
   const { items, cost } = score(run);
-  const prev = previous ? score(previous) : null;
-  const before: Before | null = previous && prev ? { label: `run #${previous.id}`, items: prev.items, cost: prev.cost } : null;
 
   return (
     <>
@@ -484,7 +474,7 @@ function RunDetail({ id }: { id: number }) {
 
       <Scorecard judgedAgainst={JUDGED[run.suite] ?? "Judged against each story's expected outcome."}
                  items={items} unit={edgeResults.length && !tripResults.length ? "cases" : "stories"} cost={cost}
-                 before={before} onPick={setPick} />
+                 onPick={setPick} />
 
       {pick && (
         <div className="modal-backdrop" onClick={() => setPick(null)}>

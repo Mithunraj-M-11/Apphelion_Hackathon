@@ -668,14 +668,8 @@ function RunDetail({ id }: { id: number }) {
   const [error, setError] = useState<string | null>(null);
   const [showCheats, setShowCheats] = useState(false);
   const [group, setGroup] = useState<Group | Pick | null>(null);
-  const [previous, setPrevious] = useState<SiteRun | null>(null);
   useEffect(() => {
-    siteApi.run(id).then((r) => {
-      setRun(r);
-      siteApi.runs().then((all) => {  // the run before this one of the same scenario, for before -> after
-        setPrevious(all.find((x) => x.scenario === r.scenario && x.id < r.id && x.report != null) ?? null);
-      }).catch(() => {});
-    }).catch((e) => setError(e.message));
+    siteApi.run(id).then(setRun).catch((e) => setError(e.message));
   }, [id]);
   const going = run != null && run.finished_at == null;
   useEffect(() => {  // follow the run while it is going
@@ -753,7 +747,6 @@ function RunDetail({ id }: { id: number }) {
         judgedAgainst="A realistic period: every cheat attempt judged on whether the GB stopped it or caught it after (covered), only has the refusal on record (gap), or never knew (silent gap)."
         unit="attempts"
         {...siteScore(r)}
-        before={previous?.report ? { label: `run #${previous.id}`, ...siteScore(previous.report) } : null}
         onPick={(p) => setGroup(p)}
         onCost={(k) => setGroup(k === "honest" ? "false" : "unseen")}
       />
