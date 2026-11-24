@@ -310,3 +310,12 @@ def list_movements(
     if permit_id is not None:
         stmt = stmt.where(Movement.permit_id == permit_id)
     return db.scalars(stmt).all()
+
+
+@router.get("/movements/{movement_id}", response_model=MovementOut)
+def get_movement(movement_id: int, db: Session = Depends(get_db)):
+    """One gate event (timelines open a single event without loading a whole run's list)."""
+    m = db.get(Movement, movement_id)
+    if m is None:
+        raise HTTPException(404, "Gate event not found")
+    return m

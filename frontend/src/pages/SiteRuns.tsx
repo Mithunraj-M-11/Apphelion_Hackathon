@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX } from "react-icons/lu";
+import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX , LuFileText } from "react-icons/lu";
 import {
   api,
   gateApi,
@@ -17,7 +17,7 @@ import {
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-import { Scorecard, type Cost, type HonestCount, type ScoreItem, type Status } from "./Scorecard";
+import { Scorecard, type Cost, type HonestCount, type ScoreItem, type Status , type Pick } from "./Scorecard";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -148,6 +148,7 @@ function RunList() {
   const [scenarios, setScenarios] = useState<SiteScenario[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
+  const [chosen, setChosen] = useState("");
   const navigate = useNavigate();
 
   const load = () => siteApi.runs().then(setRuns).catch((e) => setError(e.message));
@@ -203,26 +204,37 @@ function RunList() {
           <LuTrash2 /> Clear runs
         </button>
       </div>
-      <div className="sr-suites">
-        {scenarios.map((sc) => {
-          const mine = running?.scenario === sc.scenario ? running : undefined;
-          return (
-            <div key={sc.scenario} className="card sr-suite">
-              <div>
-                <h3>{sc.scenario.replace(/_/g, " ")}</h3>
+      {(() => {
+        // one launcher: pick a scenario, run it (while a run is going, it shows that one)
+        const name = running?.scenario ?? starting ?? (chosen || scenarios[0]?.scenario || "");
+        const sc = scenarios.find((x) => x.scenario === name);
+        return (
+          <div className="card sr-launcher">
+            <div className="sr-launcher-row">
+              <label className="sr-launcher-pick">
+                Scenario
+                <select value={name} disabled={busy} onChange={(e) => setChosen(e.target.value)}>
+                  {scenarios.map((x) => (
+                    <option key={x.scenario} value={x.scenario}>{x.scenario.replace(/_/g, " ")}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="btn primary" disabled={busy || !sc} onClick={() => sc && start(sc.scenario)}>
+                {busy ? <LuLoader2 className="spin" /> : <LuPlay />}
+                {running ? `Running, ${fmt(running.gate_events_so_far ?? 0)} gate events` : starting ? "Starting" : "Run"}
+              </button>
+            </div>
+            {sc && (
+              <div className="sr-launcher-about">
                 <p className="muted small">{sc.description}</p>
                 <span className="small muted">
                   {sc.days} days · {sc.fleet} trucks{sc.trip_limit != null ? ` · permit ${fmt(sc.trip_limit)} trips` : ""}
                 </span>
               </div>
-              <button className="btn primary" disabled={busy} onClick={() => start(sc.scenario)}>
-                {mine || starting === sc.scenario ? <LuLoader2 className="spin" /> : <LuPlay />}
-                {mine ? `Running, ${fmt(mine.gate_events_so_far ?? 0)} gate events` : starting === sc.scenario ? "Starting" : "Run"}
-              </button>
-            </div>
-          );
-        })}
-      </div>
+            )}
+          </div>
+        );
+      })()}
       <div className="hint small">
         <LuTerminal /> Also from a terminal: <code>docker compose run --rm simulator site brief_case</code>
       </div>
@@ -307,7 +319,7 @@ function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, 
   const [open, setOpen] = useState(false);
   const steps: TimelineStep[] = c.timeline?.length
     ? [...c.timeline].sort((a, b) => a.at.localeCompare(b.at)).map((t) => ({
-        at: t.at, kind: t.seen ? "gate" : "unseen", text: t.text, movement: t.movement, alerts: t.alerts }))
+        at: t.at, kind: t.officer ? "officer" : t.seen ? "gate" : "unseen", text: t.text, movement: t.movement, alerts: t.alerts }))
     : (c.movements ?? []).map((id) => ({ at: "", kind: "gate", text: `Gate event #${id}`, movement: id }));
   return (
     <>
@@ -334,7 +346,7 @@ function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, 
   );
 }
 
-function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClose: () => void }) {
+function GroupPopup({ group, r, onClose }: { group: Group | Pick; r: SiteReport; onClose: () => void }) {
   const [movements, setMovements] = useState<Record<number, Movement>>({});
   useEffect(() => {  // this run's gate events (its own permit), to open under each attempt
     gateApi
@@ -342,13 +354,29 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
       .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
       .catch(() => {});
   }, [r.permit_id]);
-  const cheats = group === "all" ? r.cheats : r.cheats.filter((c) => siteStatus(c) === group);
+  const picked = typeof group === "object" ? group : null;
+  const cheats = picked ? r.cheats.filter((_, i) => picked.ids.includes(String(i)))
+    : group === "all" ? r.cheats : r.cheats.filter((c) => siteStatus(c) === group);
+  const honestNote = (
+    <div className="sr-honest-note">
+      <h4>Honest trips</h4>
+      {r.false_alarms.items.length === 0 ? (
+        <p className="small">No serious alert was raised on any of the{" "}
+          {fmt(r.false_alarms.honest_trips ?? r.false_alarms.honest_events)}{" "}
+          {r.false_alarms.honest_trips != null ? "honest trips" : "honest gate events"}: all left alone.</p>
+      ) : (
+        <ul className="small">
+          {r.false_alarms.items.map((f, i) => <li key={i}>{f.at} {f.vehicle}: {f.code} {f.message}</li>)}
+        </ul>
+      )}
+    </div>
+  );
   const unseen = r.accuracy.never_at_a_gate;
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal td-modal" onClick={(e) => e.stopPropagation()}>
         <div className="td-top">
-          <h3>{GROUP_TITLE[group]}</h3>
+          <h3>{picked ? picked.title : GROUP_TITLE[group as Group]}</h3>
           <button className="btn small" onClick={onClose} title="Close"><LuX /></button>
         </div>
         {group === "unseen" ? (
@@ -379,12 +407,15 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
           )
         ) : group === "false" ? (
           r.false_alarms.items.length === 0 ? (
-            <p>No serious alert was raised on any of the {fmt(r.false_alarms.honest_events)} honest gate events.</p>
+            <p>No serious alert was raised on any of the {fmt(r.false_alarms.honest_trips ?? r.false_alarms.honest_events)}{" "}
+              {r.false_alarms.honest_trips != null ? "honest trips" : "honest gate events"}.</p>
           ) : (
             <ul className="small">
               {r.false_alarms.items.map((f, i) => <li key={i}>{f.at} {f.vehicle}: {f.code} {f.message}</li>)}
             </ul>
           )
+        ) : picked && picked.ids.length === 0 ? (
+          picked.honest ? honestNote : <p className="muted">None in this run.</p>
         ) : cheats.length === 0 ? (
           <p className="muted">None in this run.</p>
         ) : (
@@ -398,6 +429,7 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
                 {cheats.map((c, i) => <AttemptRow key={i} c={c} movements={movements} />)}
               </tbody>
             </table>
+            {picked?.honest && honestNote}
           </>
         )}
       </div>
@@ -620,7 +652,9 @@ function siteScore(r: SiteReport): { items: ScoreItem[]; cost: Cost; honest: Hon
       area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c), cls: "cheat" as const,
       how: c.outcome === "prevented" ? "stopped" : c.outcome === "detected" ? "caught after" : undefined,
     })),
-    honest: { total: r.false_alarms.honest_events, flagged: r.false_alarms.count, unit: "honest gate events" },
+    honest: r.false_alarms.honest_trips != null
+      ? { total: r.false_alarms.honest_trips, flagged: r.false_alarms.honest_trips_flagged ?? 0, unit: "honest trips" }
+      : { total: r.false_alarms.honest_events, flagged: r.false_alarms.count, unit: "honest gate events" }, // older runs
     cost: {
       trips: { missed: Math.max(0, h.ground_truth - h.gb_actual), of: h.ground_truth },
       tonnes: { missed: Math.max(0, r.headline.tonnes.ground_truth - r.headline.tonnes.gb_actual),
@@ -633,7 +667,7 @@ function RunDetail({ id }: { id: number }) {
   const [run, setRun] = useState<SiteRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCheats, setShowCheats] = useState(false);
-  const [group, setGroup] = useState<Group | null>(null);
+  const [group, setGroup] = useState<Group | Pick | null>(null);
   const [previous, setPrevious] = useState<SiteRun | null>(null);
   useEffect(() => {
     siteApi.run(id).then((r) => {
@@ -687,6 +721,14 @@ function RunDetail({ id }: { id: number }) {
         </div>
       </div>
 
+      {(run.permit_id ?? r.permit_id) != null && (
+        <p className="no-print">
+          <Link className="btn primary" to={`/reports/${run.permit_id ?? r.permit_id}`}>
+            <LuFileText /> GB period report
+          </Link>{" "}
+          <span className="small muted">what the GB itself recorded over this period, ready to print (no ground truth)</span>
+        </p>
+      )}
       {(run.permit_id ?? r.permit_id) != null && <ContractSection permitId={(run.permit_id ?? r.permit_id) as number} />}
 
       <div className="card">
@@ -712,7 +754,7 @@ function RunDetail({ id }: { id: number }) {
         unit="attempts"
         {...siteScore(r)}
         before={previous?.report ? { label: `run #${previous.id}`, ...siteScore(previous.report) } : null}
-        onStatus={(st) => setGroup(st)}
+        onPick={(p) => setGroup(p)}
         onCost={(k) => setGroup(k === "honest" ? "false" : "unseen")}
       />
 

@@ -115,7 +115,11 @@ than it came is flagged.
 - **Holds**: a truck involved in a clone or pass misuse is frozen until an officer reviews it.
 - **Officer actions**, each with a written reason, never deleted:
   - release a hold (the truck is then read again through every check; a release never opens the barrier);
-  - late-close or cancel an unresolved trip;
+  - late-close or cancel an unresolved trip. A late close says "the truck did leave by a gate, it just wasn't
+    recorded", so the GB checks its own records: if no equipment fault (silent pole, delayed link, edge
+    failure) was recorded while the trip was open, the claim isn't supported and a High LATE_CLOSE_UNSUPPORTED
+    alert is raised. A late-closed trip that was never weighed out is charged at the truck's rated load, so its
+    tonnes don't disappear;
   - let out a refused truck on its own pass (the trip still counts, flagged).
   - Three overrides by one officer in a day raise an alert (possible bribery).
 
@@ -196,7 +200,9 @@ which the GB never sees.
 | **Site runs** | A whole period: honest traffic with cheats, faults and surveys mixed in (clean week, the brief's case, mixed week, threat week, threat month) |
 
 **The scorecard** (same on every run):
-1. **Correct against ground truth**: how often the GB did what it should, out of everything judged.
+1. **Correct against ground truth**, as three tiles: overall (everything judged, together), cheats fully handled,
+   and honest cases left alone. Each instance is judged once: one cheat attempt, one honest trip (entry + exit),
+   or one story in the scenario suites. The overall tile leans towards the larger side, so read it with the other two.
 2. **Cheats**: how many were caught (recall), whether its flags were real cheats (precision), F1.
 3. **Honest**: whether honest trucks were left alone (recall), whether what it passed was really honest (precision), F1.
 4. **What it cost**: trips and tonnes the GB missed, against what really moved.
@@ -245,6 +251,7 @@ the weekly survey shows +57.5%.
 | OVERLOAD, ARRIVED_LOADED, EMPTY_EXIT, WEIGH_BYPASS | Weight problems |
 | BARRIER_FORCED, ILLEGAL_TRIP | Broke through; the trip counts as illegal |
 | OFFICER_EXIT, OFFICER_LATE_CLOSE, OFFICER_OVERRIDE_PATTERN | Officer overrides, and too many by one officer |
+| LATE_CLOSE_UNSUPPORTED | An officer late-closed a trip with no equipment fault on record to explain it |
 | POLE_SILENT, LATE_EVENT, FAKE_GATE_EVENT | Pole down / link cut / fake events |
 | WEIGH_DRIFT, LOAD_DROP | Weigh pad wrong |
 | WIM_PAD_DISAGREE | Weigh pad and the WIM strip disagree: pad rigged or WIM faulty |

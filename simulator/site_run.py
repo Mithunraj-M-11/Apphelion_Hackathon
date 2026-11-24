@@ -75,6 +75,11 @@ class Cheat:
             self.timeline.append({"at": at.strftime("%H:%M"), "seen": True, "movement": resp["id"],
                                   "text": gate_line(resp, who), "alerts": alert_codes(resp)})
 
+    def officer(self, at: datetime, text: str, alerts: list[str]) -> None:
+        """An officer action the GB records (with the alerts it raised)."""
+        self.timeline.append({"at": at.strftime("%H:%M"), "seen": True, "officer": True, "text": text, "alerts": alerts})
+        self.alerts += [c for c in alerts if c not in self.alerts]
+
     def off(self, at: datetime, text: str) -> None:
         """A leg the GB cannot see (side track, loading inside the site, ...)."""
         self.timeline.append({"at": at.strftime("%H:%M"), "seen": False, "text": text})
@@ -548,6 +553,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         ev = Ev(back, "IN", v, w.w(v, 0), honest=False)
         r = yield ev
         c.saw(r, back)
+        close_flagged = False
         if down(r) and w.bribed_officer:
             trips = w.client.get("/api/trips", params={"permit_id": w.permit_id,
                                                        "status": "ACTIVE,EXPIRED_UNRESOLVED,FLAGGED"}).json()
@@ -556,8 +562,13 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
                 w.client.post(f"/api/trips/{mine[0]['session_id']}/resolve",
                               headers={"X-Officer-Id": str(w.bribed_officer)},
                               params={"action": "RESOLVE", "reason": "Truck left by the gate; sensor fault"})
-                c.off(back + timedelta(minutes=5), "a bribed officer late-closes the open trip as 'sensor fault'")
+                code = mine[0]["trip_code"]
+                raised = [a["code"] for a in w.client.get("/api/alerts", params={"permit_id": w.permit_id, "limit": 50}).json()
+                          if code in a["message"] and a["code"] in ("OFFICER_LATE_CLOSE", "LATE_CLOSE_UNSUPPORTED")]
+                c.officer(back + timedelta(minutes=5), "a bribed officer late-closes the open trip as 'sensor fault'",
+                          sorted(set(raised)))
                 c.attempt_flagged = True
+                close_flagged = "LATE_CLOSE_UNSUPPORTED" in raised
                 r = yield Ev(back + timedelta(minutes=10), "IN", v, w.w(v, 0))
                 c.gate(r, back + timedelta(minutes=10))
                 if not down(r):
@@ -566,8 +577,13 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
                     c.gate(r2, out_at)
                     if not down(r2):
                         w.trip(out_at, v, lt, "legal", True)
-        c.outcome = "missed"
-        c.note = "side-route trip covered up by a bribed officer's late close"
+        if close_flagged:  # the GB saw through the 'sensor fault'
+            c.outcome = "detected"
+            c.note = ("bribed officer's late close flagged: no equipment fault on record; the trip is charged at the "
+                      "truck's rated load")
+        else:
+            c.outcome = "missed"
+            c.note = "side-route trip covered up by a bribed officer's late close"
 
     elif type_ == "light_vehicle":  # a pickup under 6 m carries about a tonne, logged but not counted
         pickup = Veh(f"pickup {v.plate}", v.plate, None, 4.6, 1.8, 1.5, spacings=[2.9])
@@ -892,11 +908,23 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         row["avg_minutes_to_alert"] = round(sum(d) / len(d), 1) if d else None
 
     false_alarms = []
+    # honest trips: an honest truck's entry and the exit that follows it are one trip (a refused entry on its own is
+    # a trip attempt too); a trip is wrongly flagged if any of its crossings got a serious alert about the truck
+    trips: list[dict] = []
+    open_trip: dict[str, dict] = {}
     for e in w.events:
         if not e.honest or not e.resp:
             continue
+        if e.dir == "IN" or e.veh.label not in open_trip:
+            trip = {"flagged": False}
+            trips.append(trip)
+            open_trip[e.veh.label] = trip
+        trip = open_trip[e.veh.label]
+        if e.dir == "OUT":
+            open_trip.pop(e.veh.label, None)
         for a in e.resp["alerts"]:
             if a["severity"] in SERIOUS and not a["code"].startswith(PERMIT_WARNINGS) and a["code"] not in EQUIPMENT_ALERTS:
+                trip["flagged"] = True
                 false_alarms.append({"at": e.at.strftime("%d %b %H:%M"), "vehicle": e.veh.label, "code": a["code"],
                                      "message": a["message"]})
     honest_events = sum(1 for e in w.events if e.honest)
@@ -974,7 +1002,8 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
                     "events_held_by_outages": w.waits_for_outage, "reference_tests": w.reference_tests},
         "alerts": {"by_severity": {s: sev.get(s, 0) for s in ("CRITICAL", "HIGH", "MEDIUM", "INFO")},
                    "by_code": dict(sorted(codes.items(), key=lambda kv: -kv[1]))},
-        "false_alarms": {"count": len(false_alarms), "honest_events": honest_events, "items": false_alarms[:50]},
+        "false_alarms": {"count": len(false_alarms), "honest_events": honest_events, "honest_trips": len(trips),
+                         "honest_trips_flagged": sum(t["flagged"] for t in trips), "items": false_alarms[:50]},
         "vendor": w.vendor,
         "daily": days,
         "unexpected": w.unexpected[:50],
@@ -998,8 +1027,9 @@ def print_report(r: dict) -> None:
     a = r["accuracy"]
     print(f"\n Trips seen by GB gates: {a['gb_actual_trips']} of {a['true_trips']} true ({a['trips_seen_pct']}%); "
           f"{a['trips_never_at_a_gate']} never crossed a gate")
-    print(f" Alerts: {r['alerts']['by_severity']}   False alarms: {r['false_alarms']['count']} on "
-          f"{r['false_alarms']['honest_events']} honest gate events")
+    fa = r["false_alarms"]
+    print(f" Alerts: {r['alerts']['by_severity']}   False alarms: {fa['count']} on {fa['honest_events']} honest gate "
+          f"events; honest trips wrongly flagged {fa['honest_trips_flagged']} of {fa['honest_trips']}")
     for u in r["unexpected"][:5]:
         print(f"   ! unexpected: {u}")
     for sk in r["skipped"][:5]:

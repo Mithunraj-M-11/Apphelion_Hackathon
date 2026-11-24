@@ -9,6 +9,7 @@ import {
   LuPlay,
   LuTerminal,
   LuTrash2,
+  LuX,
   LuXCircle,
 } from "react-icons/lu";
 import {
@@ -26,7 +27,7 @@ import { ErrorNote } from "../components";
 import { formatDateTime } from "../format";
 import { ScenarioSheetButton } from "./SimScenarioSheet";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
-import { Scorecard, StatusBadge, type Before, type Cost, type ScoreItem, type Status } from "./Scorecard";
+import { Scorecard, StatusBadge, type Before, type Cost, type Pick, type ScoreItem, type Status } from "./Scorecard";
 
 const POLL_MS = 2000;
 
@@ -53,11 +54,18 @@ function PassTag({ pass }: { pass: boolean }) {
 }
 
 // ---------------------------------------------------------------- list
+/** A run that stopped before all of its suite's stories were played (e.g. the backend went down mid-run). */
+function interrupted(r: SimRun, suites: SimSuite[]) {
+  const n = suites.find((x) => x.suite === r.suite)?.stories;
+  return r.finished_at != null && n != null && r.results.length < n;
+}
+
 function RunList() {
   const [runs, setRuns] = useState<SimRun[]>([]);
   const [suites, setSuites] = useState<SimSuite[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
+  const [chosen, setChosen] = useState("");
   const navigate = useNavigate();
 
   const load = () => gateApi.simRuns().then(setRuns).catch((e) => setError(e.message));
@@ -113,24 +121,33 @@ function RunList() {
           <LuTrash2 /> Clear runs
         </button>
       </div>
-      <div className="sr-suites">
-        {suites.map((s) => {
-          const mine = running?.suite === s.suite ? running : undefined;
-          return (
-            <div key={s.suite} className="card sr-suite">
-              <div>
-                <h3>{s.title}</h3>
-                <p className="muted small">{s.description}</p>
-                <span className="small muted">{s.stories} stories</span>
-              </div>
-              <button className="btn primary" disabled={busy} onClick={() => start(s.suite)}>
-                {mine || starting === s.suite ? <LuLoader2 className="spin" /> : <LuPlay />}
-                {mine ? `Running ${mine.results.length}/${s.stories}` : starting === s.suite ? "Starting" : "Run"}
+      {(() => {
+        // one launcher: pick a suite, run it (while a run is going, it shows that one)
+        const name = running?.suite ?? starting ?? (chosen || suites[0]?.suite || "");
+        const su = suites.find((x) => x.suite === name);
+        return (
+          <div className="card sr-launcher">
+            <div className="sr-launcher-row">
+              <label className="sr-launcher-pick">
+                Suite
+                <select value={name} disabled={busy} onChange={(e) => setChosen(e.target.value)}>
+                  {suites.map((x) => <option key={x.suite} value={x.suite}>{x.title}</option>)}
+                </select>
+              </label>
+              <button className="btn primary" disabled={busy || !su} onClick={() => su && start(su.suite)}>
+                {busy ? <LuLoader2 className="spin" /> : <LuPlay />}
+                {running ? `Running ${running.results.length}/${su?.stories ?? "?"}` : starting ? "Starting" : "Run"}
               </button>
             </div>
-          );
-        })}
-      </div>
+            {su && (
+              <div className="sr-launcher-about">
+                <p className="muted small">{su.description}</p>
+                <span className="small muted">{su.stories} stories</span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       <div className="hint small">
         <LuTerminal /> Also from a terminal: <code>docker compose run --rm simulator gate_cheats</code>
       </div>
@@ -150,6 +167,8 @@ function RunList() {
               <td className="nowrap">{formatDateTime(r.started_at)}</td>
               {r.finished_at == null ? (
                 <td colSpan={3} className="muted"><LuLoader2 className="spin" /> running, {r.results.length} stories done</td>
+              ) : interrupted(r, suites) ? (
+                <td colSpan={3} className="muted">interrupted after {r.results.length} of {suites.find((x) => x.suite === r.suite)?.stories} stories</td>
               ) : (
                 <>
                   <td className={r.passed === r.total ? "ok-text" : "bad-text"}>{r.passed}/{r.total}</td>
@@ -287,7 +306,8 @@ function score(run: SimRun): { items: ScoreItem[]; cost: Cost } {
     })),
     ...edgeResults.map((r) => ({
       id: r.id, name: `${r.id} ${r.name}`, area: r.category ?? "edge", status: (r.pass ? "covered" : "gap") as Status,
-      cls: "other" as const,
+      // same classes as the story table's Honest / Cheat / Officer badges
+      cls: (r.kind === "tamper" ? "cheat" : r.kind === "honest" ? "honest" : "other") as ScoreItem["cls"],
     })),
   ];
   const sum = (f: (r: TripScenarioResult) => number) => tripResults.reduce((a, r) => a + f(r), 0);
@@ -305,10 +325,105 @@ function score(run: SimRun): { items: ScoreItem[]; cost: Cost } {
   return { items, cost };
 }
 
+/** The records of a run: one row per story (or edge case), opening into what happened. */
+function RecordTables({ trip, edge, threatRun, movements }: {
+  trip: TripScenarioResult[]; edge: EdgeScenarioResult[]; threatRun: boolean; movements: Record<number, Movement>;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  return (
+    <>
+      {trip.length > 0 && (
+        <table className="table">
+          <thead>
+            {threatRun ? (
+              <tr><th /><th>Case</th><th>Story</th><th>Priority</th><th>Ideal alerts</th><th>Alerts raised</th><th>Really moved / GB recorded</th><th>Coverage</th></tr>
+            ) : (
+              <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Status</th></tr>
+            )}
+          </thead>
+          <tbody>
+            {trip.map((s) => (
+              <Fragment key={s.id}>
+                <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
+                  <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
+                  <td className="nowrap">{s.id}</td>
+                  <td>
+                    <div className="td-name">
+                      {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
+                    </div>
+                  </td>
+                  {threatRun ? (
+                    <>
+                      <td className="nowrap">{s.priority ?? "—"} · {s.threat}</td>
+                      <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
+                      <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
+                      <td className="nowrap">
+                        {s.really_moved?.trips ?? 0} / {s.gb_recorded?.trips ?? 0} trips
+                        <div className="small muted">{s.really_moved?.tonnes ?? 0} / {s.gb_recorded?.tonnes ?? 0} t</div>
+                      </td>
+                      <td><StatusBadge s={s.coverage as Status} /></td>
+                    </>
+                  ) : (
+                    <>
+                      <td><KindBadge kind={s.kind} /></td>
+                      <td>{s.events.length}</td>
+                      <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
+                      <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
+                      <td><StatusBadge s={(s.coverage ?? (s.pass ? "covered" : "gap")) as Status} /></td>
+                    </>
+                  )}
+                </tr>
+                {open === s.id && (
+                  <tr className="detail-row">
+                    <td />
+                    <td colSpan={7}><TripExpanded s={s} movements={movements} /></td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {edge.length > 0 && (
+        <table className="table">
+          <thead>
+            <tr><th /><th>#</th><th>Case</th><th>Type</th><th>What happened</th><th>Result</th></tr>
+          </thead>
+          <tbody>
+            {edge.map((s) => (
+              <Fragment key={s.id}>
+                <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
+                  <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
+                  <td className="nowrap">{s.id}</td>
+                  <td>
+                    <div className="td-name">
+                      {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
+                    </div>
+                  </td>
+                  <td><KindBadge kind={s.kind} /></td>
+                  <td className="small mono">{s.actual.result ?? "—"}</td>
+                  <td><PassTag pass={s.pass} /></td>
+                </tr>
+                {open === s.id && (
+                  <tr className="detail-row">
+                    <td />
+                    <td colSpan={5}><EdgeExpanded s={s} /></td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 function RunDetail({ id }: { id: number }) {
   const [run, setRun] = useState<SimRun | null>(null);
   const [movements, setMovements] = useState<Record<number, Movement>>({});
-  const [open, setOpen] = useState<string | null>(null);
+  const [pick, setPick] = useState<Pick | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [previous, setPrevious] = useState<SimRun | null>(null);
@@ -317,7 +432,9 @@ function RunDetail({ id }: { id: number }) {
       setRun(r);
       // the run before this one of the same suite, for before -> after
       gateApi.simRuns().then((all) => {
-        const p = all.find((x) => x.suite === r.suite && x.id < r.id && x.finished_at != null);
+        // a complete run only: an interrupted one has fewer stories and would skew before -> after
+        const p = all.find((x) => x.suite === r.suite && x.id < r.id && x.finished_at != null
+                                  && x.results.length >= r.results.length);
         if (p) gateApi.simRun(p.id).then(setPrevious).catch(() => {});
       }).catch(() => {});
     }).catch((e) => setError(e.message));
@@ -367,92 +484,28 @@ function RunDetail({ id }: { id: number }) {
 
       <Scorecard judgedAgainst={JUDGED[run.suite] ?? "Judged against each story's expected outcome."}
                  items={items} unit={edgeResults.length && !tripResults.length ? "cases" : "stories"} cost={cost}
-                 before={before} />
+                 before={before} onPick={setPick} />
 
-      {tripResults.length > 0 && (
-        <table className="table">
-          <thead>
-            {threatRun ? (
-              <tr><th /><th>Case</th><th>Story</th><th>Priority</th><th>Ideal alerts</th><th>Alerts raised</th><th>Really moved / GB recorded</th><th>Coverage</th></tr>
-            ) : (
-              <tr><th /><th>#</th><th>Story</th><th>Type</th><th>Events</th><th>Expected alerts</th><th>Alerts raised</th><th>Status</th></tr>
+      {pick && (
+        <div className="modal-backdrop" onClick={() => setPick(null)}>
+          <div className="modal td-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="td-top">
+              <h3>{pick.title} <span className="muted small">({pick.ids.length})</span></h3>
+              <button className="btn small" onClick={() => setPick(null)} title="Close"><LuX /></button>
+            </div>
+            {pick.ids.length === 0 ? <p className="muted">None in this run.</p> : (
+              <>
+                <p className="small muted">Click a record to see what happened, step by step.</p>
+                <RecordTables trip={tripResults.filter((r) => pick.ids.includes(r.id))}
+                              edge={edgeResults.filter((r) => pick.ids.includes(r.id))}
+                              threatRun={threatRun} movements={movements} />
+              </>
             )}
-          </thead>
-          <tbody>
-            {tripResults.map((s) => (
-              <Fragment key={s.id}>
-                <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
-                  <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
-                  <td className="nowrap">{s.id}</td>
-                  <td>
-                    <div className="td-name">
-                      {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
-                    </div>
-                  </td>
-                  {threatRun ? (
-                    <>
-                      <td className="nowrap">{s.priority ?? "—"} · {s.threat}</td>
-                      <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
-                      <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
-                      <td className="nowrap">
-                        {s.really_moved?.trips ?? 0} / {s.gb_recorded?.trips ?? 0} trips
-                        <div className="small muted">{s.really_moved?.tonnes ?? 0} / {s.gb_recorded?.tonnes ?? 0} t</div>
-                      </td>
-                      <td><StatusBadge s={s.coverage as Status} /></td>
-                    </>
-                  ) : (
-                    <>
-                      <td><KindBadge kind={s.kind} /></td>
-                      <td>{s.events.length}</td>
-                      <td className="small mono">{s.expected.alerts.join(", ") || "none"}</td>
-                      <td className="small mono">{s.actual.caught_by.join(", ") || "none"}</td>
-                      <td><StatusBadge s={(s.coverage ?? (s.pass ? "covered" : "gap")) as Status} /></td>
-                    </>
-                  )}
-                </tr>
-                {open === s.id && (
-                  <tr className="detail-row">
-                    <td />
-                    <td colSpan={7}><TripExpanded s={s} movements={movements} /></td>
-                  </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+          </div>
+        </div>
       )}
 
-      {edgeResults.length > 0 && (
-        <table className="table">
-          <thead>
-            <tr><th /><th>#</th><th>Case</th><th>Type</th><th>What happened</th><th>Result</th></tr>
-          </thead>
-          <tbody>
-            {edgeResults.map((s) => (
-              <Fragment key={s.id}>
-                <tr className="clickable" onClick={() => setOpen(open === s.id ? null : s.id)}>
-                  <td className="muted">{open === s.id ? <LuChevronDown /> : <LuChevronRight />}</td>
-                  <td className="nowrap">{s.id}</td>
-                  <td>
-                    <div className="td-name">
-                      {s.name} <ScenarioSheetButton title={`${s.id} · ${s.name}`} sheet={s.sheet} />
-                    </div>
-                  </td>
-                  <td><KindBadge kind={s.kind} /></td>
-                  <td className="small mono">{s.actual.result ?? "—"}</td>
-                  <td><PassTag pass={s.pass} /></td>
-                </tr>
-                {open === s.id && (
-                  <tr className="detail-row">
-                    <td />
-                    <td colSpan={5}><EdgeExpanded s={s} /></td>
-                  </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <RecordTables trip={tripResults} edge={edgeResults} threatRun={threatRun} movements={movements} />
     </>
   );
 }

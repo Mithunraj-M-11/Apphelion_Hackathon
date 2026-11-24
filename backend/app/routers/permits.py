@@ -13,6 +13,7 @@ from app.models import Alert, Contract, Officer, Permit, Survey, TruckHold, Vend
 from app.schemas import AlertOut, HoldOut, HoldRelease, PermitIn, PermitOut, VendorReportIn
 from app.services import integrity, logbus, trip
 from app.services import survey as survey_service
+from app.services import report as report_service
 from app.services.logbus import LogLine
 
 router = APIRouter(prefix="/api", tags=["permits"])
@@ -72,6 +73,13 @@ def get_ledger(permit_id: int, db: Session = Depends(get_db)) -> dict:
 def get_daily_ledger(permit_id: int, db: Session = Depends(get_db)) -> list[dict]:
     """Per site day (IST): entries, passes issued, refusals, legal / actual / illegal trips, tonnes, alerts."""
     return trip.daily_ledger(db, _permit(db, permit_id))
+
+
+@router.get("/permits/{permit_id}/report")
+def get_report(permit_id: int, db: Session = Depends(get_db)) -> dict:
+    """GB period report: the permit's period as the GB recorded it (gates, Vendor reports, surveys, equipment,
+    officer actions, open items). Built only from the GB's own records, never from simulation ground truth."""
+    return report_service.build(db, _permit(db, permit_id))
 
 
 @router.post("/permits/{permit_id}/vendor-reports", status_code=201)

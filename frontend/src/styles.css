@@ -85,6 +85,16 @@ h3 { font-size: 0.95rem; margin: 0; }
 .sidenav a:hover { background: var(--neutral-bg); text-decoration: none; }
 .sidenav a.active { background: var(--neutral-bg); box-shadow: inset 3px 0 0 var(--primary); font-weight: 600; }
 .nav-icon { width: 18px; height: 18px; flex: none; }
+.nav-group-head { display: flex; align-items: center; }
+.nav-group-head a { flex: 1; min-width: 0; }
+.nav-group-toggle { flex: none; background: none; border: none; color: var(--muted); padding: 6px; border-radius: 6px;
+                    cursor: pointer; display: flex; }
+.nav-group-toggle:hover { background: var(--neutral-bg); color: var(--text); }
+.nav-sub { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 2px 14px; padding-left: 8px;
+           border-left: 1px solid var(--border); }
+.nav-sub a { padding: 7px 10px; font-size: 0.92em; }
+.nav-collapsed .nav-group-toggle { display: none; }
+.nav-collapsed .nav-sub { margin-left: 0; padding-left: 0; border-left: none; }
 .nav-collapsed .nav-label { display: none; }
 .nav-collapsed .sidenav a { justify-content: center; padding: 9px 0; }
 .empty-state { text-align: center; max-width: 440px; margin: 18vh auto 0; }
@@ -590,6 +600,16 @@ ul.plain li { padding: 3px 0; }
 .sr-survey-total td { border-top: 2px solid var(--border); }
 
 /* Scorecard: correct overall, then cheats and honest with precision / recall / F1 */
+.sc-tiles { display: grid; gap: 14px; margin-bottom: 14px; }
+.sc-tiles-2 { grid-template-columns: 1.2fr 1fr; }
+.sc-tiles-3 { grid-template-columns: 1.2fr 1fr 1fr; }
+.sc-tiles-4 { grid-template-columns: 1.2fr 1fr 1fr 1fr; }
+@media (max-width: 800px) { .sc-tiles { grid-template-columns: 1fr; } }
+.sc-tile { padding: 16px 18px; }
+.sc-tile-label { font-weight: 600; }
+.sc-tile-num { font-size: 2rem; font-weight: 700; line-height: 1.15; margin-top: 6px; }
+.sc-tile-main .sc-tile-num { color: var(--ok); }
+.sc-tile-sub { color: var(--muted); font-size: 0.9rem; }
 .sc-overall { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
 .sc-overall-num { font-size: 2.2rem; font-weight: 700; line-height: 1; }
 .sc-overall-num .muted { font-size: 1.2rem; font-weight: 500; }
@@ -2181,4 +2201,46 @@ ul.plain li { padding: 3px 0; }
   .eq-modal-title {
     font-size: 1.25rem;
   }
+}
+
+/* site runs: one launcher with a scenario dropdown */
+.sr-launcher { margin-bottom: 14px; }
+.sr-launcher-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.sr-launcher-pick { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 220px; max-width: 420px; }
+.sr-launcher-pick select { text-transform: capitalize; }
+.sr-launcher-about { margin-top: 10px; }
+.sr-honest-note { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.sr-honest-note h4 { margin: 0 0 4px; }
+
+/* ---------------------------------------------------------------- GB period report */
+.pr { max-width: 1100px; }
+.pr-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.pr-head h1 { margin: 4px 0; }
+.pr-eyebrow { font-size: 0.8rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--primary); }
+.pr-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+@media (max-width: 800px) { .pr-tiles { grid-template-columns: 1fr 1fr; } }
+.pr-tile { padding: 14px 16px; }
+.pr-tile-label { font-weight: 600; }
+.pr-tile-num { font-size: 1.8rem; font-weight: 700; margin-top: 4px; }
+.pr-section { margin-bottom: 14px; }
+.pr-findings { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.pr-findings li { display: flex; gap: 10px; align-items: flex-start; line-height: 1.45; }
+.pr-num td, .pr-num th { text-align: right; }
+.pr-num td:first-child, .pr-num th:first-child, .pr-num td.small { text-align: left; }
+.pr-total td { font-weight: 700; border-top: 2px solid var(--border); }
+.pr-gap { margin-top: 10px; }
+.pr-chip { display: inline-block; margin: 0 12px 6px 0; }
+
+@media print {
+  .topbar, .sidenav, .no-print { display: none !important; }
+  .shell, .shell.nav-collapsed { display: block !important; }
+  .content { padding: 0 !important; }
+  body, .content, .card { background: #fff !important; color: #111 !important; }
+  .card { border: 1px solid #ccc !important; box-shadow: none !important; break-inside: avoid; }
+  .muted, .small.muted { color: #555 !important; }
+  .table th { color: #333 !important; background: #f2f2f2 !important; }
+  .table td, .table th { border-color: #ddd !important; }
+  .pr { max-width: none; }
+  .pr-section { break-inside: auto; }
+  a { color: #111 !important; }
 }

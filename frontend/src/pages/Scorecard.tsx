@@ -1,5 +1,7 @@
 // One scorecard for every run (Gate cheats, Threat coverage, Edge resilience, Site runs). It answers, in order:
-//   1. Correct against ground truth: how often did the GB do the right thing, out of everything judged?
+//   1. Correct against ground truth, as three tiles: overall (everything judged, combined), cheats fully handled,
+//      honest cases left alone (plus officer / edge cases when a run has them). The overall tile is dominated by the
+//      larger side, so the per-side tiles sit next to it.
 //   2. Cheats: how many did it catch (recall), and when it flags, is it really a cheat (precision)? F1.
 //   3. Honest: does it leave honest trucks alone (recall), and is what it passes really honest (precision)? F1.
 //   then what it cost (trips / tonnes missed) and the detail by threat area.
@@ -27,6 +29,9 @@ export type Cost = {
   trips?: { missed: number; of: number };
   tonnes?: { missed: number; of: number };
 };
+
+/** What a clicked tile, status or area stands for: the items behind it (and, for site runs, the honest trips). */
+export type Pick = { title: string; ids: string[]; honest?: boolean };
 
 /** The previous run of the same suite / scenario, to show before -> after. */
 export type Before = { label: string; items: ScoreItem[]; cost: Cost; honest?: HonestCount | null };
@@ -60,9 +65,12 @@ export function StatusBadge({ s }: { s?: Status | null }) {
 }
 
 // ---------------------------------------------------------------- the numbers
+type Part = { label: string; ok: number; of: number; cls: ScoreItem["cls"] };
+
 type Scores = {
-  correct: number;
+  correct: number; // everything judged, combined
   judged: number;
+  parts: Part[]; // per side: cheats, honest, officer / edge
   cheats: number;
   caught: number; // flagged: covered, partial or gap
   fully: number; // covered
@@ -94,9 +102,16 @@ export function scores(items: ScoreItem[], honestCount?: HonestCount | null): Sc
   const tp = caught, fn = missed, fp = honestFlagged, tn = honest - honestFlagged;
   const cheatP = ratio(tp, tp + fp), cheatR = ratio(tp, tp + fn);
   const honestP = ratio(tn, tn + fn), honestR = ratio(tn, tn + fp);
+  const parts: Part[] = [
+    { label: "Cheats fully handled", ok: fully, of: cheats.length, cls: "cheat" as const },
+    { label: `Honest ${honestCount?.unit.replace(/^honest /, "") ?? "cases"} left alone`, ok: tn, of: honest, cls: "honest" as const },
+    { label: "Officer and edge cases as specified", ok: other.filter((i) => i.status === "covered").length, of: other.length,
+      cls: "other" as const },
+  ].filter((p) => p.of > 0);
   return {
-    correct: fully + tn + other.filter((i) => i.status === "covered").length,
-    judged: cheats.length + honest + other.length,
+    correct: parts.reduce((n, p) => n + p.ok, 0),
+    judged: parts.reduce((n, p) => n + p.of, 0),
+    parts,
     cheats: cheats.length, caught, fully, missed, period, honest, honestFlagged,
     cheatP, cheatR, cheatF1: f1(cheatP, cheatR), honestP, honestR, honestF1: f1(honestP, honestR),
   };
@@ -147,15 +162,17 @@ export function Scorecard({
   honest,
   onStatus,
   onCost,
+  onPick,
   before,
 }: {
   judgedAgainst: string;
   items: ScoreItem[];
   unit: string; // "stories", "cases", "attempts"
   cost: Cost;
-  honest?: HonestCount | null; // site runs: honest gate events instead of honest items
+  honest?: HonestCount | null; // site runs: honest trips instead of honest items
   onStatus?: (s: Status) => void;
   onCost?: (k: "trips" | "tonnes" | "honest") => void;
+  onPick?: (p: Pick) => void; // a tile, status or area was clicked: show the records behind it
   before?: Before | null;
 }) {
   const sc = scores(items, honest);
@@ -173,24 +190,38 @@ export function Scorecard({
     })
     .filter(Boolean)
     .join(" · ");
-  const click = (s: Status) => (onStatus ? () => onStatus(s) : undefined);
+  const pick = (title: string, rs: ScoreItem[], honestToo = false) =>
+    onPick ? () => onPick({ title, ids: rs.map((i) => i.id), honest: honestToo && !!honest }) : undefined;
+  const click = (s: Status) =>
+    onStatus ? () => onStatus(s) : pick(STATUS_TEXT[s], items.filter((i) => i.status === s));
+  const tileCls = onPick ? " sr-tile-click" : "";
 
   return (
     <>
       <p className="sc-judged">{judgedAgainst}</p>
       {before && <p className="small muted sc-before">Compared with {before.label}: green = better than before, red = worse.</p>}
 
-      {/* 1. correct against ground truth */}
-      <div className="card sc-overall">
-        <div className="sc-overall-num">
-          {num(sc.correct)}<span className="muted"> of {num(sc.judged)}</span>
-          <span className="sc-overall-pct">{pct(ratio(sc.correct, sc.judged))}</span>
-        </div>
-        <div className="sc-overall-label">
-          <strong>Correct against ground truth</strong>: cheats fully handled, honest cases passed clean
-          {items.some((i) => i.cls === "other") ? ", officer and edge cases as specified" : ""}.
+      {/* 1. correct against ground truth: overall, then each side */}
+      <div className={`sc-tiles sc-tiles-${sc.parts.length + 1}`}>
+        <div className={`card sc-tile sc-tile-main${tileCls}`} onClick={pick("Everything judged", items, true)}
+             title={onPick ? "Show the records behind this number" : undefined}>
+          <div className="sc-tile-label">Correct against ground truth</div>
+          <div className="sc-tile-num">{pct(ratio(sc.correct, sc.judged))}</div>
+          <div className="sc-tile-sub">{num(sc.correct)} of {num(sc.judged)} judged, all together</div>
           <Was was={was ? ratio(was.correct, was.judged) : null} now={ratio(sc.correct, sc.judged)} asPct />
         </div>
+        {sc.parts.map((p) => {
+          const w = was?.parts.find((x) => x.label === p.label);
+          return (
+            <div key={p.label} className={`card sc-tile${tileCls}`} title={onPick ? "Show the records behind this number" : undefined}
+                 onClick={pick(p.label, items.filter((i) => i.cls === p.cls && i.status !== "period"), p.cls === "honest")}>
+              <div className="sc-tile-label">{p.label}</div>
+              <div className={`sc-tile-num ${p.ok === p.of ? "ok-text" : p.ok / p.of < 0.8 ? "warn-text" : ""}`}>{pct(p.ok / p.of)}</div>
+              <div className="sc-tile-sub">{num(p.ok)} of {num(p.of)}</div>
+              <Was was={w ? ratio(w.ok, w.of) : null} now={p.ok / p.of} asPct />
+            </div>
+          );
+        })}
       </div>
 
       {/* 2. cheats and 3. honest */}
@@ -199,9 +230,9 @@ export function Scorecard({
           <div className="card sc-class">
             <header className="card-head"><h3>Cheats</h3><span className="muted small">{num(sc.cheats)} {unit === "attempts" ? "attempts" : "cheat stories"}</span></header>
             <div className="sc-class-line">
-              <span className="sr-tile-click" onClick={click("covered")}><strong className="ok-text">{num(sc.fully)}</strong> fully handled</span>
-              <span className="sr-tile-click" onClick={click("gap")}><strong className="warn-text">{num(sc.caught - sc.fully)}</strong> flagged only</span>
-              <span className="sr-tile-click" onClick={click("silent")}><strong className={sc.missed ? "bad-text" : ""}>{num(sc.missed)}</strong> missed silently</span>
+              <span className="sr-tile-click" onClick={pick("Cheats fully handled", items.filter((i) => i.cls === "cheat" && i.status === "covered"))}><strong className="ok-text">{num(sc.fully)}</strong> fully handled</span>
+              <span className="sr-tile-click" onClick={pick("Cheats flagged only", items.filter((i) => i.cls === "cheat" && (i.status === "gap" || i.status === "partial")))}><strong className="warn-text">{num(sc.caught - sc.fully)}</strong> flagged only</span>
+              <span className="sr-tile-click" onClick={pick("Cheats missed silently", items.filter((i) => i.cls === "cheat" && i.status === "silent"))}><strong className={sc.missed ? "bad-text" : ""}>{num(sc.missed)}</strong> missed silently</span>
             </div>
             <div className="sc-metrics">
               <Metric label="Recall: cheats caught" value={sc.cheatR} was={was?.cheatR}
@@ -259,7 +290,7 @@ export function Scorecard({
         </header>
         <div className="sc-status-line small">
           {(["covered", "partial", "gap", "silent", "period"] as Status[]).filter((s) => count(s) > 0 || s !== "period").map((s) => (
-            <span key={s} className={onStatus ? "sr-tile-click" : ""} onClick={click(s)}>
+            <span key={s} className={onStatus || onPick ? "sr-tile-click" : ""} onClick={click(s)}>
               <StatusBadge s={s} /> {count(s)}
             </span>
           ))}
@@ -279,7 +310,8 @@ export function Scorecard({
             const worst = rs.reduce((w, i) => Math.max(w, RANK[i.status]), 0);
             const open = rs.filter((i) => i.status !== "covered").sort((x, y) => RANK[y.status] - RANK[x.status]);
             return (
-              <div key={a.key} className={`sr-cat ${worst === 0 ? "ok" : worst === 1 ? "warn" : "bad"}`}>
+              <div key={a.key} className={`sr-cat ${worst === 0 ? "ok" : worst === 1 ? "warn" : "bad"}${tileCls}`}
+                   onClick={pick(a.title, rs)} title={onPick ? "Show these records" : undefined}>
                 <div className="sr-cat-title">{a.title}</div>
                 <div className="sr-cat-num">{covered}<span className="muted">/{rs.length}</span></div>
                 <div className="small muted">covered</div>

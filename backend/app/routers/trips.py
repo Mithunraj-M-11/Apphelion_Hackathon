@@ -1,6 +1,6 @@
 """Trip session and quota management API endpoints."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import acting_officer
 from app.models.registry import Officer, Truck
-from app.models.trip import Alert, Permit, QuotaAdjustment, TripSession, VehicleQuota
+from app.models.trip import Alert, Movement, Permit, QuotaAdjustment, TripSession, VehicleQuota
 from app.services.trip import override_pattern
 from app.schemas import (
     ExitVerifyIn,
@@ -26,6 +26,24 @@ from app.services.registry import record_history, snapshot
 from app.services.plates import normalise_plate
 
 router = APIRouter(prefix="/api", tags=["trips"])
+
+IST = timezone(timedelta(hours=5, minutes=30))
+# A late close says the exit happened but wasn't recorded. That is only routine if the GB itself recorded an equipment
+# problem that could have lost the exit record while the trip was open: a silent pole, a delayed link, or an edge
+# failure. (WIM down doesn't count: the pole still records the truck, pad and barrier without it.)
+FAULT_CODES = ("POLE_SILENT", "LATE_EVENT")
+FAULT_WINDOW_AFTER = timedelta(hours=3)  # a pole down at exit time reports its silence when it comes back
+
+
+def _fault_evidence(db: Session, session: TripSession) -> list[str]:
+    """Equipment alerts the GB recorded between the trip's entry and a while after its pass expired."""
+    if session.entry_at is None:
+        return []
+    end = (session.expires_at or session.entry_at) + FAULT_WINDOW_AFTER
+    rows = db.execute(select(Alert.code, Movement.observed_at).join(Movement, Movement.id == Alert.movement_id).where(
+        Alert.permit_id == session.permit_id, Movement.observed_at >= session.entry_at, Movement.observed_at <= end,
+        (Alert.code.in_(FAULT_CODES)) | (Alert.code.like("EDGE_%")))).all()
+    return sorted({f"{code} at {at.astimezone(IST):%H:%M}" for code, at in rows})
 
 
 # ---------- Trips ----------
@@ -85,16 +103,30 @@ def resolve_trip(
         raise HTTPException(404, "Trip session not found")
 
     action = action.upper()
+    charged = None
     if action == "RESOLVE":  # officer late close (P11): the trip stays counted
         new_status = "COMPLETED"
         session.close_mode = session.close_mode or "officer"
+        truck = db.get(Truck, session.truck_id)
+        if session.net_t is None and truck is not None:  # never weighed out: charge the full rated load, not zero
+            session.net_t = charged = truck.rated_capacity_t
         if session.permit_id is not None:  # gap 9: a late close is an override; one officer doing many is a pattern
             permit = db.get(Permit, session.permit_id)
+            src = permit.source if permit else None
+            evidence = _fault_evidence(db, session)
+            tonnes = f"; charged at the rated {charged:g} t (exit not weighed)" if charged is not None else ""
             db.add(Alert(permit_id=session.permit_id, pass_id=session.id, truck_id=session.truck_id,
                          officer_id=officer.id, code="OFFICER_LATE_CLOSE", severity="MEDIUM",
                          message=f"Trip {session.trip_code} ({session.status}) late-closed by officer {officer.name}: "
-                                 f"{reason}", status="open", source=permit.source if permit else None))
-            override_pattern(db, session.permit_id, officer.id, officer.name, permit.source if permit else None)
+                                 f"{reason}" + (f". Supported by {', '.join(evidence)}" if evidence else "") + tonnes,
+                         status="open", source=src))
+            if not evidence:  # the claim (exit happened, wasn't recorded) has nothing on record behind it
+                db.add(Alert(permit_id=session.permit_id, pass_id=session.id, truck_id=session.truck_id,
+                             officer_id=officer.id, code="LATE_CLOSE_UNSUPPORTED", severity="HIGH",
+                             message=f"Officer {officer.name} late-closed {session.trip_code} ('{reason}') but the GB "
+                                     "recorded no equipment fault while the trip was open (pole, link, edge): the "
+                                     f"exit may never have passed a gate{tonnes}", status="open", source=src))
+            override_pattern(db, session.permit_id, officer.id, officer.name, src)
     elif action == "FLAG":
         new_status = "FLAGGED"
     elif action == "CANCEL":
@@ -105,7 +137,8 @@ def resolve_trip(
     before_status = session.status
     session.status = new_status
     session.closed_by = officer.id
-    session.notes = f"Resolution by {officer.name}: {reason}"
+    session.notes = f"Resolution by {officer.name}: {reason}" + (
+        f" (exit not weighed: charged at the rated {charged:g} t)" if charged is not None else "")
     if not session.completed_at:
         session.completed_at = datetime.now(timezone.utc)
 
