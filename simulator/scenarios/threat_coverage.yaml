@@ -441,6 +441,22 @@ scenarios:
       - { at: "20:00", insider: erase_illegal_trip }
       - { at: "20:05", insider: lower_weight, tonnes: 3 }
 
+  - id: E5b
+    name: Bribed officer late-closes a side-route trip as a 'sensor fault'
+    threat: E5
+    priority: P1
+    kind: tamper
+    category: officer
+    why: The truck left loaded by a side track and its pass stayed open. A bribed officer late-closes it as a sensor
+      fault so the truck can work again. The GB recorded no equipment fault while the trip was open, so the claim is
+      not supported; the trip is also charged at the truck's rated load, so the tonnes don't vanish.
+    expect_story: { alerts: [LATE_CLOSE_UNSUPPORTED] }
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AH2468, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:40", unseen: left loaded by a side track, vehicle: OD09AH2468, leaves: true, load: "90%" }
+      - { at: "10:40", dir: IN, vehicle: OD09AH2468, expect: { barrier: down, alerts: [UNRESOLVED_TRIP] } }
+      - { at: "10:45", officer: late_close, vehicle: OD09AH2468, reason: Truck left by the gate; sensor fault }
+
   # ================================================================== found in our own review
   - id: X1a
     name: Pickup under 6 m carries material out uncounted
