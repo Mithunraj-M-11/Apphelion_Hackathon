@@ -433,6 +433,8 @@ export const gateApi = {
   createPermit: (body: PermitIn) =>
     request<Permit>("/permits", { method: "POST", body: JSON.stringify(body) }, body.source == null),
   permit: (id: number) => request<Permit>(`/permits/${id}`),
+  /** GB period report: the permit's period from the GB's own records only (no simulation ground truth). */
+  permitReport: (id: number) => request<PeriodReport>(`/permits/${id}/report`),
   ledger: (id: number) => request<Ledger>(`/permits/${id}/ledger`),
   alerts: (params: { permit_id?: string; severity?: string; origin?: string } = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
@@ -882,3 +884,32 @@ export const wimApi = {
   dashboard: () => request<WimDashboardMetrics>("/wim/dashboard"),
 };
 
+
+/** GB period report (one permit). Built only from what the GB recorded. */
+export type ReportAlertRow = { code: string; severity: Severity; message: string; status: string; when: string | null;
+  officer: string | null; count?: number };
+export type PeriodReport = {
+  permit: { id: number; label: string; valid_from: string; valid_to: string; trip_limit: number; tonne_limit: number;
+    vehicle_limit: number; hours: string };
+  generated_at: string;
+  period: { from: string; to: string; days: number };
+  totals: { trips_with_pass: number; trips_counted: number; trips_without_pass: number; tonnes_with_pass: number;
+    tonnes_without_pass_est: number; tonnes_counted: number; vehicles: number; open_passes: number;
+    unresolved_passes: number; late_closes_charged: number };
+  vendor: { days_reported: number; trips: number; tonnes: number; gb_trips_same_days: number; gb_tonnes_same_days: number;
+    days_under_reported: number };
+  findings: { severity: Severity; text: string }[];
+  needs_action: { alerts: ReportAlertRow[]; unresolved: { trip_code: string; status: string; plate: string; expired: string }[];
+    holds: { plate: string; reason: string }[] };
+  daily: { day: string; entries: number; passes_issued: number; entry_refusals: number; exit_refusals: number;
+    legal_trips: number; actual_trips: number; illegal_trips: number; tonnes: number; vendor_trips: number | null;
+    vendor_tonnes: number | null }[];
+  surveys: { rows: { period_from: string; period_to: string; method: string; status: string; surveyed_out_t: number | null;
+    gates_out_t: number | null; gap_pct: number | null }[];
+    total: { surveyed_out_t: number; gates_out_t: number; gap_t: number; gap_pct: number | null } | null; alerts: string[] };
+  equipment: { pole_outages: number; outage_minutes: number; counts: Record<string, number>; items: ReportAlertRow[] };
+  officers: ({ officer: string; total: number } & Record<string, number | string>)[];
+  integrity: { chained_events: number; failed_checks: ReportAlertRow[] };
+  alerts_by_severity: Partial<Record<Severity, number>>;
+  alerts_by_code: Record<string, number>;
+};

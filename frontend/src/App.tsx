@@ -29,6 +29,7 @@ import RegistryList from "./pages/RegistryList";
 import RfidStickers from "./pages/RfidStickers";
 import SimRuns from "./pages/SimRuns";
 import SiteRuns from "./pages/SiteRuns";
+import PeriodReport from "./pages/PeriodReport";
 import SolutionFlow from "./pages/SolutionFlow";
 import Transporters from "./pages/Transporters";
 import TripPasses from "./pages/TripPasses";
@@ -193,6 +194,7 @@ function Layout() {
           <Route path="/scenario-runs/:id" element={<SimRuns />} />
           <Route path="/site-runs" element={<SiteRuns />} />
           <Route path="/site-runs/:id" element={<SiteRuns />} />
+          <Route path="/reports/:permitId" element={<PeriodReport />} />
           <Route path="*" element={<p>Page not found.</p>} />
         </Routes>
       </main>

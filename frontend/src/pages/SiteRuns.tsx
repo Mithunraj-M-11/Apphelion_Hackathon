@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX } from "react-icons/lu";
+import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX , LuFileText } from "react-icons/lu";
 import {
   api,
   gateApi,
@@ -721,6 +721,14 @@ function RunDetail({ id }: { id: number }) {
         </div>
       </div>
 
+      {(run.permit_id ?? r.permit_id) != null && (
+        <p className="no-print">
+          <Link className="btn primary" to={`/reports/${run.permit_id ?? r.permit_id}`}>
+            <LuFileText /> GB period report
+          </Link>{" "}
+          <span className="small muted">what the GB itself recorded over this period, ready to print (no ground truth)</span>
+        </p>
+      )}
       {(run.permit_id ?? r.permit_id) != null && <ContractSection permitId={(run.permit_id ?? r.permit_id) as number} />}
 
       <div className="card">
