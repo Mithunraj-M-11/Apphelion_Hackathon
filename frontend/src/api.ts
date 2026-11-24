@@ -416,6 +416,7 @@ export const gateApi = {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
     return request<Movement[]>(`/movements${qs.toString() ? `?${qs}` : ""}`);
   },
+  movement: (id: number) => request<Movement>(`/movements/${id}`),
   simRuns: () => request<SimRun[]>("/sim-runs"),
   simSuites: () => request<SimSuite[]>("/sim-runs/suites"),
   /** Start a suite in the background (the backend runs the simulator, which posts gate events like a pole). */
@@ -664,7 +665,7 @@ export type SiteCheat = {
   note: string;
   movements?: number[]; // the GB gate events of this attempt
   /** Every leg in order: gate events (seen by the GB) and the legs it cannot see (side tracks, loading inside). */
-  timeline?: { at: string; seen: boolean; text: string; movement?: number; alerts?: string[] }[];
+  timeline?: { at: string; seen: boolean; officer?: boolean; text: string; movement?: number; alerts?: string[] }[];
 };
 export type SiteTrip = { day: string; at: string; vehicle: string; tonnes: number; kind: string; cheat: string | null };
 export type SiteDay = {
@@ -703,7 +704,13 @@ export type SiteReport = {
     attempt_flagged: number; avg_minutes_to_alert: number | null }>;
   cheats: SiteCheat[];
   alerts: { by_severity: Record<Severity, number>; by_code: Record<string, number> };
-  false_alarms: { count: number; honest_events: number; items: { at: string; vehicle: string; code: string; message: string }[] };
+  false_alarms: {
+    count: number;
+    honest_events: number;
+    honest_trips?: number; // an honest truck's entry + exit = one trip (newer runs)
+    honest_trips_flagged?: number;
+    items: { at: string; vehicle: string; code: string; message: string }[];
+  };
   daily: SiteDay[];
   unexpected: string[];
   skipped: string[];
