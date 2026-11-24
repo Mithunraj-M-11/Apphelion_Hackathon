@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -40,8 +40,9 @@ def _fault_evidence(db: Session, session: TripSession) -> list[str]:
     if session.entry_at is None:
         return []
     end = (session.expires_at or session.entry_at) + FAULT_WINDOW_AFTER
-    rows = db.execute(select(Alert.code, Movement.observed_at).join(Movement, Movement.id == Alert.movement_id).where(
-        Alert.permit_id == session.permit_id, Movement.observed_at >= session.entry_at, Movement.observed_at <= end,
+    when = func.coalesce(Movement.observed_at, Alert.created_at)  # a heartbeat's alert carries the pole's own time
+    rows = db.execute(select(Alert.code, when).outerjoin(Movement, Movement.id == Alert.movement_id).where(
+        Alert.permit_id == session.permit_id, when >= session.entry_at, when <= end,
         (Alert.code.in_(FAULT_CODES)) | (Alert.code.like("EDGE_%")))).all()
     return sorted({f"{code} at {at.astimezone(IST):%H:%M}" for code, at in rows})
 
