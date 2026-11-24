@@ -15,7 +15,9 @@
 import hashlib
 import hmac
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+IST = timezone(timedelta(hours=5, minutes=30))  # alert texts show site time
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -76,14 +78,14 @@ def signal(db: Session, permit: Permit, gate: str, at: datetime, source: str | N
         if st.sends_heartbeats and at - last > POLE_SILENT_AFTER:
             minutes = int((at - last).total_seconds() // 60)
             alerts.append(Alert(permit_id=permit.id, movement_id=movement_id, code="POLE_SILENT", severity="HIGH",
-                                message=f"Pole {gate} was silent for {minutes} min ({last:%H:%M} to {at:%H:%M}): power "
+                                message=f"Pole {gate} was silent for {minutes} min ({last.astimezone(IST):%H:%M} to {at.astimezone(IST):%H:%M}): power "
                                         "cut, damage or tampering. Anything that moved in that window is unrecorded.",
                                 status="open", source=permit.source))
         if not heartbeat and last - at > LATE_AFTER:
             hours = (last - at).total_seconds() / 3600
             alerts.append(Alert(permit_id=permit.id, movement_id=movement_id, code="LATE_EVENT", severity="MEDIUM",
-                                message=f"Gate event from {at:%H:%M} reached the GB {hours:.1f} h late (pole had already "
-                                        f"reported up to {last:%H:%M}): link to the pole was cut or held back.",
+                                message=f"Gate event from {at.astimezone(IST):%H:%M} reached the GB {hours:.1f} h late (pole had already "
+                                        f"reported up to {last.astimezone(IST):%H:%M}): link to the pole was cut or held back.",
                                 status="open", source=permit.source))
     if last is None or at > last:
         st.last_seen = at

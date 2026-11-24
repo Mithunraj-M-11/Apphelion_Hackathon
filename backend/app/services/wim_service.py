@@ -82,7 +82,7 @@ def set_device_status(
 
 
 def generate_anomaly_code() -> str:
-    return f"ANO-WIM-{uuid.uuid4().hex[:6].upper()}"
+    return f"ANO-WIM-{uuid.uuid4().hex[:12].upper()}"
 
 
 def detect_anomalies(
@@ -626,7 +626,7 @@ def record_measurement(
     )
 
     measurement = WimMeasurement(
-        measurement_id=measurement_id or f"WIM-{uuid.uuid4().hex[:6].upper()}",
+        measurement_id=measurement_id or f"WIM-{uuid.uuid4().hex[:12].upper()}",
         device_id=dev.id if dev else None,
         device_code=device_code,
         gate=gate.upper(),
@@ -902,7 +902,7 @@ def record_from_gate(db: Session, movement: Movement, truck: Truck | None, readi
     code = f"WIM-{gate}-01"
     weights = [round(float(w), 2) for w in (reading.get("axle_weights_t") or [])]
     m = WimMeasurement(
-        measurement_id=f"WIM-{uuid.uuid4().hex[:6].upper()}",
+        measurement_id=f"WIM-{uuid.uuid4().hex[:12].upper()}",
         device_id=(dev.id if (dev := get_wim_device(db, code)) else None),
         device_code=code, gate=gate, lane=f"{'ENTRY' if movement.direction == 'IN' else 'EXIT'}-1",
         direction=movement.direction, observed_at=movement.observed_at,
