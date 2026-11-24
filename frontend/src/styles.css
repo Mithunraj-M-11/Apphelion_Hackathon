@@ -85,6 +85,16 @@ h3 { font-size: 0.95rem; margin: 0; }
 .sidenav a:hover { background: var(--neutral-bg); text-decoration: none; }
 .sidenav a.active { background: var(--neutral-bg); box-shadow: inset 3px 0 0 var(--primary); font-weight: 600; }
 .nav-icon { width: 18px; height: 18px; flex: none; }
+.nav-group-head { display: flex; align-items: center; }
+.nav-group-head a { flex: 1; min-width: 0; }
+.nav-group-toggle { flex: none; background: none; border: none; color: var(--muted); padding: 6px; border-radius: 6px;
+                    cursor: pointer; display: flex; }
+.nav-group-toggle:hover { background: var(--neutral-bg); color: var(--text); }
+.nav-sub { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 2px 14px; padding-left: 8px;
+           border-left: 1px solid var(--border); }
+.nav-sub a { padding: 7px 10px; font-size: 0.92em; }
+.nav-collapsed .nav-group-toggle { display: none; }
+.nav-collapsed .nav-sub { margin-left: 0; padding-left: 0; border-left: none; }
 .nav-collapsed .nav-label { display: none; }
 .nav-collapsed .sidenav a { justify-content: center; padding: 9px 0; }
 .empty-state { text-align: center; max-width: 440px; margin: 18vh auto 0; }
