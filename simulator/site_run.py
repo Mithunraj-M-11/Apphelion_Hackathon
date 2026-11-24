@@ -7,8 +7,9 @@ tonnes, and which ones were cheats). It plays the resulting gate events, in time
 real pole uses; the GB never sees the ground truth. Each truck and each injected cheat is a small script (a Python
 generator) that yields the next physical arrival at a barrier and reacts to the GB's real answer (pass issued,
 barrier up / down). At the end of each site day the Vendor files its own report (CP9) and a simulated GB officer
-reviews and releases that day's holds. The report compares Permitted / Vendor reported / GB legal / GB actual /
-GB illegal / Ground truth, and scores every cheat as prevented, detected or missed.
+reviews and releases that day's holds. The report compares Permit allows / Vendor says / With a valid pass /
+Counted at GB gates / Without a pass / Really left (ground truth), and scores every cheat as prevented, detected or
+missed.
 
 Everything is deterministic for a given seed. The registry is never written to.
 """
@@ -22,10 +23,15 @@ from pathlib import Path
 import httpx
 import yaml
 
+import pole
+
 IST = timezone(timedelta(hours=5, minutes=30))
 SITE_DIR = Path(__file__).parent / "scenarios" / "site"
 SERIOUS = ("HIGH", "CRITICAL")
 PERMIT_WARNINGS = ("TRIPS_", "TONNES_")  # permit-level, not about a truck: never a false alarm
+# about the GB's own equipment (a pole, the pad, the link), raised on whichever truck arrives next: never a false
+# alarm on that truck
+EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP", "WIM_UNAVAILABLE", "WIM_PAD_DISAGREE")
 GATE = "G1"
 
 # Vehicles that are NOT in the registry (made-up test data)
@@ -42,6 +48,7 @@ class Veh:
     empty: float
     rated: float
     sticker: str | None = None  # GB RFID sticker UID (registered trucks)
+    spacings: list[float] | None = None  # axle spacings of the real body (m), what the WIM strip measures
 
 
 @dataclass
@@ -67,6 +74,11 @@ class Cheat:
             self.movements.append(resp["id"])
             self.timeline.append({"at": at.strftime("%H:%M"), "seen": True, "movement": resp["id"],
                                   "text": gate_line(resp, who), "alerts": alert_codes(resp)})
+
+    def officer(self, at: datetime, text: str, alerts: list[str]) -> None:
+        """An officer action the GB records (with the alerts it raised)."""
+        self.timeline.append({"at": at.strftime("%H:%M"), "seen": True, "officer": True, "text": text, "alerts": alerts})
+        self.alerts += [c for c in alerts if c not in self.alerts]
 
     def off(self, at: datetime, text: str) -> None:
         """A leg the GB cannot see (side track, loading inside the site, ...)."""
@@ -122,6 +134,7 @@ class Ev:
     honest: bool = True
     rfid: str = "genuine"  # what the GB sticker's challenge-response shows: genuine | cloned | ...
     resp: dict | None = None
+    misread: bool = False  # staging: a sensor missed this read
 
 
 class World:
@@ -161,16 +174,37 @@ class World:
         self.pool_free: dict[str, datetime] = {v.label: datetime.min.replace(tzinfo=IST) for v in self.pool}
         self.outsider_i = 0
 
+        # staging: pole outages (fixed by the seed), weigh pad drift, sensor misses on honest trucks
+        self.outages: list[tuple[datetime, datetime]] = []
+        oc = cfg.get("outages")
+        if oc:
+            n = int(oc.get("per_week", 2) * len(self.days) / 7 + 0.5)
+            for d in self.rng.sample(self.days, min(n, len(self.days))):
+                start = self.at(d, self.hours_start, self.u(60, 480))
+                self.outages.append((start, start + timedelta(minutes=self.u(*oc.get("minutes", [30, 90])))))
+            self.outages.sort()
+        self.drift = cfg.get("weigh_drift")  # {from_day: 4, offset_t: -3}: loaded readings off from that day
+        self.noise_cfg = cfg.get("sensor_noise", {})  # {plate_miss: 0.03, fastag_miss: 0.02} on honest reads
+        self.misread_refusals = 0
+        self.reference_tests: list[dict] = []
+        self.surveys: list[dict] = []
+        self.model_errors: list[float] = []  # per terrain model, in tonnes
+        self.survey_rng = random.Random(cfg.get("seed", 1) + 99)  # its own stream: surveys don't change the run
+        self.wim_rng = random.Random(cfg.get("seed", 1) + 77)  # WIM noise and faults: their own stream too
+        self.wim_cfg = cfg.get("wim_noise", {})  # {poor: 0.03, offline: 0.01}: share of crossings
+        self.waits_for_outage = 0
+
     # ---- helpers
     def veh(self, t: dict) -> Veh:
         return Veh(t["plate"], t["plate"], t["fastag_tag_id"], t["length_m"], t["empty_weight_t"], t["rated_capacity_t"],
-                   self.stickers.get(t["plate"]))
+                   self.stickers.get(t["plate"]), t.get("axle_spacings_m"))
 
     def outsider(self) -> Veh:
         i = self.outsider_i
         self.outsider_i += 1
         return Veh(f"outsider {OUTSIDERS[i % len(OUTSIDERS)]}", OUTSIDERS[i % len(OUTSIDERS)], OUTSIDE_TAG.format(i),
-                   round(self.rng.uniform(7.8, 9.6), 2), 12.0, 25.0)
+                   round(self.rng.uniform(7.8, 9.6), 2), 12.0, 25.0,
+                   spacings=[round(self.wim_rng.uniform(3.5, 4.1), 2), 1.35])
 
     def at(self, d: date, t: time, plus_min: float = 0) -> datetime:
         return datetime.combine(d, t, tzinfo=IST) + timedelta(minutes=plus_min)
@@ -195,9 +229,20 @@ class World:
                 return k
         return list(spec)[-1]
 
-    def trip(self, at: datetime, v: Veh, tonnes: float, kind: str, crossed_gate: bool, cheat: str | None = None):
+    def trip(self, at: datetime, v: Veh, tonnes: float, kind: str, crossed_gate: bool, cheat: str | None = None,
+             cause: str | None = None):
+        """A trip that really happened. `crossed_gate` = a GB pole saw it leave; `cause` says why it went unseen
+        (side track, pole down, light vehicle)."""
+        if cause is None and not crossed_gate:
+            cause = "side track"
         self.truth.append({"day": at.date().isoformat(), "at": at.strftime("%H:%M"), "vehicle": v.label,
-                           "tonnes": round(tonnes, 2), "kind": kind, "cheat": cheat, "crossed_gate": crossed_gate})
+                           "tonnes": round(tonnes, 2), "kind": kind, "cheat": cheat, "crossed_gate": crossed_gate,
+                           "cause": cause})
+
+    # ---- staging (threat_week): faults and attacks that are not a truck at a gate
+    def down(self, t: datetime) -> tuple[datetime, datetime] | None:
+        """The pole outage window covering t, if any (power cut, smashed pole)."""
+        return next(((a, b) for a, b in self.outages if a <= t < b), None)
 
     def drop(self, c: Cheat, why: str) -> None:
         """The trick could not be staged (e.g. its test truck was refused for an unrelated reason): not scored."""
@@ -257,6 +302,10 @@ def honest_truck(w: World, v: Veh):
                         c.note = "refused at entry, then went round by a side track"
                         t = out_at + timedelta(minutes=w.u(*hc["haul_min"]))
                     continue
+                if ev.misread:  # a sensor missed it: the honest truck is refused, waits, and tries again
+                    w.misread_refusals += 1
+                    t += timedelta(minutes=10)
+                    continue
                 ev.honest = False
                 w.unexpected.append(f"{t:%d %b %H:%M} {v.label} refused at entry: {codes}")
                 t += timedelta(minutes=60)
@@ -270,7 +319,15 @@ def honest_truck(w: World, v: Veh):
                 exit_at = t + timedelta(minutes=110)  # last load of the day runs late
             dead = not dead_phone_used and w.rng.random() < hc["dead_phone_rate"]
             dead_phone_used = dead_phone_used or dead
-            r2 = yield Ev(exit_at, "OUT", v, w.w(v, load_t), token=None if dead else p["token"])
+            out = Ev(exit_at, "OUT", v, w.w(v, load_t), token=None if dead else p["token"])
+            r2 = yield out
+            tries = 0
+            while down(r2) and out.misread and tries < 3:  # misread at the exit: re-read a few minutes later
+                w.misread_refusals += 1
+                tries += 1
+                exit_at = out.at + timedelta(minutes=5)
+                out = Ev(exit_at, "OUT", v, w.w(v, load_t), token=None if dead else p["token"])
+                r2 = yield out
             if down(r2):
                 w.unexpected.append(f"{exit_at:%d %b %H:%M} {v.label} refused at exit: {[a['code'] for a in r2['alerts']]}")
             else:
@@ -346,7 +403,7 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
             return w.drop(c, f"real truck refused ({[a['code'] for a in r['alerts']]})")
         p = r["issued_pass"]
         # same plate, cloned FASTag, same size, and a copied sticker UID: it cannot answer the challenge-response
-        twin = Veh(f"clone of {v.plate}", v.plate, v.tag, round(v.length + 0.1, 2), 12.0, v.rated, v.sticker)
+        twin = Veh(f"clone of {v.plate}", v.plate, v.tag, round(v.length + 0.1, 2), 12.0, v.rated, v.sticker, v.spacings)
         ev = Ev(start + mins(10, 25), "IN", twin, w.w(twin, 0), forced=(on_refusal == "force"), honest=False,
                 rfid="cloned")
         r = yield ev
@@ -464,12 +521,100 @@ def cheat_actor(w: World, type_: str, start: datetime, v: Veh, on_refusal: str, 
         c.outcome = "detected" if expected in c.alerts else "missed"
         c.note = {"overload": "load above rated capacity", "arrive_loaded": "brought material in from outside",
                   "weigh_bypass": "drove round the weigh pad"}[type_]
+    elif type_ == "transplant":  # X's real plate, FASTag and GB sticker moved onto the Vendor's extra truck
+        other = [round(v.spacings[0] - 0.3, 2), *v.spacings[1:]] if v.spacings else None  # another model's chassis
+        body = Veh(f"extra truck wearing {v.label}'s identity", v.plate, v.tag, round(v.length + 0.04, 2),
+                   round(v.empty + w.u(0.5, 0.8), 2), v.rated, v.sticker, other)
+        c.off(start - timedelta(minutes=30), f"{v.label}'s plate, FASTag and GB sticker moved onto an extra truck")
+        r = yield Ev(start, "IN", body, w.w(body, 0), honest=False)
+        c.saw(r, start, "the extra truck")
+        if down(r):
+            c.outcome, c.note = "prevented", "refused at entry"
+            return
+        p = r["issued_pass"]
+        out_at, load_t = start + mins(30, 60), load(body)
+        r = yield Ev(out_at, "OUT", body, w.w(body, load_t), token=p["token"], honest=False)
+        c.saw(r, out_at, "the extra truck")
+        if not down(r):
+            w.trip(out_at, body, load_t, "cheat", True, type_)
+        c.outcome = "detected" if c.alerts else "missed"
+        c.note = "worked as " + v.label + (": flagged" if c.alerts else ", nothing noticed")
+
+    elif type_ == "officer_cover":  # a bribed officer hides a side-route trip
+        r = yield Ev(start, "IN", v, w.w(v, 0))
+        c.gate(r, start)
+        if down(r):
+            return w.drop(c, f"refused at entry ({[a['code'] for a in r['alerts']]})")
+        load_t = load(v)
+        side = start + mins(30, 50)
+        c.off(side, "left loaded by a side track; its pass stays open")
+        w.trip(side, v, load_t, "cheat", False, type_)
+        back = start + mins(170, 230)  # past the pass expiry: the next entry is refused
+        ev = Ev(back, "IN", v, w.w(v, 0), honest=False)
+        r = yield ev
+        c.saw(r, back)
+        close_flagged = False
+        if down(r) and w.bribed_officer:
+            trips = w.client.get("/api/trips", params={"permit_id": w.permit_id,
+                                                       "status": "ACTIVE,EXPIRED_UNRESOLVED,FLAGGED"}).json()
+            mine = [x for x in trips if (x.get("truck") or {}).get("plate") == v.plate]
+            if mine:
+                w.client.post(f"/api/trips/{mine[0]['session_id']}/resolve",
+                              headers={"X-Officer-Id": str(w.bribed_officer)},
+                              params={"action": "RESOLVE", "reason": "Truck left by the gate; sensor fault"})
+                code = mine[0]["trip_code"]
+                raised = [a["code"] for a in w.client.get("/api/alerts", params={"permit_id": w.permit_id, "limit": 50}).json()
+                          if code in a["message"] and a["code"] in ("OFFICER_LATE_CLOSE", "LATE_CLOSE_UNSUPPORTED")]
+                c.officer(back + timedelta(minutes=5), "a bribed officer late-closes the open trip as 'sensor fault'",
+                          sorted(set(raised)))
+                c.attempt_flagged = True
+                close_flagged = "LATE_CLOSE_UNSUPPORTED" in raised
+                r = yield Ev(back + timedelta(minutes=10), "IN", v, w.w(v, 0))
+                c.gate(r, back + timedelta(minutes=10))
+                if not down(r):
+                    out_at, lt = back + mins(40, 60), load(v)
+                    r2 = yield Ev(out_at, "OUT", v, w.w(v, lt), token=r["issued_pass"]["token"])
+                    c.gate(r2, out_at)
+                    if not down(r2):
+                        w.trip(out_at, v, lt, "legal", True)
+        if close_flagged:  # the GB saw through the 'sensor fault'
+            c.outcome = "detected"
+            c.note = ("bribed officer's late close flagged: no equipment fault on record; the trip is charged at the "
+                      "truck's rated load")
+        else:
+            c.outcome = "missed"
+            c.note = "side-route trip covered up by a bribed officer's late close"
+
+    elif type_ == "light_vehicle":  # a pickup under 6 m carries about a tonne, logged but not counted
+        pickup = Veh(f"pickup {v.plate}", v.plate, None, 4.6, 1.8, 1.5, spacings=[2.9])
+        r = yield Ev(start, "IN", pickup, w.w(pickup, 0), tag=None, honest=False)
+        c.saw(r, start)
+        load_t = w.u(1.0, 1.4)
+        out_at = start + mins(20, 40)
+        r = yield Ev(out_at, "OUT", pickup, w.w(pickup, load_t), tag=None, honest=False)
+        c.saw(r, out_at)
+        w.trip(out_at, pickup, load_t, "cheat", True, type_, cause="light vehicle")
+        c.outcome = "detected" if c.alerts else "missed"
+        c.note = "let through as a light vehicle; the load is not counted" + (" (flagged)" if c.alerts else "")
+
+    elif type_ == "outage_trip":  # an extra truck moves while the pole is down; the barrier is lifted by hand
+        window = w.down(start)
+        if window is None:
+            return w.drop(c, "no outage at that time")
+        c.off(start, "pole down: barrier lifted by hand, extra truck comes in")
+        out_at = min(start + mins(25, 40), window[1] - timedelta(minutes=1))
+        c.off(out_at, "leaves loaded while the pole is still down")
+        w.trip(out_at, v, load(v), "cheat", True, type_, cause="pole down")
+        c.outcome, c.note = "missed", "moved while the pole was down; nothing reached the GB"
+        return
+        yield  # noqa: unreachable; makes this a generator
+
     else:
         raise ValueError(f"unknown cheat type {type_}")
 
 
 # ================================================================ scheduling
-RESERVE_H = {"side_track_out": 5}
+RESERVE_H = {"side_track_out": 5, "officer_cover": 6}
 HOLDS_TRUCK = ("clone", "pass_reuse", "pass_handover")  # truck stays on hold until the end-of-day review
 
 
@@ -480,6 +625,18 @@ def plan_cheats(w: World) -> list[tuple[datetime, object]]:
             type_, per_day = spec["type"], float(spec.get("per_day", 1))
             n = int(per_day) + (1 if w.rng.random() < per_day - int(per_day) else 0)
             for _ in range(n):
+                if type_ == "outage_trip":
+                    wins = [o for o in w.outages if o[0].date() == d]
+                    if not wins:
+                        continue
+                    a, b = wins[0]
+                    t = a + timedelta(minutes=w.u(0, max(1, (b - a).seconds / 60 - 30)))
+                    starts.append((t, cheat_actor(w, type_, t, w.outsider(), "turn_back", None)))
+                    continue
+                if type_ == "light_vehicle":
+                    t = w.at(d, w.hours_start, w.u(30, 600))
+                    starts.append((t, cheat_actor(w, type_, t, w.outsider(), "turn_back", None)))
+                    continue
                 if type_ == "night_trip":
                     t = w.at(d, w.hours_end, w.u(60, 240))
                 else:
@@ -507,6 +664,50 @@ def plan_cheats(w: World) -> list[tuple[datetime, object]]:
     return starts
 
 
+def reference_test(w: World, permit: dict, at: datetime, officer_id: int):
+    """Gap 1B: an officer runs the GB's reference load over the pad at a random time. The rigged pad (weigh_drift)
+    reads it light too, since a reference load is a loaded reading."""
+    known = float(w.cfg["reference_test"].get("known_t", 30))
+    reading = known
+    if w.drift and (at.date() - w.days[0]).days + 1 >= w.drift["from_day"]:
+        reading = known + w.drift["offset_t"]
+    r = w.client.post(f"/api/gates/{GATE}/reference-test", headers={"X-Officer-Id": str(officer_id)},
+                      json={"known_weight_t": known, "pad_reading_t": round(reading, 2), "observed_at": at.isoformat(),
+                            "permit_id": permit["id"]}).raise_for_status().json()
+    w.reference_tests.append({"at": at.strftime("%Y-%m-%d %H:%M"), "known_t": known, "read_t": round(reading, 2),
+                              "passed": r["passed"]})
+    return
+    yield  # noqa: unreachable; makes this a generator
+
+
+def survey(w: World, permit: dict, d: date, officer_id: int) -> None:
+    """Gap 7: the GB's weekly survey (RTK drone photogrammetry). Staged from ground truth: the ore that really left the
+    site in the period, with a random survey error within +/- error_pct, as a volume at the in-situ density. No
+    stockpiles in the simulation. The GB compares it with what its gates weighed out."""
+    cfg = w.cfg["survey"]
+    every = int(cfg.get("every_days", 7))
+    i = (d - w.days[0]).days
+    if (i + 1) % every:
+        return
+    d_from = w.days[i + 1 - every]
+    in_period = [t for t in w.truth if d_from.isoformat() <= t["day"] <= d.isoformat()]
+    true_t = sum(t["tonnes"] for t in in_period)
+    # each survey makes a terrain model with its own error; a week's volume is the difference of two models, so its
+    # error is (this model's - last model's), within +/- error_pct. Over many weeks the middle models cancel out.
+    amp = cfg.get("error_pct", 3) / 100 / 2 * true_t
+    if not w.model_errors:
+        w.model_errors.append(w.survey_rng.uniform(-1, 1) * amp)  # the baseline survey at the start of the period
+    w.model_errors.append(w.survey_rng.uniform(-1, 1) * amp)
+    err = (w.model_errors[-1] - w.model_errors[-2]) / true_t if true_t else 0.0
+    density = cfg.get("density", 3.2)
+    body = {"period_from": d_from.isoformat(), "period_to": d.isoformat(), "method": "drone_photogrammetry",
+            "volume_dug_m3": round(true_t * (1 + err) / density, 1), "density_t_m3": density,
+            "stockpile_change_t": 0.0, "check_error_cm": round(w.survey_rng.uniform(1.5, 4.0), 1)}
+    r = w.client.post(f"/api/permits/{permit['id']}/surveys", headers={"X-Officer-Id": str(officer_id)},
+                      json=body).raise_for_status().json()
+    w.surveys.append({**r, "true_out_t": round(true_t, 2), "survey_error_pct": round(err * 100, 2)})
+
+
 def end_of_day(w: World, permit: dict, d: date, officer_id: int) -> None:
     """The Vendor files its report for the day (CP9); a GB officer reviews and releases the day's holds."""
     day = d.isoformat()
@@ -529,6 +730,8 @@ def end_of_day(w: World, permit: dict, d: date, officer_id: int) -> None:
                         json={"day": day, "trips": trips, "tonnes": round(tonnes, 2)}).raise_for_status().json()
     w.vendor.append({"day": day, "trips": trips, "tonnes": round(tonnes, 2), "true_trips": len(true_trips),
                      "alerts": [a["code"] for a in res["alerts"]]})
+    if w.cfg.get("survey"):
+        survey(w, permit, d, officer_id)
     for h in w.client.get(f"/api/holds?permit_id={permit['id']}").raise_for_status().json():
         w.client.post(f"/api/holds/{h['id']}/release", headers={"X-Officer-Id": str(officer_id)},
                       json={"reason": "Reviewed at end of day (simulated officer)"}).raise_for_status()
@@ -538,14 +741,29 @@ def post(w: World, permit: dict, source: str, ev: Ev) -> dict:
     v = ev.veh
     plate = v.plate if ev.plate_shown == "own" else ev.plate_shown
     tag = v.tag if ev.tag == "own" else ev.tag
+    weight = ev.weight
+    if w.drift and ev.dir == "OUT" and weight is not None and (ev.at.date() - w.days[0]).days + 1 >= w.drift["from_day"]:
+        weight = round(weight + w.drift["offset_t"], 2)  # staging: the pad is rigged to read low when loaded
+    ev.misread = False
+    if ev.honest and w.noise_cfg:  # staging: camera / FASTag reader miss on an honest truck
+        if w.rng.random() < w.noise_cfg.get("plate_miss", 0):
+            plate, ev.misread = None, True
+        elif w.rng.random() < w.noise_cfg.get("fastag_miss", 0):
+            tag, ev.misread = None, True
     body = {"direction": ev.dir, "plate_read": plate, "fastag_read": tag, "radar_length_m": v.length,
-            "weight_t": ev.weight, "observed_at": ev.at.isoformat(), "barrier_forced": ev.forced,
+            "weight_t": weight, "observed_at": ev.at.isoformat(), "barrier_forced": ev.forced,
             "permit_id": permit["id"], "source": source, "rfid_sticker_uid": v.sticker, "rfid_sim_mode": ev.rfid}
     if ev.token:
         body["pass_token"] = ev.token
     if ev.code:
         body["pass_code"] = ev.code
-    return w.client.post(f"/api/gates/{GATE}/events", json=body).raise_for_status().json()
+    roll = w.wim_rng.random()  # staging: occasional WIM faults
+    wim_status = "OFFLINE" if roll < w.wim_cfg.get("offline", 0) else \
+        "POOR" if roll < w.wim_cfg.get("offline", 0) + w.wim_cfg.get("poor", 0) else "OK"
+    wim = pole.wim_reading(w.wim_rng, v.spacings, v.empty, ev.weight, wim_status)  # the real weight, not the pad's
+    if wim is not None:
+        body["wim"] = wim
+    return pole.event(w.client, GATE, body).raise_for_status().json()
 
 
 def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dict]) -> int:
@@ -563,6 +781,9 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
     }).raise_for_status().json()
     officers = client.get("/api/officers").raise_for_status().json()
     officer_id = next((o["id"] for o in officers if o["role"] == "approver"), officers[0]["id"])
+    w.permit_id = permit["id"]
+    w.bribed_officer = next((o["id"] for o in officers if o["id"] != officer_id and o.get("active")), officer_id) \
+        if cfg.get("bribed_officer") else None
 
     print(f"\nSiteWatch site run #{run['id']} | {name} | {len(w.days)} days {w.days[0]} to {w.days[-1]} | "
           f"fleet {len(w.fleet)} trucks, {len(w.pool)} test trucks for cheats | seed {cfg.get('seed', 1)}")
@@ -576,12 +797,29 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
     for t, actor in plan_cheats(w):
         heap.append((t, seq, actor, None))
         seq += 1
+    if cfg.get("reference_test"):  # gap 1B: one unannounced reference weight test a day
+        for d in w.days:
+            t = w.at(d, w.hours_start, w.u(30, (w.at(d, w.hours_end) - w.at(d, w.hours_start)).seconds / 60 - 30))
+            heap.append((t, seq, reference_test(w, permit, t, officer_id), None))
+            seq += 1
     heapq.heapify(heap)
 
     day_i = 0
     posted = 0
+    beat_at = w.at(w.days[0], time(0, 0))
+    heartbeats = bool(cfg.get("heartbeats"))
     while heap:
         at, _, actor, ev = heapq.heappop(heap)
+        if ev is not None and w.down(at):  # pole down: the barrier doesn't work, trucks at the gate wait
+            w.waits_for_outage += 1
+            ev.at = w.down(at)[1]
+            seq += 1
+            heapq.heappush(heap, (ev.at, seq, actor, ev))
+            continue
+        while heartbeats and beat_at + timedelta(minutes=15) <= at:  # the pole's 'I'm alive' signal (staging)
+            beat_at += timedelta(minutes=15)
+            if not w.down(beat_at):
+                pole.heartbeat(client, GATE, {"at": beat_at.isoformat(), "permit_id": permit["id"], "source": source})
         while day_i < len(w.days) - 1 and at.date() > w.days[day_i]:
             end_of_day(w, permit, w.days[day_i], officer_id)
             day_i += 1
@@ -611,10 +849,42 @@ def run_site(client: httpx.Client, cfg: dict, name: str, registry: dict[str, dic
 
 
 # ================================================================ report
+def missed_by_cause(w: World, ledger: dict) -> dict:
+    """Trips and tonnes that really moved but the GB doesn't have, grouped by why."""
+    out: dict[str, dict] = {}
+    for t in w.truth:
+        cause = t.get("cause")
+        if cause:  # unseen at a gate (side track, pole down) or seen but not counted (light vehicle)
+            row = out.setdefault(cause, {"trips": 0, "tonnes": 0.0})
+            row["trips"] += 1
+            row["tonnes"] = round(row["tonnes"] + t["tonnes"], 2)
+    # exits the gates saw and counted as legal, but recorded lighter than the real load (rigged pad), or not weighed
+    short = sum((e.weight or 0) - (e.resp.get("weight_t") or 0) for e in w.events
+                if e.dir == "OUT" and e.resp and e.resp.get("trip") == "LEGAL" and e.weight is not None
+                and e.resp.get("weight_t") is not None)
+    if short > 1:
+        out["weighed short (rigged pad)"] = {"trips": 0, "tonnes": round(short, 2)}
+    unweighed = [e for e in w.events if e.dir == "OUT" and e.resp and e.resp.get("trip") == "LEGAL"
+                 and e.resp.get("weight_t") is None]
+    if unweighed:
+        out["not weighed (pad bypassed)"] = {"trips": len(unweighed), "tonnes": None}
+    return out
+
+
 def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> dict:
     ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
     daily = client.get(f"/api/permits/{permit['id']}/ledger/daily").raise_for_status().json()
     alerts = client.get(f"/api/alerts?permit_id={permit['id']}&limit=5000").raise_for_status().json()
+    if any(a["code"] in ("VOLUME_MISMATCH", "VOLUME_TREND") for a in alerts):  # the survey shows leakage, not which trip
+        for c in w.cheats:
+            if c.type in ("side_track_both", "light_vehicle") and c.outcome == "missed" and not c.attempt_flagged:
+                c.attempt_flagged = True
+                c.note += " (leakage shown by the weekly survey)"
+    if any(a["code"] == "POLE_SILENT" for a in alerts):  # the GB knows the pole was down, not what moved meanwhile
+        for c in w.cheats:
+            if c.type == "outage_trip":
+                c.attempt_flagged = True
+                c.note += " (pole outage flagged: POLE_SILENT)"
 
     truth_trips, truth_t = len(w.truth), sum(t["tonnes"] for t in w.truth)
     invisible = [t for t in w.truth if not t["crossed_gate"]]
@@ -638,11 +908,23 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         row["avg_minutes_to_alert"] = round(sum(d) / len(d), 1) if d else None
 
     false_alarms = []
+    # honest trips: an honest truck's entry and the exit that follows it are one trip (a refused entry on its own is
+    # a trip attempt too); a trip is wrongly flagged if any of its crossings got a serious alert about the truck
+    trips: list[dict] = []
+    open_trip: dict[str, dict] = {}
     for e in w.events:
         if not e.honest or not e.resp:
             continue
+        if e.dir == "IN" or e.veh.label not in open_trip:
+            trip = {"flagged": False}
+            trips.append(trip)
+            open_trip[e.veh.label] = trip
+        trip = open_trip[e.veh.label]
+        if e.dir == "OUT":
+            open_trip.pop(e.veh.label, None)
         for a in e.resp["alerts"]:
-            if a["severity"] in SERIOUS and not a["code"].startswith(PERMIT_WARNINGS):
+            if a["severity"] in SERIOUS and not a["code"].startswith(PERMIT_WARNINGS) and a["code"] not in EQUIPMENT_ALERTS:
+                trip["flagged"] = True
                 false_alarms.append({"at": e.at.strftime("%d %b %H:%M"), "vehicle": e.veh.label, "code": a["code"],
                                      "message": a["message"]})
     honest_events = sum(1 for e in w.events if e.honest)
@@ -712,9 +994,16 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
         },
         "cheats_by_type": by_type,
         "cheats": [c.as_dict() for c in w.cheats],
+        "missed_by_cause": missed_by_cause(w, ledger),
+        "surveys": w.surveys,
+        "staging": {"outages": [[a.strftime("%Y-%m-%d %H:%M"), b.strftime("%H:%M")] for a, b in w.outages],
+                    "weigh_drift": w.drift, "sensor_noise": w.noise_cfg or None,
+                    "bribed_officer": w.cfg.get("bribed_officer"), "honest_refused_by_misreads": w.misread_refusals,
+                    "events_held_by_outages": w.waits_for_outage, "reference_tests": w.reference_tests},
         "alerts": {"by_severity": {s: sev.get(s, 0) for s in ("CRITICAL", "HIGH", "MEDIUM", "INFO")},
                    "by_code": dict(sorted(codes.items(), key=lambda kv: -kv[1]))},
-        "false_alarms": {"count": len(false_alarms), "honest_events": honest_events, "items": false_alarms[:50]},
+        "false_alarms": {"count": len(false_alarms), "honest_events": honest_events, "honest_trips": len(trips),
+                         "honest_trips_flagged": sum(t["flagged"] for t in trips), "items": false_alarms[:50]},
         "vendor": w.vendor,
         "daily": days,
         "unexpected": w.unexpected[:50],
@@ -724,7 +1013,7 @@ def build_report(w: World, permit: dict, client: httpx.Client, posted: int) -> d
 
 def print_report(r: dict) -> None:
     h = r["headline"]
-    print(f"\n {'':<10}{'Permitted':>11}{'Vendor':>9}{'GB legal':>10}{'GB actual':>11}{'Illegal':>9}{'Truth':>9}")
+    print(f"\n {'':<10}{'Permit':>11}{'Vendor':>9}{'Pass':>10}{'Counted':>11}{'No pass':>9}{'Real':>9}")
     for k in ("trips", "tonnes"):
         x = h[k]
         print(f" {k:<10}{x['permitted']:>11g}{x['vendor_reported']:>9g}{x['gb_legal']:>10g}{x['gb_actual']:>11g}"
@@ -738,8 +1027,9 @@ def print_report(r: dict) -> None:
     a = r["accuracy"]
     print(f"\n Trips seen by GB gates: {a['gb_actual_trips']} of {a['true_trips']} true ({a['trips_seen_pct']}%); "
           f"{a['trips_never_at_a_gate']} never crossed a gate")
-    print(f" Alerts: {r['alerts']['by_severity']}   False alarms: {r['false_alarms']['count']} on "
-          f"{r['false_alarms']['honest_events']} honest gate events")
+    fa = r["false_alarms"]
+    print(f" Alerts: {r['alerts']['by_severity']}   False alarms: {fa['count']} on {fa['honest_events']} honest gate "
+          f"events; honest trips wrongly flagged {fa['honest_trips_flagged']} of {fa['honest_trips']}")
     for u in r["unexpected"][:5]:
         print(f"   ! unexpected: {u}")
     for sk in r["skipped"][:5]:

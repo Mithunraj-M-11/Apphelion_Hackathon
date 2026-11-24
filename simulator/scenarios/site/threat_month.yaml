@@ -1,0 +1,45 @@
+# Threat month: four weeks of the threat week (without the rigged pad), to show the weekly survey and its trend rule.
+# Threat week: a normal week with every P0 / P1 cheat mixed in, plus the faults and attacks that are not a truck at a
+# gate (see docs/implementation/threat_coverage.md). The point is the honest total: what really moved vs what the GB
+# has, and why the difference exists. The rates below are assumptions, stated in the report.
+#
+# Staging (the attacker's side, not GB features):
+#   outages        pole power cut / smashed pole: trucks at the gate wait, but extra trucks move through with the
+#                  barrier lifted by hand (outage_trip); the pole's heartbeat stops
+#   heartbeats     the pole sends 'I'm alive' every 15 min while it has power (the GB has no endpoint yet)
+#   weigh_drift    from day N the GB weigh pad reads offset_t off when loaded (remote chip)
+#   sensor_noise   share of honest reads where the camera misses the plate / the reader misses the FASTag
+#   wim_noise      share of crossings where the WIM strip reads poorly or gives nothing
+#   bribed_officer one officer late-closes side-route trips as "sensor fault" (officer_cover)
+description: Four weeks of steady small leakage (side tracks, outages, light vehicles) with weekly surveys; the weigh pad is honest here, so the survey gap is the leakage.
+days: 28
+seed: 41
+fleet: 10
+permit: { trip_limit: 4000, tonne_limit: 120000, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00" }
+honest: { loading_min: [30, 60], haul_min: [120, 240], load_pct: [80, 95], weigh_noise_t: 0.15,
+          dead_phone_rate: 0.03, late_exit_rate: 0.3 }
+vendor_report: { mode: under_by_pct, pct: 15 }
+heartbeats: true
+outages: { per_week: 2, minutes: [30, 90] }
+sensor_noise: { plate_miss: 0.03, fastag_miss: 0.02 }
+wim_noise: { poor: 0.03, offline: 0.01 }   # WIM strip: braking over it / no reading
+bribed_officer: true
+reference_test: { known_t: 30 }   # one unannounced reference weight test a day (GB defence, gap 1B)
+survey: { every_days: 7, error_pct: 3, density: 3.2 }   # weekly volume survey (GB defence, gap 7)
+cheats:
+  - { type: unregistered,           per_day: 0.6, on_refusal: { turn_back: 0.5, force: 0.3, side_track: 0.2 } }
+  - { type: clone,                  per_day: 0.3, on_refusal: { turn_back: 0.4, force: 0.6 } }
+  - { type: transplant,             per_day: 0.3 }
+  - { type: pass_reuse,             per_day: 0.4, on_refusal: { turn_back: 0.5, force: 0.3, side_track: 0.2 } }
+  - { type: pass_handover,          per_day: 0.3, on_refusal: { turn_back: 0.6, force: 0.4 } }
+  - { type: forged_qr,              per_day: 0.3, on_refusal: { turn_back: 0.6, force: 0.4 } }
+  - { type: night_trip,             per_day: 0.4, on_refusal: { turn_back: 0.4, force: 0.2, side_track: 0.4 } }
+  - { type: side_track_in_gate_out, per_day: 0.4, on_refusal: { turn_back: 0.4, force: 0.4, side_track: 0.2 } }
+  - { type: side_track_out,         per_day: 0.3 }
+  - { type: side_track_both,        per_day: 0.5 }
+  - { type: officer_cover,          per_day: 0.4 }
+  - { type: outage_trip,            per_day: 1 }
+  - { type: light_vehicle,          per_day: 0.5 }
+  - { type: overload,               per_day: 0.6 }
+  - { type: arrive_loaded,          per_day: 0.3 }
+  - { type: weigh_bypass,           per_day: 0.3 }

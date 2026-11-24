@@ -201,6 +201,7 @@ class Alert(Base):
     movement_id: Mapped[int | None] = mapped_column(ForeignKey("movements.id"), index=True)
     pass_id: Mapped[int | None] = mapped_column(ForeignKey("trip_sessions.id"))
     truck_id: Mapped[int | None] = mapped_column(ForeignKey("trucks.id"))
+    officer_id: Mapped[int | None] = mapped_column(ForeignKey("officers.id"))  # the officer behind an override
     code: Mapped[str] = mapped_column(String(40), index=True)
     severity: Mapped[str] = mapped_column(String(10))  # INFO | MEDIUM | HIGH | CRITICAL
     message: Mapped[str] = mapped_column(Text)

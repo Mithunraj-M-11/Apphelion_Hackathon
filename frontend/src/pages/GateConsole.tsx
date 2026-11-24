@@ -18,6 +18,7 @@ import {
   LuShieldCheck,
   LuTag,
   LuTerminal,
+  LuTruck,
   LuTrash2,
   LuZap,
 } from "react-icons/lu";
@@ -42,6 +43,7 @@ import {
 import { AlertList, BarrierBadge, ErrorNote, ResultBadge, TripBadge } from "../components";
 import { CHECK_LABEL, formatDateTime, formatPlate } from "../format";
 import { OfficerPanel, OpenItems } from "./GateOfficer";
+import { EquipmentPanel } from "./GateEquipment";
 import {
   markCounts,
   readingsFor,
@@ -50,6 +52,9 @@ import {
   type RfidSimMode,
   type RowsProps,
   type Setup,
+  spacingsOf,
+  wimReading,
+  type WimStatus,
 } from "./GateVehicleRows";
 
 /** A registered truck as it physically arrives: its own plate and FASTag, with the given GB sticker. */
@@ -80,8 +85,8 @@ const outside = (o: Partial<Setup> & { outsidePlate: string; outsideLength: numb
 });
 
 /** The weigh pad and barrier side of a preset (load in tonnes, or % of rated capacity). */
-type Physical = { load: string; noWeight: boolean; force: boolean };
-const NORMAL: Physical = { load: "0", noWeight: false, force: false };
+type Physical = { load: string; noWeight: boolean; force: boolean; padOffset?: string; wim?: WimStatus };
+const NORMAL: Physical = { load: "0", noWeight: false, force: false, padOffset: "0", wim: "OK" };
 
 type EntryPreset = { name: string; setup: Setup; physical?: Partial<Physical> };
 
@@ -141,7 +146,37 @@ const PRESETS: EntryPreset[] = [
     setup: outside({ outsidePlate: "OD07TT4410", outsideLength: 9.1 }),
     physical: { force: true },
   },
-  { name: "Light vehicle (car): logged, not a trip", setup: outside({ outsidePlate: "OD02CA1188", outsideLength: 4.3 }) },
+  { name: "Light vehicle (car): logged, not a trip",
+    setup: outside({ outsidePlate: "OD02CA1188", outsideLength: 4.3, outsideEmpty: 1.8, outsideAxles: "2.60" }) },
+  { name: "Genuine truck, camera can't read the plate (let in, flagged)",
+    setup: { ...registered("OD09AJ3579", "GB-RFID-00008"), camera: "unreadable" } },
+  { name: "Genuine truck, camera misreads one character (let in, flagged)",
+    setup: { ...registered("OD09AL9015", "GB-RFID-00010"), camera: "misread" } },
+  { name: "Genuine truck, FASTag reader misses (let in, flagged)",
+    setup: { ...registered("OD09AK6402", "GB-RFID-00009"), fastagReader: "missed" } },
+  { name: "Genuine truck, WIM strip offline (let in, flagged)",
+    setup: registered("22BH4581AB", "GB-RFID-00018"), physical: { wim: "OFFLINE" } },
+  {
+    name: "Full transplant: real plate, FASTag and GB sticker on another truck (heavier body)",
+    setup: outside({
+      outsidePlate: "OD05TT9090", outsideLength: 8.5, outsideEmpty: 10.95, outsideAxles: "4.00, 1.40", plate: "custom",
+      customPlate: "OD14DF8821", tag: "from", tagFrom: "OD14DF8821", rfidUid: "GB-RFID-00014", rfidSimMode: "genuine",
+    }),
+  },
+  {
+    name: "Full transplant, weight within the pad's noise, different axle layout (WIM catches it)",
+    setup: outside({
+      outsidePlate: "OD05TT9191", outsideLength: 8.3, outsideEmpty: 10.7, outsideAxles: "3.55, 1.30", plate: "custom",
+      customPlate: "CG04MN5507", tag: "from", tagFrom: "CG04MN5507", rfidUid: "GB-RFID-00017", rfidSimMode: "genuine",
+    }),
+  },
+  {
+    name: "Full transplant onto a truck of the same model (passes: known limit)",
+    setup: outside({
+      outsidePlate: "OD05TT9292", outsideLength: 8.3, outsideEmpty: 10.45, outsideAxles: "3.90, 1.37", plate: "custom",
+      customPlate: "OD11CE3305", tag: "from", tagFrom: "OD11CE3305", rfidUid: "GB-RFID-00013", rfidSimMode: "genuine",
+    }),
+  },
 ];
 
 /** Exit presets, applied to the latest entry: the same vehicle (or another one) arrives at the exit. */
@@ -213,6 +248,20 @@ const EXIT_PRESETS: ExitPreset[] = [
     hint: "One character of the QR changed: the signature fails, refused.",
   },
   {
+    name: "Rigged weigh pad reads 3 t low (WIM catches it)",
+    vehicle: "entry",
+    qr: "entry",
+    physical: { load: "90%", padOffset: "-3" },
+    hint: "The WIM strip weighs the real truck; the pad shows 3 t less. Raises WIM_PAD_DISAGREE (net still from the pad).",
+  },
+  {
+    name: "Light vehicle leaves loaded (after the car preset)",
+    vehicle: "entry",
+    qr: "none",
+    physical: { load: "1.2" },
+    hint: "Light vehicles aren't trips, but they're weighed in and out: leaving 1.2 t heavier raises LIGHT_VEHICLE_LOADED.",
+  },
+  {
     name: "No pass, breaks through",
     vehicle: { plate: "OD09AK6402", rfidUid: "GB-RFID-00009" },
     qr: "none",
@@ -250,12 +299,19 @@ type StepView = { name: string; Icon: IconType; checks: Check[] };
 
 const STEP_ICON: Record<string, IconType> = {
   Identify: LuFingerprint,
+  Body: LuTruck,
   Eligibility: LuShieldCheck,
   "Pass check": LuShieldCheck,
   Measure: LuScale,
   Pass: LuTag,
   Compare: LuCalculator,
   Barrier: LuDoorClosed,
+};
+
+/** Identify has two halves: identity (who claims to be here) and body (is it physically that truck). */
+const STEP_TITLE: Record<string, string> = {
+  Identify: "Identify: identity",
+  Body: "Identify: body (length, axles, empty weight)",
 };
 
 /** Today in site time (IST), YYYY-MM-DD. */
@@ -266,7 +322,7 @@ function stepsFor(m: Movement): StepView[] {
     // unified pipeline: Identify (plate, FASTag, length, GB sticker), Eligibility / Pass check, Measure, Pass /
     // Compare, Barrier
     return m.steps.map((s) => ({
-      name: s.name,
+      name: STEP_TITLE[s.name] ?? s.name,
       Icon: STEP_ICON[s.name] ?? LuShieldCheck,
       checks: s.items.map((i) => ({ name: i.label, status: i.status, detail: i.detail }) as unknown as Check),
     }));
@@ -334,6 +390,8 @@ export default function GateConsole() {
   const [entryLoad, setEntryLoad] = useState("0");
   const [exitLoad, setExitLoad] = useState("90%");
   const [noWeight, setNoWeight] = useState(false);
+  const [padOffset, setPadOffset] = useState("0"); // staging: a rigged weigh pad reads this many t off
+  const [wimStatus, setWimStatus] = useState<WimStatus>("OK"); // staging: what the WIM strip does on this crossing
   const [forceBarrier, setForceBarrier] = useState(false);
   const [instant, setInstant] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -343,6 +401,7 @@ export default function GateConsole() {
   const [live, setLive] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const [copiedToken, setCopiedToken] = useState(false);
+
 
   // Load edge infrastructure state
   useEffect(() => {
@@ -472,6 +531,7 @@ export default function GateConsole() {
     return () => clearTimeout(t);
   }, [movement, exitResult, revealed, totalChecks, instant, mode]);
 
+
   // What the sensors will report for physical setup
   const { reg, plateRead, tagRead, length, ready } = readingsFor(setup, details);
   const exitR = readingsFor(exitSetup, details);
@@ -529,6 +589,8 @@ export default function GateConsole() {
     setEntryLoad(ph.load);
     setNoWeight(ph.noWeight);
     setForceBarrier(ph.force);
+    setPadOffset(ph.padOffset ?? "0");
+    setWimStatus(ph.wim ?? "OK");
   };
 
   /** Exit preset, applied to the latest entry (its vehicle and the pass it was given). */
@@ -545,6 +607,8 @@ export default function GateConsole() {
     setExitLoad(ph.load);
     setNoWeight(ph.noWeight);
     setForceBarrier(ph.force);
+    setPadOffset(ph.padOffset ?? "0");
+    setWimStatus(ph.wim ?? "OK");
     setPrefilledFrom(movement?.id ?? null);
   };
 
@@ -556,8 +620,8 @@ export default function GateConsole() {
     setPrefilledFrom(movement?.id ?? null); // don't re-fill from the same entry
   };
 
-  /** Weigh pad reading: the truck's empty weight + what is in the body ("t" or "NN%" of rated capacity). */
-  const weighPad = (t: Truck | undefined, load: string, outsideEmpty = 12, outsideRated = 25): number | null => {
+  /** The real weight: the truck's empty weight + what is in the body ("t" or "NN%" of rated capacity). */
+  const realWeight = (t: Truck | undefined, load: string, outsideEmpty = 12, outsideRated = 25): number | null => {
     if (noWeight) return null;
     const empty = t ? t.empty_weight_t : outsideEmpty;
     const rated = t ? t.rated_capacity_t : outsideRated;
@@ -565,7 +629,17 @@ export default function GateConsole() {
     const tonnes = raw.endsWith("%") ? (rated * Number(raw.slice(0, -1))) / 100 : Number(raw);
     return Number.isFinite(tonnes) ? Math.round((empty + tonnes) * 100) / 100 : null;
   };
-  const entryWeight = weighPad(reg, entryLoad);
+  /** Weigh pad reading: the real weight, plus the offset of a rigged pad (staging). */
+  const weighPad = (t: Truck | undefined, load: string, outsideEmpty = 12): number | null => {
+    const w = realWeight(t, load, outsideEmpty);
+    const off = Number(padOffset) || 0;
+    return w == null ? null : Math.round((w + off) * 100) / 100;
+  };
+  /** The WIM strip's reading of the body physically at the gate (its axles and real weight). */
+  const wimFor = (s: Setup, t: Truck | undefined, load: string) =>
+    wimReading(spacingsOf(s, details), t ? t.empty_weight_t : s.outsideEmpty ?? 12,
+               realWeight(t, load, s.outsideEmpty ?? 12), wimStatus);
+  const entryWeight = weighPad(reg, entryLoad, setup.outsideEmpty ?? 12);
 
   // One row per thing on the truck, for each barrier; markers show what was staged
   const entryRows: RowsProps = {
@@ -575,12 +649,15 @@ export default function GateConsole() {
     trucks,
     details,
     stickers,
-    physical: { load: entryLoad, noWeight, force: forceBarrier },
+    physical: { load: entryLoad, noWeight, force: forceBarrier, padOffset, wim: wimStatus },
     setPhysical: (ph) => {
       if (ph.load !== undefined) setEntryLoad(ph.load);
       if (ph.noWeight !== undefined) setNoWeight(ph.noWeight);
       if (ph.force !== undefined) setForceBarrier(ph.force);
+      if (ph.padOffset !== undefined) setPadOffset(ph.padOffset);
+      if (ph.wim !== undefined) setWimStatus(ph.wim);
     },
+    realWeight: realWeight(reg, entryLoad, setup.outsideEmpty ?? 12),
     weight: entryWeight,
     openPass: entryOpen?.trip_code ?? null,
   };
@@ -592,13 +669,16 @@ export default function GateConsole() {
     trucks,
     details,
     stickers,
-    physical: { load: exitLoad, noWeight, force: forceBarrier },
+    physical: { load: exitLoad, noWeight, force: forceBarrier, padOffset, wim: wimStatus },
     setPhysical: (ph) => {
       if (ph.load !== undefined) setExitLoad(ph.load);
       if (ph.noWeight !== undefined) setNoWeight(ph.noWeight);
       if (ph.force !== undefined) setForceBarrier(ph.force);
+      if (ph.padOffset !== undefined) setPadOffset(ph.padOffset);
+      if (ph.wim !== undefined) setWimStatus(ph.wim);
     },
-    weight: weighPad(exitR.reg, exitLoad),
+    realWeight: realWeight(exitR.reg, exitLoad, exitSetup.outsideEmpty ?? 12),
+    weight: weighPad(exitR.reg, exitLoad, exitSetup.outsideEmpty ?? 12),
     qr: {
       value: exitQrToken,
       entryToken,
@@ -627,6 +707,7 @@ export default function GateConsole() {
         source,
         rfid_sticker_uid: setup.rfidUid.trim() || null,
         rfid_sim_mode: setup.rfidSimMode,
+        wim: wimFor(setup, reg, entryLoad),
       });
       setRevealed(0);
       setMovement(m);
@@ -651,13 +732,14 @@ export default function GateConsole() {
         plate_read: exitR.plateRead,
         fastag_read: exitR.tagRead,
         radar_length_m: exitR.length,
-        weight_t: weighPad(exitR.reg, exitLoad),
+        weight_t: weighPad(exitR.reg, exitLoad, exitSetup.outsideEmpty ?? 12),
         barrier_forced: forceBarrier,
         permit_id: permit?.id,
         source,
         rfid_sticker_uid: exitSetup.rfidUid.trim() || null,
         rfid_sim_mode: exitSetup.rfidSimMode,
         qr_token: exitQrToken.trim() || null,
+        wim: wimFor(exitSetup, exitR.reg, exitLoad),
       });
       showExit(m);
     } catch (e) {
@@ -806,6 +888,7 @@ export default function GateConsole() {
       )}
 
       {permit && <OpenItems holds={holds} sessions={permitSessions} onChanged={reloadData} />}
+      {permit && <EquipmentPanel permit={permit} source={source} onChanged={reloadData} />}
 
       {mode === "ENTRY" ? (
         /* ================================================= ENTRY MODE ================================================= */
@@ -845,6 +928,7 @@ export default function GateConsole() {
             )}
 
             <VehicleRows {...entryRows} />
+
 
             <button
               className="btn primary gc-go"
@@ -908,6 +992,7 @@ export default function GateConsole() {
                     </ul>
                   </div>
                 ))}
+
 
                 {done && (
                   <div className="gc-result">
@@ -1102,6 +1187,7 @@ export default function GateConsole() {
 
             <VehicleRows {...exitRows} />
 
+
             <button
               className="btn primary gc-go"
               disabled={busy || !exitR.ready}
@@ -1150,6 +1236,7 @@ export default function GateConsole() {
                     })}
                   </ul>
                 </div>
+
 
                 {done && (
                   <div className="gc-result">

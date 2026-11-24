@@ -85,6 +85,8 @@ class Truck(Base):
     # Physical
     length_m: Mapped[float] = mapped_column(Float)
     axle_count: Mapped[int | None] = mapped_column(Integer)
+    # distance between consecutive axles, front to back (m): WIM measures it, so it is part of the body fingerprint
+    axle_spacings_m: Mapped[list | None] = mapped_column(JSONB)
     make: Mapped[str | None] = mapped_column(String(50))
     model: Mapped[str | None] = mapped_column(String(50))
     body_type: Mapped[str | None] = mapped_column(String(30))

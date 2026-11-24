@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX } from "react-icons/lu";
+import { LuArrowLeft, LuChevronDown, LuChevronRight, LuLoader2, LuPlay, LuTerminal, LuTrash2, LuX , LuFileText } from "react-icons/lu";
 import {
   api,
   gateApi,
@@ -17,6 +17,7 @@ import {
 import { ErrorNote, SeverityBadge } from "../components";
 import { formatDateTime } from "../format";
 import { StoryTimeline, type TimelineStep } from "./StoryTimeline";
+import { Scorecard, type Cost, type HonestCount, type ScoreItem, type Status , type Pick } from "./Scorecard";
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits });
 const dayLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -35,6 +36,10 @@ const CHEAT_LABEL: Record<string, string> = {
   overload: "Overload",
   arrive_loaded: "Arrived already loaded",
   weigh_bypass: "Weigh pad skipped",
+  transplant: "Full transplant (real identifiers on another truck)",
+  officer_cover: "Bribed officer covers a side-route trip",
+  light_vehicle: "Light vehicle carrying material",
+  outage_trip: "Moves while the pole is down",
 };
 
 /** What each cheat is, in one line: the setup a viewer needs before the gate events make sense. */
@@ -52,26 +57,18 @@ const CHEAT_STORY: Record<string, string> = {
   overload: "A legal trip, but loaded well above the truck's rated capacity.",
   arrive_loaded: "Brings material in from outside, so it would leave with more than it loaded here.",
   weigh_bypass: "A legal trip that drives round the exit weigh pad, so the load is never weighed.",
+  transplant: "A parked truck's real plate, FASTag and GB sticker are moved onto the Vendor's extra truck, which then works as it.",
+  officer_cover: "Leaves loaded by a side track; when it comes back with its pass still open, a bribed officer late-closes the trip as a sensor fault.",
+  light_vehicle: "A pickup under 6 m carries about a tonne; light vehicles are logged but not counted.",
+  outage_trip: "While the pole is down, an extra truck comes in and leaves loaded with the barrier lifted by hand.",
 };
-
-function Tile({ label, value, sub, tone, onClick }: { label: string; value: string | number; sub?: string;
-                tone?: "ok" | "warn" | "bad"; onClick?: () => void }) {
-  return (
-    <div className={`stat${onClick ? " sr-tile-click" : ""}`} onClick={onClick} role={onClick ? "button" : undefined}
-         title={onClick ? "Show the list behind this number" : undefined}>
-      <div className={`stat-num ${tone ? `${tone}-text` : ""}`}>{value}</div>
-      <div className="stat-label">{label}</div>
-      {sub && <div className="small muted">{sub}</div>}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------- daily chart
 const SERIES: { key: keyof SiteDay; label: string; color: string }[] = [
-  { key: "true_trips", label: "Ground truth", color: "var(--series-1)" },
-  { key: "gb_actual", label: "GB actual", color: "var(--series-2)" },
-  { key: "gb_legal", label: "GB legal", color: "var(--series-3)" },
-  { key: "vendor_trips", label: "Vendor reported", color: "var(--series-4)" },
+  { key: "true_trips", label: "Really left", color: "var(--series-1)" },
+  { key: "gb_actual", label: "Counted at GB gates", color: "var(--series-2)" },
+  { key: "gb_legal", label: "With a valid pass", color: "var(--series-3)" },
+  { key: "vendor_trips", label: "Vendor says", color: "var(--series-4)" },
 ];
 
 /** Trips per day: what really left vs what the GB saw vs what was legal vs what the Vendor claimed. */
@@ -151,6 +148,7 @@ function RunList() {
   const [scenarios, setScenarios] = useState<SiteScenario[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
+  const [chosen, setChosen] = useState("");
   const navigate = useNavigate();
 
   const load = () => siteApi.runs().then(setRuns).catch((e) => setError(e.message));
@@ -206,26 +204,37 @@ function RunList() {
           <LuTrash2 /> Clear runs
         </button>
       </div>
-      <div className="sr-suites">
-        {scenarios.map((sc) => {
-          const mine = running?.scenario === sc.scenario ? running : undefined;
-          return (
-            <div key={sc.scenario} className="card sr-suite">
-              <div>
-                <h3>{sc.scenario.replace(/_/g, " ")}</h3>
+      {(() => {
+        // one launcher: pick a scenario, run it (while a run is going, it shows that one)
+        const name = running?.scenario ?? starting ?? (chosen || scenarios[0]?.scenario || "");
+        const sc = scenarios.find((x) => x.scenario === name);
+        return (
+          <div className="card sr-launcher">
+            <div className="sr-launcher-row">
+              <label className="sr-launcher-pick">
+                Scenario
+                <select value={name} disabled={busy} onChange={(e) => setChosen(e.target.value)}>
+                  {scenarios.map((x) => (
+                    <option key={x.scenario} value={x.scenario}>{x.scenario.replace(/_/g, " ")}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="btn primary" disabled={busy || !sc} onClick={() => sc && start(sc.scenario)}>
+                {busy ? <LuLoader2 className="spin" /> : <LuPlay />}
+                {running ? `Running, ${fmt(running.gate_events_so_far ?? 0)} gate events` : starting ? "Starting" : "Run"}
+              </button>
+            </div>
+            {sc && (
+              <div className="sr-launcher-about">
                 <p className="muted small">{sc.description}</p>
                 <span className="small muted">
                   {sc.days} days · {sc.fleet} trucks{sc.trip_limit != null ? ` · permit ${fmt(sc.trip_limit)} trips` : ""}
                 </span>
               </div>
-              <button className="btn primary" disabled={busy} onClick={() => start(sc.scenario)}>
-                {mine || starting === sc.scenario ? <LuLoader2 className="spin" /> : <LuPlay />}
-                {mine ? `Running, ${fmt(mine.gate_events_so_far ?? 0)} gate events` : starting === sc.scenario ? "Starting" : "Run"}
-              </button>
-            </div>
-          );
-        })}
-      </div>
+            )}
+          </div>
+        );
+      })()}
       <div className="hint small">
         <LuTerminal /> Also from a terminal: <code>docker compose run --rm simulator site brief_case</code>
       </div>
@@ -233,8 +242,8 @@ function RunList() {
       <table className="table">
         <thead>
           <tr>
-            <th>Run</th><th>Scenario</th><th>Period</th><th>Permitted</th><th>Vendor</th><th>GB actual</th>
-            <th>Truth</th><th>Cheats prevented / detected / missed</th><th>False alarms</th><th />
+            <th>Run</th><th>Scenario</th><th>Period</th><th>Permit allows</th><th>Vendor says</th><th>Counted at GB gates</th>
+            <th>Really left</th><th>Cheats prevented / detected / missed</th><th>False alarms</th><th />
           </tr>
         </thead>
         <tbody>
@@ -275,15 +284,33 @@ function RunList() {
 }
 
 // ---------------------------------------------------------------- drill-down from a tile
-type Group = "all" | "prevented" | "detected" | "missed" | "unseen" | "false";
+type Group = "all" | Status | "unseen" | "false";
 
 const GROUP_TITLE: Record<Group, string> = {
-  all: "Every cheat staged",
-  prevented: "Prevented: stopped before material left",
-  detected: "Detected: material left, alert raised",
-  missed: "Missed",
-  unseen: "Trips never at a GB gate",
+  all: "Every attempt",
+  covered: "Covered: stopped at the gate, or caught after with an alert",
+  partial: "Partial",
+  gap: "Gap: the GB has the refusal on record, but the load still left unseen",
+  silent: "Silent gap: the GB has no trace",
+  period: "Period-level",
+  unseen: "Trips the GB doesn't have",
   false: "False alarms on honest trucks",
+};
+
+/** One attempt in the shared scorecard's terms. */
+function siteStatus(c: SiteCheat): Status {
+  if (c.outcome === "prevented" || c.outcome === "detected") return "covered";
+  return c.attempt_flagged ? "gap" : "silent";
+}
+
+/** The threat area of each site cheat type (same areas as the scenario runs). */
+const CHEAT_AREA: Record<string, string> = {
+  quota_push: "limits", night_trip: "limits",
+  unregistered: "identity", clone: "identity", transplant: "identity",
+  pass_reuse: "pass", pass_handover: "pass", forged_qr: "pass",
+  side_track_both: "evasion", side_track_out: "evasion", side_track_in_gate_out: "evasion", light_vehicle: "evasion",
+  overload: "measure", arrive_loaded: "measure", weigh_bypass: "measure",
+  officer_cover: "officer", outage_trip: "infrastructure",
 };
 
 /** One attempt: the cheat in one line, then its timeline (legs the GB can't see greyed, gate events opening into
@@ -292,7 +319,7 @@ function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, 
   const [open, setOpen] = useState(false);
   const steps: TimelineStep[] = c.timeline?.length
     ? [...c.timeline].sort((a, b) => a.at.localeCompare(b.at)).map((t) => ({
-        at: t.at, kind: t.seen ? "gate" : "unseen", text: t.text, movement: t.movement, alerts: t.alerts }))
+        at: t.at, kind: t.officer ? "officer" : t.seen ? "gate" : "unseen", text: t.text, movement: t.movement, alerts: t.alerts }))
     : (c.movements ?? []).map((id) => ({ at: "", kind: "gate", text: `Gate event #${id}`, movement: id }));
   return (
     <>
@@ -319,7 +346,7 @@ function AttemptRow({ c, movements }: { c: SiteCheat; movements: Record<number, 
   );
 }
 
-function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClose: () => void }) {
+function GroupPopup({ group, r, onClose }: { group: Group | Pick; r: SiteReport; onClose: () => void }) {
   const [movements, setMovements] = useState<Record<number, Movement>>({});
   useEffect(() => {  // this run's gate events (its own permit), to open under each attempt
     gateApi
@@ -327,13 +354,29 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
       .then((list) => setMovements(Object.fromEntries(list.map((m) => [m.id, m]))))
       .catch(() => {});
   }, [r.permit_id]);
-  const cheats = group === "all" ? r.cheats : r.cheats.filter((c) => c.outcome === group);
+  const picked = typeof group === "object" ? group : null;
+  const cheats = picked ? r.cheats.filter((_, i) => picked.ids.includes(String(i)))
+    : group === "all" ? r.cheats : r.cheats.filter((c) => siteStatus(c) === group);
+  const honestNote = (
+    <div className="sr-honest-note">
+      <h4>Honest trips</h4>
+      {r.false_alarms.items.length === 0 ? (
+        <p className="small">No serious alert was raised on any of the{" "}
+          {fmt(r.false_alarms.honest_trips ?? r.false_alarms.honest_events)}{" "}
+          {r.false_alarms.honest_trips != null ? "honest trips" : "honest gate events"}: all left alone.</p>
+      ) : (
+        <ul className="small">
+          {r.false_alarms.items.map((f, i) => <li key={i}>{f.at} {f.vehicle}: {f.code} {f.message}</li>)}
+        </ul>
+      )}
+    </div>
+  );
   const unseen = r.accuracy.never_at_a_gate;
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal td-modal" onClick={(e) => e.stopPropagation()}>
         <div className="td-top">
-          <h3>{GROUP_TITLE[group]}</h3>
+          <h3>{picked ? picked.title : GROUP_TITLE[group as Group]}</h3>
           <button className="btn small" onClick={onClose} title="Close"><LuX /></button>
         </div>
         {group === "unseen" ? (
@@ -364,12 +407,15 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
           )
         ) : group === "false" ? (
           r.false_alarms.items.length === 0 ? (
-            <p>No serious alert was raised on any of the {fmt(r.false_alarms.honest_events)} honest gate events.</p>
+            <p>No serious alert was raised on any of the {fmt(r.false_alarms.honest_trips ?? r.false_alarms.honest_events)}{" "}
+              {r.false_alarms.honest_trips != null ? "honest trips" : "honest gate events"}.</p>
           ) : (
             <ul className="small">
               {r.false_alarms.items.map((f, i) => <li key={i}>{f.at} {f.vehicle}: {f.code} {f.message}</li>)}
             </ul>
           )
+        ) : picked && picked.ids.length === 0 ? (
+          picked.honest ? honestNote : <p className="muted">None in this run.</p>
         ) : cheats.length === 0 ? (
           <p className="muted">None in this run.</p>
         ) : (
@@ -383,9 +429,114 @@ function GroupPopup({ group, r, onClose }: { group: Group; r: SiteReport; onClos
                 {cheats.map((c, i) => <AttemptRow key={i} c={c} movements={movements} />)}
               </tbody>
             </table>
+            {picked?.honest && honestNote}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- weekly volume surveys (mass balance)
+function Surveys({ r }: { r: SiteReport }) {
+  const rows = r.surveys ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="card">
+      <header className="card-head"><h3>Weekly volume survey (mass balance)</h3></header>
+      <table className="table table-inner">
+        <thead>
+          <tr><th>Week</th><th>Ore that left, by the survey</th><th>Weighed out by the GB gates</th><th>Gap</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.period_from}>
+              <td className="nowrap">{dayLabel(s.period_from)} to {dayLabel(s.period_to)}</td>
+              <td>{s.surveyed_out_t != null ? `${fmt(s.surveyed_out_t)} t` : "rejected"}
+                <div className="small muted">really {fmt(s.true_out_t)} t; survey error {s.survey_error_pct > 0 ? "+" : ""}{s.survey_error_pct}%</div></td>
+              <td>{s.gates_out_t != null ? `${fmt(s.gates_out_t)} t` : "—"}</td>
+              <td className={s.gap_pct != null && s.gap_pct > 5 ? "bad-text" : s.gap_pct != null && s.gap_pct > 2 ? "warn-text" : ""}>
+                {s.gap_pct != null ? `${s.gap_pct > 0 ? "+" : ""}${s.gap_pct.toFixed(1)}%` : "—"}</td>
+              <td className="small mono">{s.alerts.join(", ") || <span className="muted">within tolerance</span>}</td>
+            </tr>
+          ))}
+          {rows.length > 1 && (() => {
+            const ok = rows.filter((x) => x.surveyed_out_t != null && x.gates_out_t != null);
+            const sv = ok.reduce((a, x) => a + (x.surveyed_out_t ?? 0), 0);
+            const gt = ok.reduce((a, x) => a + (x.gates_out_t ?? 0), 0);
+            const tr = ok.reduce((a, x) => a + x.true_out_t, 0);
+            return (
+              <tr className="sr-survey-total">
+                <td><strong>Since the first survey</strong></td>
+                <td><strong>{fmt(sv)} t</strong><div className="small muted">really {fmt(tr)} t</div></td>
+                <td><strong>{fmt(gt)} t</strong></td>
+                <td className={sv - gt > 0.05 * gt / ok.length ? "bad-text" : ""}>{fmt(sv - gt)} t ({gt ? ((100 * (sv - gt)) / gt).toFixed(1) : "0"}%)</td>
+                <td className="small muted">limit {fmt(0.05 * gt / Math.max(1, ok.length))} t (5% of an average week)</td>
+              </tr>
+            );
+          })()}
+        </tbody>
+      </table>
+      <p className="sr-note">
+        A GB drone survey each week: ore dug (volume x density) minus ore still in stockpiles is what left the site;
+        the gates should have weighed about the same. A gap above 5% raises VOLUME_MISMATCH; a gap above 2% three weeks
+        running raises VOLUME_TREND. Since the first survey, the middle terrain models cancel out, so the error stays
+        about one week's error in tonnes while steady leakage keeps adding up: above 5% of an average week raises
+        VOLUME_CUMULATIVE. Survey error here is a random +/-3% a week (stated); single trips are below what a survey
+        can see.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- threat week: what the GB missed, and why
+const CAUSE_TEXT: Record<string, string> = {
+  "side track": "Never passed a GB gate (side tracks)",
+  "pole down": "Moved while a GB pole was down",
+  "light vehicle": "Light vehicle: let through, load not counted",
+  "weighed short (rigged pad)": "Weighed short: the GB weigh pad was rigged",
+  "not weighed (pad bypassed)": "Not weighed: drove round the weigh pad",
+};
+
+function MissedByCause({ r }: { r: SiteReport }) {
+  const rows = Object.entries(r.missed_by_cause ?? {});
+  const st = r.staging;
+  // side tracks, pole down and light vehicles were never counted; the weigh-pad rows were counted, but weighed wrong
+  const COUNTED = ["weighed short (rigged pad)", "not weighed (pad bypassed)"];
+  const trips = rows.reduce((n, [cause, v]) => n + (COUNTED.includes(cause) ? 0 : v.trips || 0), 0);
+  return (
+    <div className="card">
+      <header className="card-head"><h3>What the GB missed, and why</h3></header>
+      <table className="table table-inner">
+        <thead><tr><th>Why</th><th>Trips</th><th>Tonnes</th></tr></thead>
+        <tbody>
+          {rows.map(([cause, v]) => (
+            <tr key={cause}>
+              <td>{CAUSE_TEXT[cause] ?? cause}</td>
+              <td>{v.trips ? fmt(v.trips) : "—"}</td>
+              <td>{v.tonnes != null ? fmt(v.tonnes, 1) : "unknown"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="sr-note">
+        {fmt(trips)} trips really left that no GB gate counted (really left minus counted at GB gates, above). The
+        weigh-pad rows are trips the gates did count, but without the right weight. Worked out from the simulator's
+        ground truth: in reality the GB doesn't see these trip by trip, only through its signals (pole silent, the
+        weekly survey, WIM disagreeing with the pad).
+      </p>
+      {st && (
+        <p className="small muted">
+          Staged in this run (assumptions):{" "}
+          {st.outages.length > 0 && <>pole down {st.outages.map(([a, b]) => `${dayLabel(a.slice(0, 10))} ${a.slice(11)} to ${b}`).join(", ")}; </>}
+          {st.weigh_drift && <>weigh pad reads {st.weigh_drift.offset_t} t when loaded from day {st.weigh_drift.from_day}; </>}
+          {st.sensor_noise && <>plate missed on {Math.round((st.sensor_noise.plate_miss ?? 0) * 100)}% and FASTag on{" "}
+            {Math.round((st.sensor_noise.fastag_miss ?? 0) * 100)}% of honest reads ({st.honest_refused_by_misreads} honest
+            refusals as a result); </>}
+          {st.bribed_officer && <>one bribed officer; </>}
+          {st.events_held_by_outages} gate arrivals waited for a pole to come back.
+        </p>
+      )}
     </div>
   );
 }
@@ -447,6 +598,16 @@ function ContractSection({ permitId }: { permitId: number }) {
   );
 }
 
+/** The ledger's columns: what each number is, in plain words (used by the headline and the daily table). */
+const LEDGER_COLS = [
+  { label: "Permit allows", hint: "the contract limit" },
+  { label: "Vendor says", hint: "its own daily reports" },
+  { label: "With a valid pass", hint: "passes closed at exit, or by an officer" },
+  { label: "Counted at GB gates", hint: "every loaded exit, pass or not" },
+  { label: "Without a pass", hint: "forced the barrier (illegal)" },
+  { label: "Really left", hint: "ground truth: simulator only" },
+];
+
 function Headline({ r }: { r: SiteReport }) {
   const rows: { label: string; key: "trips" | "tonnes"; digits: number }[] = [
     { label: "Trips", key: "trips", digits: 0 },
@@ -456,8 +617,10 @@ function Headline({ r }: { r: SiteReport }) {
     <table className="table sr-headline">
       <thead>
         <tr>
-          <th /><th>Permitted</th><th>Vendor reported</th><th>GB legal</th><th>GB actual</th><th>GB illegal</th>
-          <th>Ground truth</th>
+          <th />
+          {LEDGER_COLS.map((c) => (
+            <th key={c.label}>{c.label}<div className="sr-col-hint">{c.hint}</div></th>
+          ))}
         </tr>
       </thead>
       <tbody>
@@ -480,11 +643,31 @@ function Headline({ r }: { r: SiteReport }) {
   );
 }
 
+/** A site run in the shared scorecard's terms: one status per cheat attempt, and the cost against ground truth. */
+function siteScore(r: SiteReport): { items: ScoreItem[]; cost: Cost; honest: HonestCount } {
+  const h = r.headline.trips;
+  return {
+    items: r.cheats.map((c, i) => ({
+      id: String(i), name: `${dayLabel(c.day)} ${c.at} ${CHEAT_LABEL[c.type] ?? c.type}`,
+      area: CHEAT_AREA[c.type] ?? "evasion", status: siteStatus(c), cls: "cheat" as const,
+      how: c.outcome === "prevented" ? "stopped" : c.outcome === "detected" ? "caught after" : undefined,
+    })),
+    honest: r.false_alarms.honest_trips != null
+      ? { total: r.false_alarms.honest_trips, flagged: r.false_alarms.honest_trips_flagged ?? 0, unit: "honest trips" }
+      : { total: r.false_alarms.honest_events, flagged: r.false_alarms.count, unit: "honest gate events" }, // older runs
+    cost: {
+      trips: { missed: Math.max(0, h.ground_truth - h.gb_actual), of: h.ground_truth },
+      tonnes: { missed: Math.max(0, r.headline.tonnes.ground_truth - r.headline.tonnes.gb_actual),
+                of: r.headline.tonnes.ground_truth },
+    },
+  };
+}
+
 function RunDetail({ id }: { id: number }) {
   const [run, setRun] = useState<SiteRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCheats, setShowCheats] = useState(false);
-  const [group, setGroup] = useState<Group | null>(null);
+  const [group, setGroup] = useState<Group | Pick | null>(null);
   useEffect(() => {
     siteApi.run(id).then(setRun).catch((e) => setError(e.message));
   }, [id]);
@@ -518,7 +701,6 @@ function RunDetail({ id }: { id: number }) {
     );
 
   const cs = r.cheats_summary;
-  const acc = r.accuracy;
   const h = r.headline.trips;
   return (
     <>
@@ -533,30 +715,41 @@ function RunDetail({ id }: { id: number }) {
         </div>
       </div>
 
+      {(run.permit_id ?? r.permit_id) != null && (
+        <p className="no-print">
+          <Link className="btn primary" to={`/reports/${run.permit_id ?? r.permit_id}`}>
+            <LuFileText /> GB period report
+          </Link>{" "}
+          <span className="small muted">what the GB itself recorded over this period, ready to print (no ground truth)</span>
+        </p>
+      )}
       {(run.permit_id ?? r.permit_id) != null && <ContractSection permitId={(run.permit_id ?? r.permit_id) as number} />}
 
       <div className="card">
         <header className="card-head"><h3>The ledger: what was allowed, claimed, recorded, and real</h3></header>
         <Headline r={r} />
         <p className="sr-note">
-          Ground truth is what really left the site; the GB never sees it. GB actual counts every heavy vehicle that
-          crossed an exit (legal closes plus forced barriers); illegal tonnes are estimated from the weigh pad minus
-          the truck's enrolled empty weight.
-          {h.vendor_reported < h.gb_actual && ` The Vendor reported ${fmt(h.gb_actual - h.vendor_reported)} fewer trips than the GB recorded.`}
+          <strong>Counted at GB gates</strong> is every loaded truck that crossed a GB exit: those that closed a pass
+          there, plus those <strong>without a pass</strong>. <strong>With a valid pass</strong> also includes passes an
+          officer closed with no truck at the gate (a late close), so it can be higher than the gates' own count:
+          {h.gb_legal + h.gb_illegal > h.gb_actual &&
+            ` here ${fmt(h.gb_legal + h.gb_illegal - h.gb_actual)} passes were closed by an officer, not at a gate.`} Tonnes with a pass are the weigh pad's net tonnes; tonnes without
+          a pass are estimated (exit weight minus the truck's enrolled empty weight). <strong>Really left</strong> is
+          the simulator's ground truth: the GB never sees it, it is here to show what the GB missed.
+          {h.vendor_reported < h.gb_actual && ` The Vendor reported ${fmt(h.gb_actual - h.vendor_reported)} fewer trips than the GB counted.`}
         </p>
       </div>
 
-      <div className="stats stats-6">
-        <Tile label="Cheats staged" value={cs.injected} onClick={() => setGroup("all")} />
-        <Tile label="Prevented" value={cs.prevented} tone="ok" sub="stopped before material left" onClick={() => setGroup("prevented")} />
-        <Tile label="Detected" value={cs.detected} tone="warn" sub="material left, alert raised" onClick={() => setGroup("detected")} />
-        <Tile label="Missed" value={cs.missed} tone={cs.missed ? "bad" : "ok"} onClick={() => setGroup("missed")}
-              sub={cs.missed_attempt_flagged ? `${cs.missed_attempt_flagged} with the attempt on record` : undefined} />
-        <Tile label="Trips seen by GB gates" value={`${acc.trips_seen_pct}%`} onClick={() => setGroup("unseen")}
-              sub={`${fmt(acc.gb_actual_trips)} of ${fmt(acc.true_trips)}; ${acc.trips_never_at_a_gate} never at a gate`} />
-        <Tile label="False alarms" value={r.false_alarms.count} tone={r.false_alarms.count ? "bad" : "ok"} onClick={() => setGroup("false")}
-              sub={`on ${fmt(r.false_alarms.honest_events)} honest gate events`} />
-      </div>
+      {r.missed_by_cause && Object.keys(r.missed_by_cause).length > 0 && <MissedByCause r={r} />}
+      <Surveys r={r} />
+
+      <Scorecard
+        judgedAgainst="A realistic period: every cheat attempt judged on whether the GB stopped it or caught it after (covered), only has the refusal on record (gap), or never knew (silent gap)."
+        unit="attempts"
+        {...siteScore(r)}
+        onPick={(p) => setGroup(p)}
+        onCost={(k) => setGroup(k === "honest" ? "false" : "unseen")}
+      />
 
       {group && <GroupPopup group={group} r={r} onClose={() => setGroup(null)} />}
 
@@ -566,8 +759,8 @@ function RunDetail({ id }: { id: number }) {
         <table className="table table-inner">
           <thead>
             <tr>
-              <th>Day</th><th>Ground truth</th><th>GB actual</th><th>GB legal</th><th>GB illegal</th>
-              <th>Never at a gate</th><th>Refused at entry</th><th>Vendor reported</th><th>Vendor check</th>
+              <th>Day</th><th>Really left</th><th>Counted at GB gates</th><th>With a valid pass</th><th>Without a pass</th>
+              <th>Never at a gate</th><th>Refused at entry</th><th>Vendor says</th><th>Vendor check</th>
             </tr>
           </thead>
           <tbody>

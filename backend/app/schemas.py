@@ -91,6 +91,7 @@ class _TruckFields(BaseModel):
     fastag_chip_id: str | None = None
     length_m: float | None = Field(default=None, gt=0, lt=30)
     axle_count: int | None = Field(default=None, ge=2, le=10)
+    axle_spacings_m: list[float] | None = None  # between consecutive axles, front to back
     make: str | None = None
     model: str | None = None
     body_type: str | None = None
@@ -171,6 +172,7 @@ class TruckOut(ORM):
     fastag_chip_id: str | None
     length_m: float
     axle_count: int | None
+    axle_spacings_m: list[float] | None = None
     make: str | None
     model: str | None
     body_type: str | None
@@ -226,6 +228,15 @@ class LookupOut(BaseModel):
 
 
 # ---------- Gate events (Identify) ----------
+class WimReadingIn(BaseModel):
+    """What the gate's Weigh-in-Motion strip reported for this crossing (part of the signed pole event)."""
+    status: Literal["OK", "POOR", "TIMEOUT", "OFFLINE"] = "OK"  # POOR = braking / bounce; TIMEOUT / OFFLINE = no reading
+    axle_count: int | None = Field(default=None, ge=1, le=12)
+    axle_spacings_m: list[float] | None = None  # between consecutive axles, front to back
+    axle_weights_t: list[float] | None = None
+    speed_kmh: float | None = Field(default=None, ge=0, le=120)
+
+
 class GateEventIn(BaseModel):
     """What a gate pole reports. Sensors report what is physically there; null = nothing read."""
 
@@ -243,6 +254,13 @@ class GateEventIn(BaseModel):
     rfid_sim_mode: str | None = "genuine"  # PoC sensor truth: genuine | cloned | revoked | unknown_damaged
     qr_token: str | None = Field(default=None, max_length=2000)  # same as pass_token (Gate console name)
     source: str | None = Field(default=None, max_length=100)
+    wim: WimReadingIn | None = None  # Weigh-in-Motion reading at this gate (None = no WIM here)
+    # Legacy WIM simulation parameters (teammate's first version); the pipeline uses `wim` above
+    wim_enabled: bool = True
+    wim_scenario: str | None = None
+    wim_device_code: str | None = None
+    wim_custom_weights: list[float] | None = None
+    wim_quality: str | None = None
 
 
 class CheckOut(BaseModel):
@@ -594,6 +612,7 @@ class GateDecisionOut(MovementOut):
     trip_session: TripSessionOut | None = None
     quota_remaining: int | None = None
     quota_max: int | None = None
+    wim_verification: dict | None = None
 
 
 GateEventExtendedIn = GateEventIn  # one gate event schema (kept name for existing imports)
@@ -668,3 +687,141 @@ class EmergencyMovementOut(ORM):
 class SnapshotRestoreIn(BaseModel):
     snapshot_envelope: dict
     approval_reason: str = Field(min_length=3)
+
+
+# ---------- Weigh-in-Motion (WIM) Schemas ----------
+class WimDeviceOut(ORM):
+    id: int
+    device_code: str
+    gate: str
+    lane: str
+    status: str
+    model: str
+    firmware_version: str
+    last_heartbeat: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WimDeviceStatusUpdate(BaseModel):
+    status: Literal["ONLINE", "OFFLINE", "DEGRADED"]
+    reason: str | None = None
+
+
+class WimMeasurementIn(BaseModel):
+    measurement_id: str | None = None
+    device_code: str
+    gate: str
+    lane: str | None = None
+    direction: Literal["ENTRY", "EXIT", "IN", "OUT"]
+    observed_at: datetime | None = None
+    plate: str | None = None
+    truck_id: int | None = None
+    speed_kmh: float = Field(ge=0, le=120)
+    axle_count: int = Field(ge=1, le=12)
+    axle_weights: list[float]
+    gross_weight_t: float | None = None
+    quality: Literal["GOOD", "FAIR", "POOR"] = "GOOD"
+    status: str = "VALID"
+    movement_id: int | None = None
+    radar_length_m: float | None = None
+    source: str = "SIMULATED"
+
+
+class WimMeasurementSimulateIn(BaseModel):
+    scenario: str = "normal_2axle"
+    gate: str = "G1"
+    direction: Literal["ENTRY", "EXIT", "IN", "OUT"] = "ENTRY"
+    device_code: str | None = None
+    plate: str | None = None
+    radar_length_m: float | None = None
+    movement_id: int | None = None
+    speed_kmh: float | None = None
+    axle_count: int | None = None
+    custom_axle_weights: list[float] | None = None
+    quality: Literal["GOOD", "FAIR", "POOR"] | None = None
+    force_device_status: Literal["ONLINE", "OFFLINE", "DEGRADED"] | None = None
+
+
+class WimAnomalyOut(ORM):
+    id: int
+    anomaly_code: str
+    measurement_id: int | None = None
+    movement_id: int | None = None
+    truck_id: int | None = None
+    plate: str | None = None
+    anomaly_type: str
+    severity: str
+    description: str
+    details: dict | None = None
+    status: str
+    reviewed_by: int | None = None
+    reviewer_name: str | None = None
+    reviewed_at: datetime | None = None
+    resolution_reason: str | None = None
+    created_at: datetime
+
+
+class WimAnomalyReviewIn(BaseModel):
+    status: Literal["UNDER_REVIEW", "RESOLVED", "DISMISSED"]
+    reason: str = Field(min_length=3)
+
+
+class WimMeasurementOut(ORM):
+    id: int
+    measurement_id: str
+    device_id: int | None = None
+    device_code: str
+    gate: str
+    lane: str
+    direction: str
+    observed_at: datetime
+    received_at: datetime
+    plate: str | None = None
+    truck_id: int | None = None
+    speed_kmh: float
+    axle_count: int
+    axle_weights: list[float]
+    axle_spacings_m: list[float] | None = None
+    gross_weight_t: float
+    quality: str
+    status: str
+    source: str
+    movement_id: int | None = None
+    radar_length_m: float | None = None
+    correlation_status: str
+    discrepancy_details: dict | None = None
+    created_at: datetime
+    anomalies: list[WimAnomalyOut] = []
+
+
+class WimVerificationCheck(BaseModel):
+    name: str
+    label: str
+    status: Literal["passed", "warning", "failed", "unavailable", "pending"]
+    detail: str
+
+
+class WimCorrelationOut(BaseModel):
+    overall_status: Literal["PASSED", "WARNING", "FAILED", "UNAVAILABLE", "PENDING"]
+    correlation_status: Literal["CORRELATED", "DISCREPANCY", "RADAR_ONLY", "WIM_ONLY", "BOTH_UNAVAILABLE", "UNMATCHED"]
+    summary: str
+    checks: list[WimVerificationCheck]
+    measurement: WimMeasurementOut | None = None
+    discrepancy_reason: str | None = None
+    monitoring_warning: str | None = None
+
+
+class WimDashboardMetricsOut(BaseModel):
+    total_devices: int
+    online_devices: int
+    offline_devices: int
+    degraded_devices: int
+    total_measurements: int
+    successful_measurements: int
+    poor_quality_measurements: int
+    radar_wim_discrepancies: int
+    overload_anomalies: int
+    verification_overview: dict[str, int]
+    anomaly_counts_by_status: dict[str, int]
+

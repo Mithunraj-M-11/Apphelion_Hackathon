@@ -17,7 +17,7 @@ from app.services import cleanup, simproc
 
 router = APIRouter(prefix="/api/sim-runs", tags=["simulator"])
 
-SUITES = ("gate_cheats", "edge_resilience")
+SUITES = ("gate_cheats", "threat_coverage", "mixed_batch", "edge_resilience")
 
 
 @router.get("/suites", response_model=list[SimSuiteOut])

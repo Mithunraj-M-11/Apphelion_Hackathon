@@ -1,0 +1,531 @@
+# Threat coverage: every P0 / P1 cheat from docs/tampering_cases.md, staged whether we defend it or not.
+#
+# Each story is judged against what the GB SHOULD do (docs/implementation/threat_coverage.md), not against what our
+# code does today, so failing stories are the real gaps. gate_cheats stays the regression suite.
+#
+# Everything in gate_cheats.yaml works here, plus these staging fields (the attacker's side, not GB features):
+#   outages: [{from: "HH:MM", to: "HH:MM"}]   the pole is down: trucks still cross, nothing reaches the GB, and the
+#                                               pole's 5-minute heartbeat stops
+#   { at, unseen: <text>, vehicle, leaves: true, load }   a leg no GB sensor sees; leaves = a loaded trip left the site
+#   camera: unreadable | misread                the plate camera fails on this read (the plate itself is there)
+#   fastag_reader: missed                       the FASTag reader misses the tag
+#   weigh_offset_t: -3                          the weigh pad reports this much off the real weight
+#   deliver_at: "HH:MM"                         network cut: the event reaches the GB only at this time
+#   fake: true                                  a gate event nobody's pole sent (no truck there); expect: { rejected: true }
+#   { at, insider: erase_illegal_trip | lower_weight, tonnes }   an insider edits stored records directly
+#   { at, vendor_report: { trips, tonnes } }    the Vendor files its daily report
+#   expect_story: { alerts: [...] }             alerts the GB should raise at some point in the story
+#   check_records: true                         run the GB's record-integrity check at the end (if it exists)
+#   period_only: true                           only a period check (weekly survey) can see it: scored 'period-level'
+#
+# Story fields: threat (case id), priority (P0 | P1 | extra), kind, category. Alert codes the GB doesn't have yet
+# (POLE_SILENT, LATE_EVENT, WEIGH_DRIFT, BODY_MISMATCH, PLATE_UNREADABLE, PLATE_MISREAD, FASTAG_UNREAD,
+# OFFICER_OVERRIDE_PATTERN, RECORD_TAMPERED, VOLUME_MISMATCH, LIGHT_VEHICLE_LOADED) name the missing defence.
+
+suite: threat_coverage
+title: Threat coverage (P0 / P1)
+description: Every priority cheat staged against the ideal GB response. Failing stories are the gaps still to close.
+gate: G1
+heartbeats: true
+permit: { trip_limit: 50, tonne_limit: 1500, vehicle_limit: 20, hours_start: "06:00", hours_end: "18:00",
+          exit_grace_min: 30, pass_expiry_min: 120 }
+
+rogue_vehicles:
+  rogue_local_tipper: { own_plate: OD09ZX7781, length_m: 8.1 }
+  rogue_same_size:    { own_plate: OD02KK7310, length_m: 8.3 }    # same size as OD09AB1234 (8.32 m)
+  transplant_body:    { own_plate: OD05TT9090, length_m: 8.36, empty_weight_t: 11.2, rated_capacity_t: 18.0,
+                        axle_spacings_m: [3.60, 1.30] }   # another model's chassis
+  # OD09AB1234 (Signa 2823.K) is enrolled at 8.32 m, 10.60 t empty, axles 3.90 / 1.37 m
+  transplant_axles:   { own_plate: OD05TT9191, length_m: 8.34, empty_weight_t: 10.75, rated_capacity_t: 17.5,
+                        axle_spacings_m: [3.60, 1.30] }   # weight within the pad's noise, different axle layout
+  transplant_twin:    { own_plate: OD05TT9292, length_m: 8.30, empty_weight_t: 10.72, rated_capacity_t: 17.5,
+                        axle_spacings_m: [3.90, 1.37] }   # the same model: same length, axles and (nearly) weight
+  pickup:             { own_plate: OD02PK1212, length_m: 4.6, empty_weight_t: 1.8, rated_capacity_t: 1.5 }
+
+scenarios:
+  # ================================================================== P0
+  - id: A1a
+    name: Unregistered truck at the gate
+    threat: A1
+    priority: P0
+    kind: tamper
+    category: identity
+    why: An extra truck the GB never inspected tries to work; it is refused while still empty.
+    events:
+      - { at: "08:00", dir: IN, vehicle: { rogue: rogue_local_tipper }, fastag: none,
+          expect: { barrier: down, pass_issued: false, alerts: [UNREGISTERED_VEHICLE] } }
+
+  - id: A1b
+    name: Extra truck works only by side tracks
+    threat: A1
+    priority: P0
+    kind: tamper
+    category: evasion
+    why: An extra truck never comes near a GB gate. Only a volume check (survey vs tonnes through the gates) can show it.
+    period_only: true   # one trip is far below survey precision: judged by the weekly survey in the site runs
+    expect_story: { alerts: [VOLUME_MISMATCH] }
+    events:
+      - { at: "09:00", unseen: came in by a side track and loaded, vehicle: { rogue: rogue_local_tipper } }
+      - { at: "09:40", unseen: left loaded by a side track, vehicle: { rogue: rogue_local_tipper }, leaves: true, load: "90%" }
+
+  - id: A2a
+    name: Clone arrives while the real truck is inside
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Plate, FASTag and length all copied; the copied GB sticker cannot answer the challenge.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AB1234, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:15", dir: IN, vehicle: { rogue: rogue_same_size }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, rfid: cloned, expect: { barrier: down, alerts: [RFID_CLONED] } }
+
+  - id: A2b
+    name: Clone with a copied sticker UID while the real truck is away
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Nothing to compare against at the gate, but a copied UID still fails the chip's challenge-response.
+    events:
+      - { at: "08:00", dir: IN, vehicle: { rogue: rogue_same_size }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, rfid: cloned, expect: { barrier: down, alerts: [RFID_CLONED] } }
+
+  - id: A2c
+    name: Full transplant (real plate, FASTag and GB sticker moved to another truck)
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Every identifier is genuine, so identification passes. Only the body gives it away, e.g. its empty weight at
+      entry is far from the real truck's enrolled empty weight.
+    events:
+      - { at: "08:00", unseen: the real plate, FASTag and GB sticker of OD09AB1234 are moved onto the Vendor's extra truck,
+          vehicle: { rogue: transplant_body } }
+      - { at: "08:30", dir: IN, vehicle: { rogue: transplant_body }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, expect: { barrier: down, alerts: [BODY_MISMATCH] } }
+      - { at: "09:15", dir: OUT, vehicle: { rogue: transplant_body }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, note: if it was let in it leaves loaded }
+
+  - id: A3a
+    name: Plate swapped from another registered truck
+    threat: A3
+    priority: P0
+    kind: tamper
+    category: identity
+    why: The plate says one truck, the FASTag and sticker another; both are held.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AC5678, plate_shown: OD09AE4521,
+          expect: { barrier: down, alerts: [POSSIBLE_CLONE] } }
+
+  - id: B1a
+    name: Side track in, GB exit out
+    threat: B1
+    priority: P0
+    kind: tamper
+    category: evasion
+    why: No entry through a GB gate means no pass, so the exit stays shut.
+    events:
+      - { at: "08:30", unseen: came in by a side track and loaded, vehicle: OD09AC5678 }
+      - { at: "09:00", dir: OUT, vehicle: OD09AC5678, pass: none, expect: { barrier: down, alerts: [NO_PASS] } }
+
+  - id: B1b
+    name: GB entry with a pass, side track out
+    threat: B1
+    priority: P0
+    kind: tamper
+    category: evasion
+    why: The pass is never closed. The GB should flag it when it expires, and block the truck until an officer resolves it.
+    expect_story: { alerts: [PASS_EXPIRED] }
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AK6402, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:40", unseen: left loaded by a side track, vehicle: OD09AK6402, leaves: true, load: "90%" }
+      - { at: "10:30", dir: IN, vehicle: OD09AJ3579, note: other traffic, expect: { barrier: up } }
+      - { at: "10:40", dir: IN, vehicle: OD09AK6402, expect: { barrier: down, alerts: [UNRESOLVED_TRIP] } }
+
+  - id: B1c
+    name: Side track in and out
+    threat: B1
+    priority: P0
+    kind: tamper
+    category: evasion
+    why: Never at a gate. Only a volume check can show it.
+    period_only: true   # one trip is far below survey precision: judged by the weekly survey in the site runs
+    expect_story: { alerts: [VOLUME_MISMATCH] }
+    events:
+      - { at: "10:00", unseen: came in by a side track and loaded, vehicle: OD09AD0090 }
+      - { at: "10:40", unseen: left loaded by a side track, vehicle: OD09AD0090, leaves: true, load: "90%" }
+
+  - id: E1a
+    name: Vendor under-reports the day
+    threat: E1
+    priority: P0
+    kind: tamper
+    category: records
+    why: Three trips crossed GB gates; the Vendor declares two. The GB's own records expose it.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AC5678, expect: { trip: LEGAL } }
+      - { at: "09:00", dir: IN,  vehicle: OD09AD0090, expect: { barrier: up } }
+      - { at: "09:45", dir: OUT, vehicle: OD09AD0090, expect: { trip: LEGAL } }
+      - { at: "10:00", dir: IN,  vehicle: OD09AH2468, expect: { barrier: up } }
+      - { at: "10:45", dir: OUT, vehicle: OD09AH2468, expect: { trip: LEGAL } }
+      - { at: "19:00", vendor_report: { trips: 2, tonnes: 30 }, expect: { alerts: [UNDER_REPORT] } }
+
+  - id: E3a
+    name: Old QR shown again
+    threat: E3
+    priority: P0
+    kind: tamper
+    category: pass
+    why: A pass closes once; showing it again is refused and the truck held.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD11CE3305, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: OD11CE3305, expect: { barrier: up, trip: LEGAL } }
+      - { at: "09:40", unseen: came back in by a side track and loaded, vehicle: OD11CE3305 }
+      - { at: "10:10", dir: OUT, vehicle: OD11CE3305, pass: { qr_from: 1 }, expect: { barrier: down, alerts: [PASS_REUSE] } }
+
+  - id: E3b
+    name: QR handed to another truck
+    threat: E3
+    priority: P0
+    kind: tamper
+    category: pass
+    why: A pass belongs to one truck and its sticker.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD14DF8821, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:10", unseen: came in by a side track and was handed the QR of OD14DF8821, vehicle: JH05CK2290 }
+      - { at: "08:40", dir: OUT, vehicle: JH05CK2290, pass: { qr_from: 1 }, expect: { barrier: down, alerts: [PASS_MISMATCH] } }
+
+  - id: E3c
+    name: Edited QR
+    threat: E3
+    priority: P0
+    kind: tamper
+    category: pass
+    why: The pass is signed; any edit breaks the signature.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: JH05CL6614, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:50", dir: OUT, vehicle: JH05CL6614, pass: { tampered_qr_from: 1 }, expect: { barrier: down, alerts: [INVALID_PASS] } }
+
+  - id: E3d
+    name: Fake gate event closes a pass (someone on the network poses as the pole)
+    threat: E3
+    priority: P0
+    kind: tamper
+    category: pass
+    why: The truck leaves by a side track and a made-up "exit" event is sent to the GB, so the trip looks legal. The GB
+      should only accept events signed by a real pole.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AH2468, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:40", unseen: left loaded by a side track, vehicle: OD09AH2468, leaves: true, load: "90%" }
+      - { at: "08:45", dir: OUT, vehicle: OD09AH2468, fake: true, expect: { rejected: true } }
+    expect_story: { alerts: [FAKE_GATE_EVENT] }
+
+  - id: D1a
+    name: Pole loses power for an hour while trucks keep moving
+    threat: D1
+    priority: P0
+    kind: tamper
+    category: infrastructure
+    why: The cheapest attack. A silent pole must be treated as suspicious within minutes, not ignored.
+    outages: [{ from: "09:00", to: "10:00" }]
+    expect_story: { alerts: [POLE_SILENT] }
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AC5678, expect: { trip: LEGAL } }
+      - { at: "09:10", dir: IN,  vehicle: OD09AD0090 }
+      - { at: "09:50", dir: OUT, vehicle: OD09AD0090, pass: none }
+      - { at: "10:30", dir: IN,  vehicle: OD09AH2468, expect: { barrier: up } }
+
+  - id: D2a
+    name: Network cut, events reach the GB hours late
+    threat: D2
+    priority: P0
+    kind: tamper
+    category: infrastructure
+    why: The pole keeps working but the link is cut; the exit reaches the GB three hours later. A late event should be
+      flagged, not silently filed as if on time.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AJ3579, expect: { barrier: up } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AJ3579, deliver_at: "11:45", expect: { trip: LEGAL, alerts: [LATE_EVENT] } }
+      - { at: "12:00", dir: IN,  vehicle: OD09AK6402, note: other traffic, expect: { barrier: up } }
+
+  - id: G2a
+    name: Unregistered truck moves while the pole is down
+    threat: G2
+    priority: P0
+    kind: tamper
+    category: infrastructure
+    why: Cheats time their moves to the outage. The GB should know the pole was down and treat that window as suspect.
+    outages: [{ from: "13:00", to: "14:00" }]
+    expect_story: { alerts: [POLE_SILENT] }
+    events:
+      - { at: "12:30", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up } }
+      - { at: "13:10", dir: IN,  vehicle: { rogue: rogue_local_tipper }, fastag: none }
+      - { at: "13:40", dir: OUT, vehicle: { rogue: rogue_local_tipper }, fastag: none, pass: none }
+      - { at: "14:20", dir: OUT, vehicle: OD09AC5678, expect: { trip: LEGAL } }
+
+  # ================================================================== P1
+  - id: C7a
+    name: Overloaded truck
+    threat: C7
+    priority: P1
+    kind: tamper
+    category: measure
+    why: The trip is real so the truck leaves, but the overload is recorded.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AL9015, expect: { barrier: up } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AL9015, load: "125%", expect: { trip: LEGAL, alerts: [OVERLOAD] } }
+
+  - id: A8a
+    name: Raised sides carry half again the rated load
+    threat: A8
+    priority: P1
+    kind: tamper
+    category: measure
+    why: A modified body is caught by weight, not by looking at the truck.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AF7733, expect: { barrier: up } }
+      - { at: "08:50", dir: OUT, vehicle: OD09AF7733, load: "150%", note: raised sides fitted inside the site,
+          expect: { trip: LEGAL, alerts: [OVERLOAD] } }
+
+  - id: C1a
+    name: Drives round the exit weigh pad
+    threat: C1
+    priority: P1
+    kind: tamper
+    category: measure
+    why: No weight means net tonnes unknown; the bypass itself is the alert.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD02BR7120, expect: { barrier: up } }
+      - { at: "08:50", dir: OUT, vehicle: OD02BR7120, load: none, expect: { alerts: [WEIGH_BYPASS] } }
+
+  - id: C3a
+    name: GB weigh pad tampered to read 3 t low when loaded
+    threat: C3
+    priority: P1
+    kind: tamper
+    category: measure
+    why: A remote chip lowers loaded readings only, so empty trucks still weigh right. The GB catches it with an
+      unannounced reference weight test (a known load reads 3 t light), and over days by loads suddenly dropping.
+    expect_story: { alerts: [WEIGH_DRIFT] }
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678 }
+      - { at: "08:45", dir: OUT, vehicle: OD09AC5678, weigh_offset_t: -3 }
+      - { at: "09:00", dir: IN,  vehicle: OD09AD0090 }
+      - { at: "09:45", dir: OUT, vehicle: OD09AD0090, weigh_offset_t: -3 }
+      - { at: "10:00", dir: IN,  vehicle: OD09AH2468 }
+      - { at: "10:45", dir: OUT, vehicle: OD09AH2468, weigh_offset_t: -3 }
+      - { at: "11:30", officer: reference_test, known_t: 30, weigh_offset_t: -3, note: unannounced test }
+
+  - id: C3b
+    name: GB weigh pad off on every reading (re-calibrated wrongly or a shim)
+    threat: C3
+    priority: P1
+    kind: tamper
+    category: measure
+    why: Every reading is 3 t light, empty or loaded. Empty trucks at the entry no longer weigh their enrolled empty
+      weights, all by the same amount, so the pad itself must be off.
+    expect_story: { alerts: [WEIGH_DRIFT] }
+    events:
+      - { at: "07:00", dir: IN, vehicle: OD09AC5678, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:10", dir: IN, vehicle: OD09AD0090, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:20", dir: IN, vehicle: OD09AH2468, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:30", dir: IN, vehicle: OD09AJ3579, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "07:40", dir: IN, vehicle: OD09AK6402, weigh_offset_t: -3, expect: { barrier: up } }
+      - { at: "08:20", dir: OUT, vehicle: OD09AC5678, weigh_offset_t: -3, expect: { trip: LEGAL } }
+
+  - id: D3a
+    name: Genuine truck, camera can't read the plate (mud, rain, night)
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: FASTag and GB sticker both agree, so a genuine truck should pass with the plate flagged, not be refused.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AC5678, camera: unreadable,
+          expect: { barrier: up, pass_issued: true, alerts: [PLATE_UNREADABLE] } }
+
+  - id: D3b
+    name: Genuine truck, camera misreads one character
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: A one-character misread with FASTag and sticker agreeing is a reading fault, not a clone.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AD0090, camera: misread,
+          expect: { barrier: up, pass_issued: true, alerts: [PLATE_MISREAD] } }
+
+  - id: D3c
+    name: Genuine truck, FASTag reader misses the tag
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: Plate and GB sticker agree; a missed FASTag should be flagged, not refused.
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AH2468, fastag_reader: missed,
+          expect: { barrier: up, pass_issued: true, alerts: [FASTAG_UNREAD] } }
+
+  - id: D3d
+    name: Cheat covers its plate on purpose
+    threat: D3
+    priority: P1
+    kind: tamper
+    category: identity
+    why: No plate and no tag, so default deny.
+    events:
+      - { at: "08:00", dir: IN, vehicle: { rogue: rogue_local_tipper }, plate_shown: none, fastag: none,
+          expect: { barrier: down, pass_issued: false } }
+
+  - id: B3a
+    name: Night trip at the gate
+    threat: B3
+    priority: P1
+    kind: tamper
+    category: limits
+    why: No pass is issued outside working hours.
+    events:
+      - { at: "21:00", dir: IN, vehicle: OD09AJ3579, expect: { barrier: down, alerts: [OUTSIDE_HOURS] } }
+
+  - id: B3b
+    name: Night trip by side tracks
+    threat: B3
+    priority: P1
+    kind: tamper
+    category: evasion
+    why: At night by side tracks the gates see nothing; only a volume check shows it.
+    period_only: true   # one trip is far below survey precision: judged by the weekly survey in the site runs
+    expect_story: { alerts: [VOLUME_MISMATCH] }
+    events:
+      - { at: "21:00", unseen: came in by a side track at night and loaded, vehicle: OD09AJ3579 }
+      - { at: "21:40", unseen: left loaded by a side track, vehicle: OD09AJ3579, leaves: true, load: "90%" }
+
+  - id: E5a
+    name: Bribed officer lets out three trucks that went round by side tracks
+    threat: E5
+    priority: P1
+    kind: tamper
+    category: officer
+    why: Each override is recorded, but each looks legal on its own. Repeated overrides by one officer should raise a
+      pattern alert (or need a second officer).
+    expect_story: { alerts: [OFFICER_OVERRIDE_PATTERN] }
+    events:
+      - { at: "07:00", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up } }
+      - { at: "07:05", dir: IN,  vehicle: OD09AD0090, expect: { barrier: up } }
+      - { at: "07:10", dir: IN,  vehicle: OD09AH2468, expect: { barrier: up } }
+      - { at: "08:00", unseen: all three leave loaded by a side track and come back for a second load, vehicle: OD09AC5678 }
+      - { at: "10:00", dir: OUT, vehicle: OD09AC5678, expect: { barrier: down, alerts: [PASS_EXPIRED_AT_EXIT] } }
+      - { at: "10:02", officer: let_out, event: 5, reason: sensor fault }
+      - { at: "10:05", dir: OUT, vehicle: OD09AD0090, expect: { barrier: down, alerts: [PASS_EXPIRED_AT_EXIT] } }
+      - { at: "10:07", officer: let_out, event: 7, reason: sensor fault }
+      - { at: "10:10", dir: OUT, vehicle: OD09AH2468, expect: { barrier: down, alerts: [PASS_EXPIRED_AT_EXIT] } }
+      - { at: "10:12", officer: let_out, event: 9, reason: sensor fault }
+
+  - id: E2a
+    name: Insider deletes an illegal trip and shaves a weight in the database
+    threat: E2
+    priority: P1
+    kind: tamper
+    category: records
+    why: Records edited after the fact must not go unnoticed; the brief asks for a tamper-evident audit trail.
+    check_records: true
+    expect_story: { alerts: [RECORD_TAMPERED] }
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678, expect: { barrier: up } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AC5678, expect: { trip: LEGAL } }
+      - { at: "09:20", unseen: came in by a side track and loaded, vehicle: OD09AB1234 }
+      - { at: "09:30", dir: OUT, vehicle: OD09AB1234, pass: none, forces: true, expect: { trip: ILLEGAL } }
+      - { at: "20:00", insider: erase_illegal_trip }
+      - { at: "20:05", insider: lower_weight, tonnes: 3 }
+
+  - id: E5b
+    name: Bribed officer late-closes a side-route trip as a 'sensor fault'
+    threat: E5
+    priority: P1
+    kind: tamper
+    category: officer
+    why: The truck left loaded by a side track and its pass stayed open. A bribed officer late-closes it as a sensor
+      fault so the truck can work again. The GB recorded no equipment fault while the trip was open, so the claim is
+      not supported; the trip is also charged at the truck's rated load, so the tonnes don't vanish.
+    expect_story: { alerts: [LATE_CLOSE_UNSUPPORTED] }
+    events:
+      - { at: "08:00", dir: IN, vehicle: OD09AH2468, expect: { barrier: up, pass_issued: true } }
+      - { at: "08:40", unseen: left loaded by a side track, vehicle: OD09AH2468, leaves: true, load: "90%" }
+      - { at: "10:40", dir: IN, vehicle: OD09AH2468, expect: { barrier: down, alerts: [UNRESOLVED_TRIP] } }
+      - { at: "10:45", officer: late_close, vehicle: OD09AH2468, reason: Truck left by the gate; sensor fault }
+
+  # ================================================================== found in our own review
+  - id: X1a
+    name: Pickup under 6 m carries material out uncounted
+    threat: B5
+    priority: extra
+    kind: tamper
+    category: evasion
+    why: Our rule lets light vehicles through uncounted; a pickup can still carry about a tonne a trip.
+    expect_story: { alerts: [LIGHT_VEHICLE_LOADED] }
+    events:
+      - { at: "08:00", dir: IN,  vehicle: { rogue: pickup }, fastag: none, expect: { barrier: up } }
+      - { at: "08:30", dir: OUT, vehicle: { rogue: pickup }, fastag: none, pass: none, load: 1.4, expect: { barrier: up } }
+
+  # ================================================================== Weigh-in-Motion (second weight + axle layout)
+  - id: W1a
+    name: Rigged weigh pad reads 3 t low at exit, WIM catches it on the first truck
+    threat: C3
+    priority: P1
+    kind: tamper
+    category: measure
+    why: The WIM strip in the lane weighs the same truck independently. A pad reading 3 t below WIM is flagged on the
+      first loaded truck, instead of waiting for a reference test or a drift pattern.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AC5678 }
+      - { at: "08:45", dir: OUT, vehicle: OD09AC5678, weigh_offset_t: -3, expect: { trip: LEGAL, alerts: [WIM_PAD_DISAGREE] } }
+
+  - id: W2a
+    name: Full transplant onto a body within the pad's noise, but with a different axle layout
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Every identifier is genuine and the empty weight is only 0.15 t off, inside the pad's noise. The WIM strip
+      measures the axle spacing, and this chassis is not the enrolled one.
+    events:
+      - { at: "08:30", dir: IN, vehicle: { rogue: transplant_axles }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, expect: { barrier: down, alerts: [BODY_MISMATCH] } }
+
+  - id: W2b
+    name: Full transplant onto a body of the same model (known limit)
+    threat: A2
+    priority: P0
+    kind: tamper
+    category: identity
+    why: Same model, so the same length and axle layout, and an empty weight within the pad's noise. No sensor can tell
+      two trucks of one model apart; the defence is that the identifiers can't be removed (tear-on-removal sticker).
+    events:
+      - { at: "08:30", dir: IN, vehicle: { rogue: transplant_twin }, plate_shown: OD09AB1234, fastag: { from: OD09AB1234 },
+          sticker: { from: OD09AB1234 }, expect: { barrier: down, alerts: [BODY_MISMATCH] } }
+
+  - id: W3a
+    name: WIM strip offline, a genuine truck still works
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: WIM is a second check, not a gate. When it is down the truck is judged by radar and the pad as before, and
+      the GB is told the strip is down.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AE4521, wim: offline, expect: { barrier: up, alerts: [WIM_UNAVAILABLE] } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AE4521, wim: offline, expect: { trip: LEGAL } }
+
+  - id: W3b
+    name: Driver brakes on the WIM strip (poor reading), nothing is raised
+    threat: D3
+    priority: P1
+    kind: honest
+    category: infrastructure
+    why: A poor in-motion reading is ignored rather than alarmed on; the pad and radar decide.
+    events:
+      - { at: "08:00", dir: IN,  vehicle: OD09AE4521, wim: poor, expect: { barrier: up } }
+      - { at: "08:45", dir: OUT, vehicle: OD09AE4521, wim: poor, expect: { trip: LEGAL } }

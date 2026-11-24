@@ -10,15 +10,13 @@ import {
   LuFingerprint,
   LuFlag,
   LuLock,
-  LuMonitor,
   LuMountain,
-  LuRadar,
+  LuNfc,
+  LuPlane,
   LuRuler,
   LuScale,
-  LuServer,
   LuShieldCheck,
   LuSiren,
-  LuSmartphone,
   LuSun,
   LuTag,
   LuTicket,
@@ -26,6 +24,7 @@ import {
   LuWifi,
   LuX,
 } from "react-icons/lu";
+import { EquipmentCatalogue } from "../components/equipment/EquipmentCatalogue";
 
 // ================================================================ One trip: SVG flow diagram
 
@@ -117,12 +116,13 @@ function Down({ y1, y2, label }: { y1: number; y2: number; label?: string }) {
 function TripFlow() {
   // vertical layout, top to bottom
   const yStart = 30;
-  const d1 = yStart + NODE_H + GAP + DIA_H / 2; // Identify diamond centre
-  const d2 = d1 + DIA_H + GAP; // Compare diamond centre
-  const yPass = d2 + DIA_H / 2 + GAP;
+  const d1 = yStart + NODE_H + GAP + DIA_H / 2; // Identify: identity
+  const d2 = d1 + DIA_H + GAP; // Identify: body
+  const d3 = d2 + DIA_H + GAP; // Eligibility
+  const yPass = d3 + DIA_H / 2 + GAP;
   const yLoad = yPass + NODE_H + GAP;
-  const d3 = yLoad + NODE_H + GAP + DIA_H / 2; // Exit gate diamond centre
-  const yClosed = d3 + DIA_H / 2 + GAP;
+  const d4 = yLoad + NODE_H + GAP + DIA_H / 2; // Exit gate
+  const yClosed = d4 + DIA_H / 2 + GAP;
   const yEnd = yClosed + NODE_H + GAP;
   const H = yEnd + NODE_H + 16;
 
@@ -145,54 +145,55 @@ function TripFlow() {
         <text x={BRANCH_X + BRANCH_W / 2} y={12} className="tf-lane" textAnchor="middle">WAYS OUT OF IT</text>
 
         <StepNode y={yStart} Icon={LuTruck} title="Truck arrives empty" capsule
-                  sub={["Radar + camera count it at entry;", "entry pad weighs it"]} />
+                  sub={["Pole reads plate, FASTag, sticker, length;", "WIM reads axles; pad weighs. All signed"]} />
         <Down y1={yStart + NODE_H} y2={d1 - DIA_H / 2} />
 
-        <Decision cy={d1} Icon={LuFingerprint} title="Identify" sub={["Plate + FASTag + length", "match the GB registry?"]} />
+        <Decision cy={d1} Icon={LuFingerprint} title="Identify: identity"
+                  sub={["Plate + FASTag + GB sticker", "(crypto) = one registered truck?"]} />
         <Branch fromX={CX + DIA_W / 2} cy={d1} tone="bad" Icon={LuBan} label="No"
-                title="No pass + alert" sub={["Unknown, unreadable or mismatch", "(default deny)"]} />
+                title="Refused + alert" sub={["Unknown, cloned sticker or mismatch;", "clones are held (default deny)"]} />
         <Down y1={d1 + DIA_H / 2} y2={d2 - DIA_H / 2} label="Yes" />
 
-        <Decision cy={d2} Icon={LuScale} title="Compare" sub={["No open pass · quota left ·", "within hours · exit working?"]} />
+        <Decision cy={d2} Icon={LuRuler} title="Identify: body"
+                  sub={["Length, axles (WIM), empty", "weight = that truck's?"]} />
         <Branch fromX={CX + DIA_W / 2} cy={d2} tone="bad" Icon={LuBan} label="No"
-                title="No pass + reason" sub={["Clone alert, quota reached,", "outside hours…"]} />
-        <Down y1={d2 + DIA_H / 2} y2={yPass} label="Yes" />
+                title="Refused + held" sub={["Its identifiers are on another body", "(transplant)"]} />
+        <Down y1={d2 + DIA_H / 2} y2={d3 - DIA_H / 2} label="Yes" />
 
-        <StepNode y={yPass} Icon={LuTicket} title="Pass issued"
-                  sub={["Signed one-time QR (app) + SMS code;", "one trip reserved"]} />
+        <Decision cy={d3} Icon={LuShieldCheck} title="Eligibility"
+                  sub={["No hold · no open trip ·", "hours · quota left?"]} />
+        <Branch fromX={CX + DIA_W / 2} cy={d3} tone="bad" Icon={LuBan} label="No"
+                title="No pass + reason" sub={["Second copy inside, quota reached,", "outside hours…"]} />
+        <Down y1={d3 + DIA_H / 2} y2={yPass} label="Yes" />
+
+        <StepNode y={yPass} Icon={LuTicket} title="Weighed, pass issued"
+                  sub={["Pad weight (checked against WIM);", "signed QR + SMS code; trip reserved"]} />
         <Down y1={yPass + NODE_H} y2={yLoad} />
 
         <StepNode y={yLoad} Icon={LuMountain} title="Truck loads inside the site"
                   sub={["The GB doesn't need to watch", "this part"]} />
-        <Down y1={yLoad + NODE_H} y2={d3 - DIA_H / 2} />
+        <Down y1={yLoad + NODE_H} y2={d4 - DIA_H / 2} />
 
-        <Decision cy={d3} Icon={LuConstruction} title="Exit gate: valid pass?" sub={["Counted · plate + FASTag ·", "pass checked · weighed"]} />
-        <Branch fromX={CX + DIA_W / 2} cy={d3} tone="bad" Icon={LuSiren} label="No"
-                title="Barrier stays down" sub={["Forced through = illegal trip,", "critical alert with video"]} />
-        <Down y1={d3 + DIA_H / 2} y2={yClosed} label="Yes" />
+        <Decision cy={d4} Icon={LuConstruction} title="Exit: valid pass?"
+                  sub={["Identity + body again ·", "pass checked · weighed"]} />
+        <Branch fromX={CX + DIA_W / 2} cy={d4} tone="bad" Icon={LuSiren} label="No"
+                title="Barrier stays down" sub={["Forced through = illegal trip,", "critical alert"]} />
+        <Down y1={d4 + DIA_H / 2} y2={yClosed} label="Yes" />
 
         <StepNode y={yClosed} Icon={LuCheck} title="Pass closed, barrier lifts"
-                  sub={["Legal trip with net tonnes;", "quota updated"]} />
+                  sub={["Legal trip, net tonnes from the pad;", "quota updated"]} />
         <Branch fromX={CX + NODE_W / 2} cy={yClosed + NODE_H / 2} tone="warn" Icon={LuFlag} label="If"
-                title="Allowed but flagged" sub={["Overload, or closed without QR:", "goes to review"]} />
+                title="Allowed but flagged" sub={["Overload, pad and WIM disagree,", "no QR: goes to review"]} />
         <Down y1={yClosed + NODE_H} y2={yEnd} />
 
         <StepNode y={yEnd} Icon={LuLock} title="Recorded" capsule
-                  sub={["Every step signed and chained;", "can't be edited"]} />
+                  sub={["Signed by the pole and hash-chained;", "any edit is detected"]} />
       </svg>
     </div>
   );
 }
 
-// ================================================================ installs & independence
-const INSTALLS: { Icon: IconType; name: string; where: string }[] = [
-  { Icon: LuRadar, name: "Pole: radar + camera + FASTag reader", where: "Every gate lane" },
-  { Icon: LuScale, name: "Weigh pad", where: "Exit (and entry) lane" },
-  { Icon: LuConstruction, name: "GB boom barrier", where: "Every exit lane" },
-  { Icon: LuServer, name: "GB server", where: "Off site" },
-  { Icon: LuSmartphone, name: "App + SMS pass", where: "Driver's phone" },
-  { Icon: LuMonitor, name: "Dashboard", where: "GB office" },
-];
+// ================================================================ vendor independence
 
 const INDEPENDENCE: { vendor: string; answer: string; Icon: IconType }[] = [
   { vendor: "Power", answer: "Solar + battery on every GB device", Icon: LuSun },
@@ -207,20 +208,25 @@ const INDEPENDENCE: { vendor: string; answer: string; Icon: IconType }[] = [
 const CHECKS = [
   { key: "registry", label: "Registry", Icon: LuDatabase },
   { key: "fastag", label: "Plate vs FASTag", Icon: LuTag },
-  { key: "length", label: "Radar length", Icon: LuRuler },
-  { key: "deny", label: "Default deny", Icon: LuBan },
+  { key: "sticker", label: "GB sticker (crypto)", Icon: LuNfc },
+  { key: "body", label: "Body: length, axles, weight", Icon: LuRuler },
   { key: "pass", label: "Trip pass", Icon: LuTicket },
+  { key: "scale", label: "Scale checks (WIM, test load)", Icon: LuScale },
+  { key: "survey", label: "Volume survey", Icon: LuPlane },
 ] as const;
 
 type Cell = "catch" | "support" | "";
-const TAMPER: { name: string; cells: Record<string, Cell>; tested?: boolean }[] = [
-  { name: "Unregistered truck", cells: { registry: "catch", deny: "support", pass: "support" }, tested: true },
-  { name: "Fake plate on a bigger truck", cells: { length: "catch", pass: "support" }, tested: true },
-  { name: "Fake plate + stolen FASTag, same size", cells: { fastag: "catch", pass: "support" }, tested: true },
-  { name: "Plate and FASTag removed", cells: { deny: "catch", pass: "support" }, tested: true },
-  { name: "Two trucks swap plates", cells: { fastag: "catch", length: "support", pass: "support" } },
-  { name: "Perfect clone (plate + cloned tag + same model)", cells: { pass: "catch" } },
-  { name: "Leaves without a pass", cells: { pass: "catch" } },
+const TAMPER: { name: string; cells: Record<string, Cell>; limit?: boolean }[] = [
+  { name: "Unregistered truck", cells: { registry: "catch", sticker: "support", pass: "support" } },
+  { name: "Fake plate + FASTag stolen from another truck", cells: { fastag: "catch", sticker: "support", body: "support" } },
+  { name: "Cloned GB sticker", cells: { sticker: "catch", pass: "support" } },
+  { name: "Copy of a truck arrives while the real one is inside", cells: { pass: "catch", sticker: "support" } },
+  { name: "Real plate, FASTag and sticker moved to another truck", cells: { body: "catch" } },
+  { name: "Same, onto a truck of the same model", cells: { survey: "support" }, limit: true },
+  { name: "Leaves without a pass, or breaks the barrier", cells: { pass: "catch" } },
+  { name: "Old, shared or edited QR", cells: { pass: "catch", sticker: "support" } },
+  { name: "Weigh pad rigged to read light", cells: { scale: "catch", survey: "support" } },
+  { name: "Side-track trips that never meet a gate", cells: { survey: "catch" } },
 ];
 
 function Section({ title, sub, children }: { title: string; sub?: string; children: ReactNode }) {
@@ -249,17 +255,7 @@ export default function SolutionFlow() {
         <TripFlow />
       </Section>
 
-      <Section title="What the GB installs">
-        <div className="sf-installs">
-          {INSTALLS.map((x) => (
-            <div key={x.name} className="sf-install">
-              <x.Icon className="sf-install-icon" />
-              <div className="sf-install-name">{x.name}</div>
-              <div className="muted small">{x.where}</div>
-            </div>
-          ))}
-        </div>
-      </Section>
+      <EquipmentCatalogue />
 
       <Section title="Why the Vendor can't switch it off" sub="Independence: nothing the Vendor controls is trusted.">
         <div className="sf-indep">
@@ -275,7 +271,7 @@ export default function SolutionFlow() {
 
       <Section
         title="Defence in depth"
-        sub="No single check has to be perfect: each tampering trick is caught by a different layer."
+        sub="No single check has to be perfect: each tampering trick is caught by a different layer. Every row is staged in the threat coverage suite."
       >
         <div className="sf-matrix-wrap">
           <table className="table sf-matrix">
@@ -292,7 +288,9 @@ export default function SolutionFlow() {
                 <tr key={t.name}>
                   <td>
                     {t.name}
-                    {t.tested && <span className="badge ok">Tested in PoC</span>}
+                    {t.limit
+                      ? <span className="badge warn">Known limit</span>
+                      : <span className="badge ok">Tested in PoC</span>}
                   </td>
                   {CHECKS.map((c) => (
                     <td key={c.key} className="center">

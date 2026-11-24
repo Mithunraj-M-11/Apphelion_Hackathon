@@ -37,6 +37,7 @@ export type Truck = {
   fastag_chip_id: string | null;
   length_m: number;
   axle_count: number | null;
+  axle_spacings_m?: number[] | null; // between consecutive axles, front to back
   make: string | null;
   model: string | null;
   body_type: string | null;
@@ -221,6 +222,7 @@ export type Movement = {
   counted_trip: boolean;
   trip: "LEGAL" | "ILLEGAL" | null;
   steps: Step[] | null;
+  wim_verification?: WimCorrelation | null;
   pass: PassSummary | null;
   alerts: Alert[];
   rfid_sticker_uid?: string | null;
@@ -339,7 +341,7 @@ export type TripEventExpect = {
 export type TripEventResult = {
   n: number;
   at: string;
-  dir: "IN" | "OUT" | "OFFICER";
+  dir: "IN" | "OUT" | "OFFICER" | "UNSEEN" | "INSIDER" | "VENDOR";
   vehicle: string;
   note: string | null;
   readings: {
@@ -383,6 +385,12 @@ export type TripScenarioResult = {
   ledger: Ledger;
   pass: boolean;
   problems: string[];
+  // threat_coverage stories: judged against the ideal GB response
+  coverage?: "covered" | "partial" | "gap" | "silent" | "period";
+  threat?: string | null;
+  priority?: string | null;
+  really_moved?: { trips: number; tonnes: number };
+  gb_recorded?: { trips: number; tonnes: number };
 };
 export type ScenarioResult = EdgeScenarioResult | TripScenarioResult;
 export type SimSuite = { suite: string; title: string; description: string; stories: number };
@@ -408,6 +416,7 @@ export const gateApi = {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
     return request<Movement[]>(`/movements${qs.toString() ? `?${qs}` : ""}`);
   },
+  movement: (id: number) => request<Movement>(`/movements/${id}`),
   simRuns: () => request<SimRun[]>("/sim-runs"),
   simSuites: () => request<SimSuite[]>("/sim-runs/suites"),
   /** Start a suite in the background (the backend runs the simulator, which posts gate events like a pole). */
@@ -416,13 +425,16 @@ export const gateApi = {
   /** Delete every scenario run and its data. Gate console and site runs are not touched. */
   clearSimRuns: () => request<Record<string, number>>("/sim-runs", { method: "DELETE" }, false),
   simRun: (id: number) => request<SimRun>(`/sim-runs/${id}`),
-  /** What a gate pole sends (no officer: poles are machines). */
+  /** The Gate console's simulated pole (run by the GB, Gate console sessions only). Real poles sign their events
+   * and post to /gates/{gate}/events. */
   postEvent: (gate: string, body: GateEventIn) =>
-    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+    request<GateDecision>(`/console/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
   /** Source-tagged permits (simulator / Gate console) need no officer; real permits do. */
   createPermit: (body: PermitIn) =>
     request<Permit>("/permits", { method: "POST", body: JSON.stringify(body) }, body.source == null),
   permit: (id: number) => request<Permit>(`/permits/${id}`),
+  /** GB period report: the permit's period from the GB's own records only (no simulation ground truth). */
+  permitReport: (id: number) => request<PeriodReport>(`/permits/${id}/report`),
   ledger: (id: number) => request<Ledger>(`/permits/${id}/ledger`),
   alerts: (params: { permit_id?: string; severity?: string; origin?: string } = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
@@ -434,6 +446,22 @@ export const gateApi = {
   /** Delete every Gate console session (permits, gate events, passes, holds, alerts, logs). Demo data only. */
   clearWalkthroughHistory: () =>
     request<Record<string, number>>("/walkthrough-history", { method: "DELETE" }, false),
+  /** Gate console demo: the console pole's heartbeat (Gate console permits only). */
+  consoleHeartbeat: (gate: string, body: { at: string; permit_id: number; source: string }) =>
+    request<{ alerts: string[] }>(`/console/poles/${gate}/heartbeat`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** Gate console demo: an event posted to the real pole API WITHOUT a pole signature (it should be refused). */
+  postUnsigned: (gate: string, body: Record<string, unknown>) =>
+    request<GateDecision>(`/gates/${gate}/events`, { method: "POST", body: JSON.stringify(body) }, false),
+  /** An officer runs the GB's reference load over the weigh pad. */
+  referenceTest: (gate: string, body: { known_weight_t: number; pad_reading_t: number; permit_id: number }) =>
+    request<{ passed: boolean; difference_t: number; alerts: string[] }>(`/gates/${gate}/reference-test`,
+      { method: "POST", body: JSON.stringify(body) }),
+  /** Staging only (simulation / Gate console permits): an insider edits stored records directly. */
+  insiderEdit: (body: { permit_id: number; action: "lower_weight" | "erase_illegal_trip"; tonnes: number }) =>
+    request<Record<string, unknown>>("/sim/insider-edit", { method: "POST", body: JSON.stringify(body) }, false),
+  /** Record check: recompute the hash chain over the permit's gate events. */
+  verifyRecords: (permitId: number) =>
+    request<{ checked: number; intact: boolean; problems: string[]; alert: string | null }>(`/permits/${permitId}/verify-records`),
   /** An officer lets out a truck whose exit was refused: its own pass is closed by the officer and flagged. */
   officerExit: (movementId: number, reason: string) =>
     request<GateDecision>(`/movements/${movementId}/officer-exit`, { method: "POST", body: JSON.stringify({ reason }) }),
@@ -458,6 +486,16 @@ export type GateEventIn = {
   rfid_sticker_uid?: string | null;
   rfid_sim_mode?: "genuine" | "cloned" | "revoked" | "unknown_damaged";
   qr_token?: string | null;
+  wim?: WimReading | null; // the lane's Weigh-in-Motion strip (part of the signed pole event)
+};
+
+/** What the WIM strip reports for one crossing. */
+export type WimReading = {
+  status: "OK" | "POOR" | "TIMEOUT" | "OFFLINE";
+  axle_count?: number;
+  axle_spacings_m?: number[];
+  axle_weights_t?: number[];
+  speed_kmh?: number;
 };
 
 export type RfidSticker = {
@@ -629,7 +667,7 @@ export type SiteCheat = {
   note: string;
   movements?: number[]; // the GB gate events of this attempt
   /** Every leg in order: gate events (seen by the GB) and the legs it cannot see (side tracks, loading inside). */
-  timeline?: { at: string; seen: boolean; text: string; movement?: number; alerts?: string[] }[];
+  timeline?: { at: string; seen: boolean; officer?: boolean; text: string; movement?: number; alerts?: string[] }[];
 };
 export type SiteTrip = { day: string; at: string; vehicle: string; tonnes: number; kind: string; cheat: string | null };
 export type SiteDay = {
@@ -668,10 +706,30 @@ export type SiteReport = {
     attempt_flagged: number; avg_minutes_to_alert: number | null }>;
   cheats: SiteCheat[];
   alerts: { by_severity: Record<Severity, number>; by_code: Record<string, number> };
-  false_alarms: { count: number; honest_events: number; items: { at: string; vehicle: string; code: string; message: string }[] };
+  false_alarms: {
+    count: number;
+    honest_events: number;
+    honest_trips?: number; // an honest truck's entry + exit = one trip (newer runs)
+    honest_trips_flagged?: number;
+    items: { at: string; vehicle: string; code: string; message: string }[];
+  };
   daily: SiteDay[];
   unexpected: string[];
   skipped: string[];
+  /** threat_week: what really moved but the GB doesn't have, by why (side track, pole down, rigged pad, ...). */
+  missed_by_cause?: Record<string, { trips: number; tonnes: number | null }>;
+  /** Weekly volume surveys (mass balance): ore that left by the survey vs what the gates weighed. */
+  surveys?: { period_from: string; period_to: string; method: string; status: string; surveyed_out_t: number | null;
+    gates_out_t: number | null; gap_pct: number | null; alerts: string[]; true_out_t: number; survey_error_pct: number }[];
+  /** threat_week: the staged faults and attacks (assumptions stated in the report). */
+  staging?: {
+    outages: [string, string][];
+    weigh_drift: { from_day: number; offset_t: number } | null;
+    sensor_noise: { plate_miss?: number; fastag_miss?: number } | null;
+    bribed_officer: boolean | null;
+    honest_refused_by_misreads: number;
+    events_held_by_outages: number;
+  };
 };
 export type SiteRun = {
   id: number;
@@ -696,4 +754,162 @@ export const siteApi = {
     request<{ started: string }>("/site-runs/start", { method: "POST", body: JSON.stringify({ scenario }) }, false),
   /** Delete every site run and its data. Gate console and scenario runs are not touched. */
   clear: () => request<Record<string, number>>("/site-runs", { method: "DELETE" }, false),
+};
+
+// ==============================================================================
+// Weigh-in-Motion (WIM) Independent Verification API
+// ==============================================================================
+
+export type WimDevice = {
+  id: number;
+  device_code: string;
+  gate: string;
+  lane: string;
+  status: "ONLINE" | "OFFLINE" | "DEGRADED";
+  model: string;
+  firmware_version: string;
+  last_heartbeat: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WimAnomaly = {
+  id: number;
+  anomaly_code: string;
+  measurement_id: number | null;
+  movement_id: number | null;
+  truck_id: number | null;
+  plate: string | null;
+  anomaly_type: string;
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  description: string;
+  details: Record<string, unknown> | null;
+  status: "OPEN" | "UNDER_REVIEW" | "RESOLVED" | "DISMISSED";
+  reviewed_by: number | null;
+  reviewer_name?: string | null;
+  reviewed_at: string | null;
+  resolution_reason: string | null;
+  created_at: string;
+};
+
+export type WimMeasurement = {
+  id: number;
+  measurement_id: string;
+  device_id: number | null;
+  device_code: string;
+  gate: string;
+  lane: string;
+  direction: string;
+  observed_at: string;
+  received_at: string;
+  plate: string | null;
+  truck_id: number | null;
+  speed_kmh: number;
+  axle_count: number;
+  axle_spacings_m?: number[] | null;
+  axle_weights: number[];
+  gross_weight_t: number;
+  quality: "GOOD" | "FAIR" | "POOR";
+  status: string;
+  source: string;
+  movement_id: number | null;
+  radar_length_m: number | null;
+  correlation_status: "CORRELATED" | "DISCREPANCY" | "RADAR_ONLY" | "WIM_ONLY" | "BOTH_UNAVAILABLE" | "UNMATCHED";
+  discrepancy_details: { reason?: string } | null;
+  created_at: string;
+  anomalies?: WimAnomaly[];
+};
+
+export type WimVerificationCheck = {
+  name: string;
+  label: string;
+  status: "passed" | "warning" | "failed" | "unavailable" | "pending";
+  detail: string;
+};
+
+export type WimCorrelation = {
+  overall_status: "PASSED" | "WARNING" | "FAILED" | "UNAVAILABLE" | "PENDING";
+  correlation_status: "CORRELATED" | "DISCREPANCY" | "RADAR_ONLY" | "WIM_ONLY" | "BOTH_UNAVAILABLE" | "UNMATCHED";
+  summary: string;
+  checks: WimVerificationCheck[];
+  measurement?: WimMeasurement | null;
+  discrepancy_reason?: string | null;
+  monitoring_warning?: string | null;
+};
+
+export type WimDashboardMetrics = {
+  total_devices: number;
+  online_devices: number;
+  offline_devices: number;
+  degraded_devices: number;
+  total_measurements: number;
+  successful_measurements: number;
+  poor_quality_measurements: number;
+  radar_wim_discrepancies: number;
+  overload_anomalies: number;
+  verification_overview: {
+    both_operational: number;
+    radar_only: number;
+    wim_only: number;
+    both_unavailable: number;
+    discrepancies: number;
+  };
+  anomaly_counts_by_status: {
+    OPEN: number;
+    UNDER_REVIEW: number;
+    RESOLVED: number;
+    DISMISSED: number;
+  };
+};
+
+export const wimApi = {
+  devices: () => request<WimDevice[]>("/wim/devices"),
+  updateStatus: (deviceCode: string, status: string, reason?: string) =>
+    request<WimDevice>(`/wim/devices/${deviceCode}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
+  simulate: (data: Record<string, unknown>) =>
+    request<WimCorrelation>("/wim/simulate", { method: "POST", body: JSON.stringify(data) }, false),
+  measurements: (params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<WimMeasurement[]>(`/wim/measurements${qs.toString() ? `?${qs}` : ""}`);
+  },
+  measurement: (id: string) => request<WimMeasurement>(`/wim/measurements/${id}`),
+  movementWim: (movementId: number) => request<WimCorrelation>(`/wim/movements/${movementId}`),
+  vehicleHistory: (plate: string) => request<WimMeasurement[]>(`/wim/vehicles/${plate}`),
+  anomalies: (params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<WimAnomaly[]>(`/wim/anomalies${qs.toString() ? `?${qs}` : ""}`);
+  },
+  reviewAnomaly: (id: number, status: string, reason: string) =>
+    request<WimAnomaly>(`/wim/anomalies/${id}/review`, { method: "POST", body: JSON.stringify({ status, reason }) }),
+  dashboard: () => request<WimDashboardMetrics>("/wim/dashboard"),
+};
+
+
+/** GB period report (one permit). Built only from what the GB recorded. */
+export type ReportAlertRow = { code: string; severity: Severity; message: string; status: string; when: string | null;
+  officer: string | null; count?: number };
+export type PeriodReport = {
+  permit: { id: number; label: string; valid_from: string; valid_to: string; trip_limit: number; tonne_limit: number;
+    vehicle_limit: number; hours: string };
+  generated_at: string;
+  period: { from: string; to: string; days: number };
+  totals: { trips_with_pass: number; trips_counted: number; trips_without_pass: number; tonnes_with_pass: number;
+    tonnes_without_pass_est: number; tonnes_counted: number; vehicles: number; open_passes: number;
+    unresolved_passes: number; late_closes_charged: number };
+  vendor: { days_reported: number; trips: number; tonnes: number; gb_trips_same_days: number; gb_tonnes_same_days: number;
+    days_under_reported: number };
+  findings: { severity: Severity; text: string }[];
+  needs_action: { alerts: ReportAlertRow[]; unresolved: { trip_code: string; status: string; plate: string; expired: string }[];
+    holds: { plate: string; reason: string }[] };
+  daily: { day: string; entries: number; passes_issued: number; entry_refusals: number; exit_refusals: number;
+    legal_trips: number; actual_trips: number; illegal_trips: number; tonnes: number; vendor_trips: number | null;
+    vendor_tonnes: number | null }[];
+  surveys: { rows: { period_from: string; period_to: string; method: string; status: string; surveyed_out_t: number | null;
+    gates_out_t: number | null; gap_pct: number | null }[];
+    total: { surveyed_out_t: number; gates_out_t: number; gap_t: number; gap_pct: number | null } | null; alerts: string[] };
+  equipment: { pole_outages: number; outage_minutes: number; counts: Record<string, number>; items: ReportAlertRow[] };
+  officers: ({ officer: string; total: number } & Record<string, number | string>)[];
+  integrity: { chained_events: number; failed_checks: ReportAlertRow[] };
+  alerts_by_severity: Partial<Record<Severity, number>>;
+  alerts_by_code: Record<string, number>;
 };

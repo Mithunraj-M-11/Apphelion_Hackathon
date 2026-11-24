@@ -15,6 +15,7 @@ it to the GB backend exactly like a real pole. It never writes to the registry: 
 """
 
 import os
+import random
 import sys
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
@@ -23,10 +24,14 @@ from typing import Any
 import httpx
 import yaml
 
+import pole
+
 BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
 IST = timezone(timedelta(hours=5, minutes=30))
 SERIOUS = ("HIGH", "CRITICAL")
+EQUIPMENT_ALERTS = ("POLE_SILENT", "LATE_EVENT", "WEIGH_DRIFT", "LOAD_DROP", "WIM_UNAVAILABLE", "WIM_PAD_DISAGREE")
+WIM_RNG = random.Random(7)  # its own stream: WIM noise doesn't change the rest of a story
 
 DEFAULT_PERMIT = {"trip_limit": 50, "tonne_limit": 1500, "vehicle_limit": 20, "hours_start": "06:00",
                   "hours_end": "18:00", "exit_grace_min": 30, "pass_expiry_min": 120}
@@ -83,12 +88,14 @@ def vehicle_of(spec, sid: str, registry: dict[str, dict], rogues: dict[str, dict
         if t is None:
             raise ScenarioError(f"{sid}: registered truck {spec['registered']} not found in the registry")
         return {"label": t["plate"], "plate": t["plate"], "tag": t["fastag_tag_id"], "length": t["length_m"],
-                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"], "registered": True}
+                "empty": t["empty_weight_t"], "rated": t["rated_capacity_t"], "registered": True,
+                "spacings": t.get("axle_spacings_m")}
     r = rogues.get(spec["rogue"])
     if r is None:
         raise ScenarioError(f"{sid}: unknown rogue vehicle {spec['rogue']}")
     return {"label": spec["rogue"], "plate": r.get("own_plate"), "tag": r.get("fastag"), "length": r["length_m"],
-            "empty": r.get("empty_weight_t", 12.0), "rated": r.get("rated_capacity_t", 25.0)}
+            "empty": r.get("empty_weight_t", 12.0), "rated": r.get("rated_capacity_t", 25.0),
+            "spacings": r.get("axle_spacings_m", [3.8, 1.35])}
 
 
 def identity_readings(phys: dict, sid: str, vehicle: dict, registry: dict[str, dict]) -> dict:
@@ -186,6 +193,17 @@ def officer_action(client, ev: dict, sid: str, permit: dict, observed: datetime,
     """One officer action. Returns (the gate decision it produced, if any; what the officer did). Appends the
     request it made to `sent`."""
     action, reason = ev["officer"], ev.get("reason", f"Scenario {sid}: checked in person")
+    if action == "reference_test":  # the GB's reference load over the pad; a rigged pad reads it off too
+        known = float(ev.get("known_t", 30))
+        body = {"known_weight_t": known, "pad_reading_t": round(known + float(ev.get("weigh_offset_t", 0)), 2),
+                "observed_at": observed.isoformat(), "permit_id": permit["id"]}
+        sent.append({"method": "POST", "path": f"/api/gates/{ev.get('gate', 'G1')}/reference-test", "headers": headers,
+                     "body": body})
+        res = client.post(f"/api/gates/{ev.get('gate', 'G1')}/reference-test", headers=headers, json=body)
+        res.raise_for_status()
+        r = res.json()
+        return None, (f"runs the {known:g} t reference load over the weigh pad: it reads {body['pad_reading_t']:g} t, "
+                      + ("test passed" if r["passed"] else "test FAILED (WEIGH_DRIFT)"))
     if action == "let_out":
         refused = movements.get(ev["event"])
         if refused is None:
@@ -297,6 +315,28 @@ def scenario_sheet(spec: dict, scn: dict, rogues: dict, registry: dict, permit: 
     }
 
 
+PERMIT_WARNING_PREFIXES = ("TRIPS_", "TONNES_")
+
+
+def coverage_of(problems: list[str], events: list[dict], raised: set[str], truth: dict, gb: dict,
+                missing_alerts: bool) -> str:
+    """How well the GB handled the story, judged against the ideal response:
+    covered     every expectation met
+    silent      the GB doesn't know: it raised nothing at all, or its records disagree with what really happened
+                and the alert that would reveal it never fired
+    partial     at least half of the expectations met
+    gap         fewer than half met"""
+    if not problems:
+        return "covered"
+    if not {c for c in raised if not c.startswith(PERMIT_WARNING_PREFIXES)}:
+        return "silent"
+    differs = truth["trips"] != gb["trips"] or abs(truth["tonnes"] - gb["tonnes"]) > 0.5
+    if differs and missing_alerts:
+        return "silent"
+    checks = sum(len(e["expected"]) for e in events) + 1  # +1: the story-level expectations
+    return "partial" if len(problems) * 2 <= checks else "gap"
+
+
 def summarise(results: list[dict]) -> dict:
     honest = [r for r in results if r["kind"] == "honest"]
     tamper = [r for r in results if r["kind"] == "tamper"]
@@ -327,93 +367,246 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
         events, all_alerts, problems = [], [], []
         sent: list[dict] = []  # exactly what was sent to the backend
         steps: list[dict] = []  # the scenario sheet's timeline
-        for n, ev in enumerate(scn["events"], start=1):
+        # ---- staging: what this story makes happen besides trucks at a gate (see threat_coverage.yaml)
+        outages = [(time(*map(int, o["from"].split(":"))), time(*map(int, o["to"].split(":"))))
+                   for o in scn.get("outages", [])]
+        heartbeats = bool(spec.get("heartbeats"))
+        beat = {"last": None}
+        truth = {"trips": 0, "tonnes": 0.0}  # what really left the site (the GB never sees this)
+        pending: list[tuple[datetime, int, dict]] = []  # gate events delivered late: (arrives at, event no., ev)
+
+        def at_time(hhmm: str) -> datetime:
+            hh, mm = map(int, hhmm.split(":"))
+            return datetime.combine(today, time(hh, mm), tzinfo=IST)
+
+        def offline(t: datetime) -> bool:
+            return any(a <= t.time() < b for a, b in outages)
+
+        def beat_until(t: datetime) -> None:
+            """The pole's 'I'm alive' signal every 5 minutes while it has power. Staging only: the GB has no heartbeat
+            endpoint yet, so these go unanswered; a silent pole is what the outage stories test."""
+            if not heartbeats:
+                return
+            cur = beat["last"] or (t - timedelta(minutes=t.minute % 5 + 5)).replace(second=0, microsecond=0)
+            while cur + timedelta(minutes=5) <= t:
+                cur += timedelta(minutes=5)
+                if not offline(cur):
+                    pole.heartbeat(client, gate, {"at": cur.isoformat(), "permit_id": permit["id"], "source": source})
+            beat["last"] = cur
+
+        def add_event(n, ev, dir_, vkey, note, readings, exp, actual, movement_id, ev_problems, step):
+            nonlocal problems
+            problems += [f"event {n}: {p}" for p in ev_problems]
+            events.append({"n": n, "at": ev["at"], "dir": dir_, "vehicle": vkey, "note": note, "readings": readings,
+                           "expected": exp, "actual": actual, "movement_id": movement_id, "pass": not ev_problems,
+                           "problems": ev_problems})
+            steps.append({**step, "n": n, "at": ev["at"], "expected": exp, "pass": not ev_problems,
+                          "problems": ev_problems})
+
+        no_reading = {"plate_read": None, "fastag_read": None, "radar_length_m": None, "weight_t": None,
+                      "shown": None, "forced": False}
+
+        def gate_event(n: int, ev: dict, delivered_at: datetime | None = None) -> None:
+            """A truck at a gate barrier. Staged sensor faults (camera, FASTag reader, weigh pad offset), a fake event
+            (no truck), an offline pole and late delivery are applied here."""
             before = len(sent)
-            if "officer" in ev:
-                hh, mm = map(int, ev["at"].split(":"))
-                observed = datetime.combine(today, time(hh, mm), tzinfo=IST)
-                mv, did = officer_action(client, ev, sid, permit, observed, movements, headers, sent)
-                exp = ev.get("expect", {})
-                ev_problems = judge_event(exp, mv) if mv else []
-                problems += [f"event {n}: {p}" for p in ev_problems]
-                alerts = [{"code": a["code"], "severity": a["severity"], "message": a["message"]}
-                          for a in (mv or {}).get("alerts", [])]
-                all_alerts += alerts
-                events.append({
-                    "n": n, "at": ev["at"], "dir": "OFFICER", "vehicle": ev.get("vehicle", ""), "note": did,
-                    "readings": {"plate_read": None, "fastag_read": None, "radar_length_m": None,
-                                 "weight_t": (mv or {}).get("weight_t"), "shown": None, "forced": False},
-                    "expected": exp,
-                    "actual": {"result": (mv or {}).get("result"), "decision": (mv or {}).get("decision"),
-                               "barrier": (mv or {}).get("barrier"), "trip": (mv or {}).get("trip"),
-                               "pass_issued": None, "pass": ((mv or {}).get("pass") or {}).get("code"),
-                               "alerts": alerts},
-                    "movement_id": (mv or {}).get("id"), "pass": not ev_problems, "problems": ev_problems,
-                })
-                steps.append({
-                    "n": n, "at": ev["at"], "actor": "officer",
-                    "officer_action": {"action": ev["officer"], "vehicle": ev.get("vehicle"), "refused_event": ev.get("event"),
-                                       "officer_id": headers.get("X-Officer-Id"), "did": did},
-                    "requests": sent[before:],
-                    "expected": exp,
-                    "actual": {"barrier": (mv or {}).get("barrier"), "trip": (mv or {}).get("trip"),
-                               "alerts": [f"{a['code']} ({a['severity']})" for a in alerts]} if mv else {"done": did},
-                    "pass": not ev_problems, "problems": ev_problems,
-                })
-                continue
             vehicle = vehicle_of(ev["vehicle"], sid, registry, rogues)
             vkey = vehicle["label"]
             reading = identity_readings(ev, sid, vehicle, registry)
-            hh, mm = map(int, ev["at"].split(":"))
-            observed = datetime.combine(today, time(hh, mm), tzinfo=IST)
+            faults = []
+            if ev.get("camera") == "unreadable":
+                reading["plate_read"], _ = None, faults.append("camera could not read the plate")
+            elif ev.get("camera") == "misread" and reading["plate_read"]:
+                pr = reading["plate_read"]
+                reading["plate_read"] = pr[:-1] + ("8" if pr[-1] != "8" else "3")
+                faults.append(f"camera misread the plate as {reading['plate_read']}")
+            if ev.get("fastag_reader") == "missed":
+                reading["fastag_read"], _ = None, faults.append("FASTag reader missed the tag")
+            observed = at_time(ev["at"])
             load = ev.get("load", 0 if ev["dir"] == "IN" else "90%")
+            real_w = weight_of(load, vehicle)
+            weight = real_w
+            if real_w is not None and ev.get("weigh_offset_t"):
+                weight = round(real_w + float(ev["weigh_offset_t"]), 2)
+                faults.append(f"weigh pad reads {ev['weigh_offset_t']:+g} t (really {real_w:.2f} t)")
             body = {"direction": ev["dir"], **reading, **sticker_reading(ev, vehicle, STICKERS, sid),
-                    "weight_t": weight_of(load, vehicle),
-                    "observed_at": observed.isoformat(), "barrier_forced": bool(ev.get("forces")),
+                    "weight_t": weight, "observed_at": observed.isoformat(), "barrier_forced": bool(ev.get("forces")),
                     "permit_id": permit["id"], "source": source}
+            wim_status = str(ev.get("wim", "ok")).upper()
+            wim = pole.wim_reading(WIM_RNG, vehicle.get("spacings"), vehicle["empty"], real_w, wim_status)
+            if wim is not None:  # the lane's WIM strip weighs the real truck, whatever the pad shows
+                body["wim"] = wim
+                if wim_status != "OK":
+                    faults.append({"OFFLINE": "WIM strip offline", "TIMEOUT": "WIM strip timed out",
+                                   "POOR": "WIM reading poor (braking over the strip)"}.get(wim_status, wim_status))
             shown = None
             if ev["dir"] == "OUT":
                 extra, shown = shown_at_exit(ev, sid, vkey, own_pass, issued)
                 body.update(extra)
+            exp = ev.get("expect", {})
+            fake = bool(ev.get("fake"))
+            leaves = ev["dir"] == "OUT" and not fake
+            load_t = (real_w - vehicle["empty"]) if real_w is not None else 0.0
+            note = "; ".join([x for x in [ev.get("note"), *faults] if x]) or None
+            readings = {**reading, "weight_t": weight, "shown": shown, "forced": bool(ev.get("forces"))}
+
+            if offline(observed) and delivered_at is None:  # the pole is down: the truck crosses, nothing is sent
+                if leaves:
+                    truth["trips"] += 1
+                    truth["tonnes"] += load_t
+                add_event(n, ev, ev["dir"], vkey, f"pole offline: crossed, nothing reached the GB"
+                          + (f" ({note})" if note else ""), readings, exp,
+                          {"result": None, "decision": None, "barrier": None, "trip": None, "pass_issued": None,
+                           "pass": None, "alerts": [], "not_delivered": True}, None, [],
+                          {"actor": "gate", "gate": gate, "direction": ev["dir"], "physical": _physical(ev),
+                           "requests": [], "actual": {"not_delivered": "pole offline"}})
+                return
+
             shown_body = {k: (f"{v[:24]}...({len(v)} chars)" if k == "pass_token" and v else v) for k, v in body.items()}
-            sent.append({"method": "POST", "path": f"/api/gates/{gate}/events", "body": shown_body})
-            mv = client.post(f"/api/gates/{gate}/events", json=body).raise_for_status().json()
+            sent.append({"method": "POST", "path": f"/api/gates/{gate}/events", "body": shown_body,
+                         **({"fake": True} if fake else {}),
+                         **({"delivered_at": delivered_at.isoformat()} if delivered_at else {})})
+            res = pole.event(client, gate, body, signed=not fake)  # a fake has no pole key
+            if fake and res.status_code in (401, 403):  # the ideal outcome: no pole credentials, refused
+                ev_problems = [] if exp.get("rejected") else ["fake event rejected but the story did not expect it"]
+                add_event(n, ev, ev["dir"], vkey, "fake gate event (no truck): rejected by the GB", readings, exp,
+                          {"result": None, "decision": "REJECTED", "barrier": None, "trip": None, "pass_issued": None,
+                           "pass": None, "alerts": []}, None, ev_problems,
+                          {"actor": "gate", "gate": gate, "direction": ev["dir"], "physical": _physical(ev),
+                           "requests": sent[before:], "actual": {"rejected": True}})
+                return
+            res.raise_for_status()
+            mv = res.json()
             movements[n] = mv
             if mv.get("issued_pass"):
                 own_pass[vkey] = issued[n] = mv["issued_pass"]
-            exp = ev.get("expect", {})
-            ev_problems = judge_event(exp, mv)
-            problems += [f"event {n}: {p}" for p in ev_problems]
+            ev_problems = judge_event({k: v for k, v in exp.items() if k != "rejected"}, mv)
+            if exp.get("rejected"):
+                ev_problems.append("accepted a gate event that no pole sent (no truck was there)")
+            if leaves and (mv["barrier"] == "up" or ev.get("forces")):
+                truth["trips"] += 1
+                truth["tonnes"] += load_t
             alerts = [{"code": a["code"], "severity": a["severity"], "message": a["message"]} for a in mv["alerts"]]
-            all_alerts += alerts
-            events.append({
-                "n": n, "at": ev["at"], "dir": ev["dir"], "vehicle": vkey, "note": ev.get("note"),
-                "readings": {**reading, "weight_t": body["weight_t"], "shown": shown,
-                             "forced": bool(ev.get("forces"))},
-                "expected": exp,
-                "actual": {"result": mv["result"], "decision": mv["decision"], "barrier": mv["barrier"],
-                           "trip": mv["trip"], "pass_issued": (mv.get("issued_pass") or {}).get("code"),
-                           "pass": (mv.get("pass") or {}).get("code"), "alerts": alerts},
-                "movement_id": mv["id"], "pass": not ev_problems, "problems": ev_problems,
-            })
-            steps.append({
-                "n": n, "at": ev["at"], "actor": "gate", "gate": gate, "direction": ev["dir"],
-                "physical": _physical(ev),
-                "requests": sent[before:],
-                "expected": exp,
-                "actual": {"identify": mv["result"], "barrier": mv["barrier"], "decision": mv.get("trip_decision"),
-                           "pass_issued": (mv.get("issued_pass") or {}).get("code"),
-                           "pass_closed": (mv.get("pass") or {}).get("code") if ev["dir"] == "OUT" else None,
-                           "trip": mv["trip"], "alerts": [f"{a['code']} ({a['severity']})" for a in alerts]},
-                "pass": not ev_problems, "problems": ev_problems,
-            })
-        serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS]
+            all_alerts.extend(alerts)
+            late = f"arrived late, at {delivered_at:%H:%M}" if delivered_at else None
+            add_event(n, ev, ev["dir"], vkey, "; ".join(x for x in [("fake gate event (no truck)" if fake else None),
+                                                                      note, late] if x) or None,
+                      readings, exp,
+                      {"result": mv["result"], "decision": mv["decision"], "barrier": mv["barrier"], "trip": mv["trip"],
+                       "pass_issued": (mv.get("issued_pass") or {}).get("code"),
+                       "pass": (mv.get("pass") or {}).get("code"), "alerts": alerts},
+                      mv["id"], ev_problems,
+                      {"actor": "gate", "gate": gate, "direction": ev["dir"], "physical": _physical(ev),
+                       "requests": sent[before:],
+                       "actual": {"identify": mv["result"], "barrier": mv["barrier"], "decision": mv.get("trip_decision"),
+                                  "pass_issued": (mv.get("issued_pass") or {}).get("code"),
+                                  "pass_closed": (mv.get("pass") or {}).get("code") if ev["dir"] == "OUT" else None,
+                                  "trip": mv["trip"], "alerts": [f"{a['code']} ({a['severity']})" for a in alerts]}})
+
+        def flush_late(upto: datetime | None) -> None:
+            for item in sorted(pending, key=lambda x: x[0]):
+                if upto is None or item[0] <= upto:
+                    pending.remove(item)
+                    beat_until(item[0])  # the pole kept signalling while this event was held back
+                    gate_event(item[1], item[2], delivered_at=item[0])
+
+        for n, ev in enumerate(scn["events"], start=1):
+            observed = at_time(ev["at"])
+            flush_late(observed)
+            beat_until(observed)
+            before = len(sent)
+            if "officer" in ev:
+                mv, did = officer_action(client, ev, sid, permit, observed, movements, headers, sent)
+                exp = ev.get("expect", {})
+                alerts = [{"code": a["code"], "severity": a["severity"], "message": a["message"]}
+                          for a in (mv or {}).get("alerts", [])]
+                all_alerts.extend(alerts)
+                add_event(n, ev, "OFFICER", ev.get("vehicle", ""), did,
+                          {**no_reading, "weight_t": (mv or {}).get("weight_t")}, exp,
+                          {"result": (mv or {}).get("result"), "decision": (mv or {}).get("decision"),
+                           "barrier": (mv or {}).get("barrier"), "trip": (mv or {}).get("trip"), "pass_issued": None,
+                           "pass": ((mv or {}).get("pass") or {}).get("code"), "alerts": alerts},
+                          (mv or {}).get("id"), judge_event(exp, mv) if mv else [],
+                          {"actor": "officer",
+                           "officer_action": {"action": ev["officer"], "vehicle": ev.get("vehicle"),
+                                              "refused_event": ev.get("event"),
+                                              "officer_id": headers.get("X-Officer-Id"), "did": did},
+                           "requests": sent[before:],
+                           "actual": {"barrier": (mv or {}).get("barrier"), "trip": (mv or {}).get("trip"),
+                                      "alerts": [f"{a['code']} ({a['severity']})" for a in alerts]} if mv else {"done": did}})
+                if mv and mv.get("barrier") == "up":  # an officer let a loaded truck out
+                    truth["trips"] += 1
+                    truth["tonnes"] += (mv.get("trip_session") or {}).get("net_t") or 0.0
+                continue
+            if "unseen" in ev:  # a leg no GB sensor sees (side track, loading inside, ...)
+                if ev.get("leaves"):
+                    v = vehicle_of(ev["vehicle"], sid, registry, rogues)
+                    w_ = weight_of(ev.get("load", "90%"), v)
+                    truth["trips"] += 1
+                    truth["tonnes"] += (w_ - v["empty"]) if w_ is not None else 0.0
+                add_event(n, ev, "UNSEEN", str(ev.get("vehicle", "")), ev["unseen"], no_reading, {},
+                          {"result": None, "decision": None, "barrier": None, "trip": None, "pass_issued": None,
+                           "pass": None, "alerts": []}, None, [],
+                          {"actor": "unseen", "did": ev["unseen"], "requests": [], "actual": {}})
+                continue
+            if "insider" in ev:  # an insider edits stored records directly (staging endpoint)
+                body = {"permit_id": permit["id"], "action": ev["insider"], "tonnes": ev.get("tonnes", 3.0)}
+                sent.append({"method": "POST", "path": "/api/sim/insider-edit", "body": body})
+                r = client.post("/api/sim/insider-edit", json=body)
+                did = {"erase_illegal_trip": "an insider deletes the illegal-trip record from the database",
+                       "lower_weight": f"an insider takes {body['tonnes']:g} t off a recorded trip in the database"}.get(
+                    ev["insider"], ev["insider"]) + ("" if r.is_success else f" (failed: {r.status_code})")
+                add_event(n, ev, "INSIDER", "", did, no_reading, {},
+                          {"result": None, "decision": None, "barrier": None, "trip": None, "pass_issued": None,
+                           "pass": None, "alerts": []}, None, [],
+                          {"actor": "insider", "did": did, "requests": sent[before:], "actual": {"done": did}})
+                continue
+            if "vendor_report" in ev:  # the Vendor files its daily report
+                vr = ev["vendor_report"]
+                body = {"day": today.isoformat(), "trips": vr["trips"], "tonnes": vr["tonnes"]}
+                sent.append({"method": "POST", "path": f"/api/permits/{permit['id']}/vendor-reports", "body": body})
+                res = client.post(f"/api/permits/{permit['id']}/vendor-reports", json=body).raise_for_status().json()
+                alerts = res.get("alerts", [])
+                all_alerts.extend(alerts)
+                exp = ev.get("expect", {})
+                codes = [a["code"] for a in alerts]
+                ev_problems = [f"expected alerts {[c for c in exp.get('alerts', []) if c not in codes]} not raised"] \
+                    if any(c not in codes for c in exp.get("alerts", [])) else []
+                add_event(n, ev, "VENDOR", "", f"the Vendor reports {vr['trips']} trips, {vr['tonnes']:g} t for the day",
+                          no_reading, exp,
+                          {"result": None, "decision": None, "barrier": None, "trip": None, "pass_issued": None,
+                           "pass": None, "alerts": alerts}, None, ev_problems,
+                          {"actor": "vendor", "did": f"reports {vr['trips']} trips", "requests": sent[before:],
+                           "actual": {"alerts": codes}})
+                continue
+            if ev.get("deliver_at"):  # network cut: the pole decides, but the event reaches the GB later
+                pending.append((at_time(ev["deliver_at"]), n, ev))
+                continue
+            gate_event(n, ev)
+        flush_late(None)
+        if scn["events"]:
+            beat_until(at_time(scn["events"][-1]["at"]) + timedelta(minutes=30))  # time passes after the story
+        if scn.get("check_records"):  # the GB's record-integrity check (not built yet: 404 means no check exists)
+            r = client.get(f"/api/permits/{permit['id']}/verify-records")
+            sent.append({"method": "GET", "path": f"/api/permits/{permit['id']}/verify-records",
+                         "status": r.status_code})
+        story_alerts = client.get("/api/alerts", params={"permit_id": permit["id"], "limit": 5000}).raise_for_status().json()
+        for code in scn.get("expect_story", {}).get("alerts", []):
+            if code not in {a["code"] for a in story_alerts}:
+                problems.append(f"story: expected alert {code} not raised (ideal response)")
+        serious = [a["code"] for a in all_alerts if a["severity"] in SERIOUS
+                   and a["code"] not in EQUIPMENT_ALERTS]  # about equipment, not the truck
         if scn["kind"] == "honest" and serious:
             problems.append(f"false alarm: {serious}")
-        expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])]
-        raised = {a["code"] for a in all_alerts}
+        expected_codes = [c for e in scn["events"] for c in e.get("expect", {}).get("alerts", [])] + \
+            list(scn.get("expect_story", {}).get("alerts", []))
+        raised = {a["code"] for a in all_alerts} | {a["code"] for a in story_alerts}
         ledger = client.get(f"/api/permits/{permit['id']}/ledger").raise_for_status().json()
         caught = bool(expected_codes) and all(c in raised for c in expected_codes)
+        gb_view = {"trips": ledger.get("actual_trips", 0), "tonnes": round(ledger.get("tonnes", 0.0), 2)}
+        truth_view = {"trips": truth["trips"], "tonnes": round(truth["tonnes"], 2)}
+        coverage = "period" if scn.get("period_only") else coverage_of(problems, events, raised, truth_view, gb_view,
+                                                                         any(c not in raised for c in expected_codes))
         verdict = {
             "story_passes": not problems, "cheat_caught": caught if scn["kind"] == "tamper" else None,
             "expected_alerts": expected_codes, "raised_alerts": sorted(raised),
@@ -421,6 +614,7 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             "problems": problems,
             "ledger_after": {k: ledger.get(k) for k in ("trips_reserved", "trip_limit", "legal_trips", "actual_trips",
                                                         "illegal_trips", "tonnes", "tonne_limit", "active_holds")},
+            "coverage": coverage, "really_moved": truth_view, "gb_recorded": gb_view,
         }
         results.append({
             "sheet": scenario_sheet(spec, scn, rogues, registry, permit, steps, verdict),
@@ -431,6 +625,8 @@ def run_trip(client, spec, run, registry) -> tuple[list[dict], dict]:
             "actual": {"caught_by": sorted(raised), "serious": sorted(set(serious))},
             "caught": bool(expected_codes) and all(c in raised for c in expected_codes),
             "ledger": ledger, "pass": not problems, "problems": problems,
+            "coverage": coverage, "threat": scn.get("threat"), "priority": scn.get("priority"),
+            "really_moved": truth_view, "gb_recorded": gb_view,
         })
         client.put(f"/api/sim-runs/{run['id']}", json={**summarise(results), "results": results,
                                                         "finished": False}).raise_for_status()

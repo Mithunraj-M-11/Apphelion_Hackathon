@@ -4,8 +4,8 @@ run under their own source-tagged permits, so each can be cleared without touchi
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.models import (Alert, EmergencyMovement, EventLog, Movement, Permit, TripSession, TruckHold, VehicleQuota,
-                        VendorReport)
+from app.models import (Alert, EmergencyMovement, EventLog, Movement, Permit, PoleState, RecordEntry, Survey,
+                        TripSession, TruckHold, VehicleQuota, VendorReport, WimAnomaly, WimMeasurement)
 
 ORIGINS = ("walkthrough:", "sim:", "site:")  # never the real permit (source NULL)
 
@@ -33,8 +33,15 @@ def clear_source(db: Session, prefix: str) -> dict[str, int]:
                                                       EventLog.movement_id.in_(move_ids)))).rowcount,
     }
     db.execute(delete(VendorReport).where(VendorReport.permit_id.in_(permits)))
+    db.execute(delete(RecordEntry).where(RecordEntry.permit_id.in_(permits)))
+    db.execute(delete(Survey).where(Survey.permit_id.in_(permits)))
+    db.execute(delete(PoleState).where(or_(PoleState.permit_id.in_(permits), PoleState.source.like(like))))
     db.execute(delete(VehicleQuota).where(VehicleQuota.permit_id.in_(permits)))
     db.execute(delete(EmergencyMovement).where(EmergencyMovement.movement_id.in_(move_ids)))
+    wim_ids = list(db.scalars(select(WimMeasurement.id).where(
+        or_(WimMeasurement.movement_id.in_(move_ids), WimMeasurement.source.like(like)))))
+    db.execute(delete(WimAnomaly).where(or_(WimAnomaly.measurement_id.in_(wim_ids), WimAnomaly.movement_id.in_(move_ids))))
+    counts["wim_measurements"] = db.execute(delete(WimMeasurement).where(WimMeasurement.id.in_(wim_ids))).rowcount
     counts["passes"] = db.execute(delete(TripSession).where(TripSession.id.in_(session_ids))).rowcount
     counts["gate_events"] = db.execute(delete(Movement).where(Movement.id.in_(move_ids))).rowcount
     counts["permits"] = db.execute(delete(Permit).where(Permit.id.in_(permits))).rowcount
